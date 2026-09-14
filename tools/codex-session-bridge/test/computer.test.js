@@ -8,6 +8,8 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { ComputerTools } from '../src/computer/tools.js';
 import { createHttpServer } from '../src/http.js';
 import { spawnSync } from 'node:child_process';
+import { PathPolicy } from '../src/computer/paths.js';
+import { fileURLToPath } from 'node:url';
 
 async function connect(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'yuki-computer-'));
@@ -109,4 +111,40 @@ test('git status and a literal file diff are read-only MCP operations', async t 
   const directoryDiff = await call('git_diff', { cwd: workspace, path: workspace });
   assert.equal(directoryDiff.error.code, 'NOT_A_FILE');
   assert.equal(readFileSync(file, 'utf8'), 'after\n');
+  // A benign configured clean filter writes only a fixture marker. Ordinary
+  // Git invokes it; our read-only queries must explicitly suppress it.
+  const marker = path.join(workspace, 'filter-ran.txt');
+  const script = path.join(workspace, 'filter.cjs');
+  writeFileSync(script, `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(marker)},'ran');process.stdout.write(fs.readFileSync(0));`, 'utf8');
+  writeFileSync(path.join(workspace, '.gitattributes'), '*.txt filter=probe\n', 'utf8');
+  git(['config', 'filter.probe.clean', `"${process.execPath.replaceAll('\\', '/')}" "${script.replaceAll('\\', '/')}"`]);
+  git(['diff', '--no-ext-diff', '--no-textconv', '--', '笔记 [1].txt']);
+  assert.equal(existsSync(marker), true, 'fixture proves native Git invokes the filter');
+  rmSync(marker);
+  assert.equal((await call('git_status', { cwd: workspace })).isError, false);
+  assert.equal((await call('git_diff', { cwd: workspace, path: file })).isError, false);
+  assert.equal(existsSync(marker), false, 'read-only queries must not invoke clean filters');
+  git(['config', 'filter.probe.process', `"${process.execPath.replaceAll('\\', '/')}" "${script.replaceAll('\\', '/')}"`]);
+  git(['config', 'filter.probe.required', 'true']);
+  assert.equal((await call('git_status', { cwd: workspace })).isError, false);
+  assert.equal((await call('git_diff', { cwd: workspace, path: file })).isError, false);
+  assert.equal(existsSync(marker), false, 'required process filters must also remain disabled');
+});
+
+test('Windows short names cannot bypass protected installation or Git paths', { skip: process.platform !== 'win32' }, t => {
+  const repository = fileURLToPath(new URL('../../../', import.meta.url));
+  const policy = new PathPolicy([repository], [repository], path.join(repository, 'tools/codex-session-bridge/runtime'));
+  // Existing short names are probed as metadata only; no protected content is read.
+  const aliases = [
+    path.join(repository, 'tools/CODEX-~1/src/computer/query.ps1'),
+    path.join(repository, 'tools/CODEX-~1/src/computer/new-test-file.txt'),
+    path.join(repository, 'GIT~1/config'),
+  ];
+  let exercised = 0;
+  for (const alias of aliases) {
+    if (!existsSync(path.dirname(alias))) continue;
+    assert.throws(() => policy.resolve(alias, { write: true, missing: true }), { code: 'PROTECTED_PATH' });
+    exercised++;
+  }
+  if (exercised === 0) t.skip('Volume does not expose the known 8.3 aliases');
 });

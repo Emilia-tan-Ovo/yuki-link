@@ -33,12 +33,12 @@ export class ComputerTools {
   }
 
   executable(name) {
-    if (path.isAbsolute(name)) return realpathSync(name);
+    if (path.isAbsolute(name)) return realpathSync.native(name);
     // Do not let Windows search the request's cwd for pwsh.exe/git.exe.
     for (const directory of (process.env.PATH ?? '').split(path.delimiter)) {
       if (!path.isAbsolute(directory)) continue;
       try {
-        const executable = realpathSync(path.join(directory, name));
+        const executable = realpathSync.native(path.join(directory, name));
         if (!statSync(executable).isFile()) continue;
         const writable = this.paths.writeRoots.some(root => {
           const relative = path.relative(root, executable);
@@ -65,6 +65,12 @@ export class ComputerTools {
     const common = ['--no-pager', '--no-optional-locks', '--literal-pathspecs', '-c', 'core.fsmonitor=false', '-c', 'core.quotePath=false'];
     const root = await this.execute('git_root', executable, [...common, 'rev-parse', '--show-toplevel'], cwd, '', 10_000);
     const repository = this.directory(root.stdout.trim());
+    // status/diff may invoke clean/process filters, even with --no-ext-diff.
+    // Read key names only (never configuration values) and disable every driver
+    // for this process. Include global and repository config through Git itself.
+    const config = await this.execute('git_config_names', executable, [...common, 'config', '--list', '--name-only', '--null', '--includes'], repository, '', 10_000);
+    const drivers = new Set(config.stdout.split('\0').map(key => /^filter\.(.*)\.(?:clean|process|required)$/i.exec(key)?.[1]).filter(Boolean));
+    for (const driver of drivers) common.push('-c', `filter.${driver}.clean=`, '-c', `filter.${driver}.process=`, '-c', `filter.${driver}.required=false`);
     if (kind === 'status') return this.execute('git_status', executable, [...common, 'status', '--porcelain=v1', '--untracked-files=normal', '--ignore-submodules=all'], repository, '', 10_000);
     file = this.paths.resolve(file);
     if (!statSync(file).isFile()) throw new BridgeError('NOT_A_FILE', 'Diff requires one existing allowed file, not a directory.');

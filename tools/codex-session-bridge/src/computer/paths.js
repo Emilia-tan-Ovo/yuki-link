@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { BridgeError } from '../errors.js';
 
 const installation = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+// The JavaScript realpath implementation preserves Windows 8.3 names.
+const canonicalPath = realpathSync.native;
 const inside = (root, target) => {
   const relative = path.relative(root, target);
   return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
@@ -12,9 +14,9 @@ const secretName = /^(?:\.env(?:\..*)?|\.git|\.codex|\.agents|\.ssh|\.aws|\.azur
 
 export class PathPolicy {
   constructor(readRoots, writeRoots, runtime) {
-    this.readRoots = readRoots.map(root => realpathSync(root));
-    this.writeRoots = writeRoots.map(root => realpathSync(root));
-    this.runtime = path.resolve(runtime);
+    this.readRoots = readRoots.map(root => canonicalPath(root));
+    this.writeRoots = writeRoots.map(root => canonicalPath(root));
+    this.runtime = canonicalPath(runtime);
   }
 
   resolve(input, { write = false, missing = false } = {}) {
@@ -35,14 +37,24 @@ export class PathPolicy {
       let info;
       try { info = lstatSync(current); }
       catch (error) {
-        if (error.code === 'ENOENT' && missing && index === parts.length - 1) return target;
+        if (error.code === 'ENOENT' && missing && index === parts.length - 1) {
+          const canonical = path.join(canonicalPath(path.dirname(target)), path.basename(target));
+          // Revalidate canonical parent names too: Windows 8.3 aliases can hide
+          // protected directories even when the new leaf does not exist yet.
+          if (canonical !== target) return this.resolve(canonical, { write, missing });
+          return target;
+        }
         throw new BridgeError(error.code === 'ENOENT' ? 'PATH_NOT_FOUND' : 'PATH_UNAVAILABLE', 'Path is missing or inaccessible.');
       }
       if (info.isSymbolicLink()) throw new BridgeError('LINK_NOT_ALLOWED', 'Symlinks and junctions are not accepted.');
       if (info.isFile() && info.nlink !== 1) throw new BridgeError('LINK_NOT_ALLOWED', 'Hard-linked files are not accepted.');
       if (!info.isDirectory() && !info.isFile()) throw new BridgeError('PATH_NOT_ALLOWED', 'Only ordinary files and directories are supported.');
     }
-    if (!roots.some(root => inside(root, realpathSync(target)))) throw new BridgeError('PATH_NOT_ALLOWED', 'Resolved path is outside permitted directories.');
-    return target;
+    const canonical = canonicalPath(target);
+    if (!roots.some(root => inside(root, canonical))) throw new BridgeError('PATH_NOT_ALLOWED', 'Resolved path is outside permitted directories.');
+    // Root containment alone is insufficient: aliases must not bypass .git,
+    // runtime, credential names, instruction files or our own installation.
+    if (canonical !== target) return this.resolve(canonical, { write, missing });
+    return canonical;
   }
 }
