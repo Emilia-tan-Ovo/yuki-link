@@ -2,7 +2,7 @@ import http from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpServer } from './mcp.js';
 
-export function createHttpServer(manager) {
+export function createHttpServer(manager, computer) {
   return http.createServer(async (request, response) => {
     // Loopback binding alone does not protect against browser DNS rebinding.
     const host = request.headers.host ?? '';
@@ -14,7 +14,7 @@ export function createHttpServer(manager) {
       response.writeHead(403).end('Invalid Origin'); return;
     }
     if (request.url === '/healthz' && request.method === 'GET') {
-      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ status: manager.closing ? 'stopping' : 'ok', service: 'codex-session-bridge' })); return;
+      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ status: manager.closing ? 'stopping' : 'ok', service: 'yuki-computer-agent', version: '0.2.0' })); return;
     }
     if (request.url !== '/mcp') { response.writeHead(404).end(); return; }
     if (request.method !== 'POST') { response.writeHead(405, { Allow: 'POST' }).end(); return; }
@@ -31,7 +31,7 @@ export function createHttpServer(manager) {
       try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
       catch { response.writeHead(400).end('Invalid JSON'); return; }
       // MCP connections are stateless; Codex sessions belong to the shared manager.
-      const server = createMcpServer(manager);
+      const server = createMcpServer(manager, computer);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       response.once('close', () => { transport.close().catch(() => {}); server.close().catch(() => {}); });
       await server.connect(transport);

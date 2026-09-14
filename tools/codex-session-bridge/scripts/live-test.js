@@ -10,6 +10,7 @@ import { RuntimeStore } from '../src/store.js';
 import { CodexExecutor } from '../src/executor.js';
 import { SessionManager } from '../src/manager.js';
 import { createHttpServer } from '../src/http.js';
+import { ComputerTools } from '../src/computer/tools.js';
 
 // Explicit opt-in only: makes three real model turns using the existing CLI login.
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -22,7 +23,8 @@ await catalog.validate('gpt-6-astra', 'high');
 await catalog.validate('gpt-5.6-sol', 'low');
 console.log(JSON.stringify({ phase: 'catalog', models: capabilities.models.filter(m => ['gpt-6-astra', 'gpt-5.6-sol'].includes(m.model)) }));
 const manager = new SessionManager({ store: new RuntimeStore(runtime), catalog, executor: new CodexExecutor(process.env.BRIDGE_CODEX_BIN ?? 'codex'), allowedCwds: [cwd] });
-const httpServer = createHttpServer(manager);
+const computer = new ComputerTools({ readRoots: [root], writeRoots: [root], runtime });
+const httpServer = createHttpServer(manager, computer);
 await new Promise(resolve => httpServer.listen(0, '127.0.0.1', resolve));
 const url = new URL(`http://127.0.0.1:${httpServer.address().port}/mcp`);
 let client;
@@ -57,7 +59,13 @@ async function wait(run) {
 try {
   await connect();
   const tools = await client.listTools();
-  assert.equal(tools.tools.length, 6);
+  assert.equal(tools.tools.length, 13);
+  const query = await call('powershell', { cwd: root, query: 'version' });
+  assert.ok(query.data.version.startsWith('7.'));
+  const file = await call('filesystem_read', { path: path.join(root, 'README.md') });
+  assert.ok(file.content.includes('Yuki Computer Agent'));
+  report.computer = { powershell: query.data, read_bytes: file.bytes, tool_count: tools.tools.length };
+  console.log(JSON.stringify({ phase: 'computer', ...report.computer }));
   const marker = '雪花-' + randomUUID().slice(0, 8);
   const literal = '中文路径 C:\\测试 空格\\文件.txt；双引号 "你好"；单引号 \'Emilia\'；$HOME；`tick`；$(not-a-command)';
   const input = { request_id: randomUUID(), cwd, sender: '艾米莉亚碳', prompt: `这是 Bridge 的通信验收，勿调用任何工具、Skill、浏览器或执行命令，也不要读取文件。\r\n请记住本会话标记：${marker}\n请原样回显下一行文字，然后输出标记，不要添加解释：\n${literal}` };
@@ -92,6 +100,7 @@ try {
   writeFileSync(path.join(runtime, 'acceptance.json'), JSON.stringify(report, null, 2), 'utf8');
   await client?.close();
   await manager.close();
+  await computer.close();
   await new Promise(resolve => { httpServer.close(resolve); httpServer.closeIdleConnections(); });
   console.log(JSON.stringify({ passed: report.passed, report: path.join(runtime, 'acceptance.json') }));
 }

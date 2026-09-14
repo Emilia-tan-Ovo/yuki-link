@@ -2,8 +2,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { publicError } from './errors.js';
 
-export function createMcpServer(manager) {
-  const server = new McpServer({ name: 'codex-session-bridge', version: '0.1.0' });
+export function createMcpServer(manager, computer) {
+  const server = new McpServer({ name: 'yuki-computer-agent', version: '0.2.0' });
   const message = {
     request_id: z.string().min(1).max(128).describe('Caller-generated idempotency key. Reuse with identical arguments after a disconnect; use a NEW key for a new message.'),
     prompt: z.string().min(1).max(131072).describe('Complete prompt, passed verbatim through UTF-8 stdin. The bridge does not interpret skills.'),
@@ -12,10 +12,10 @@ export function createMcpServer(manager) {
     reasoning: z.string().min(1).max(128).optional().describe('Exact supported reasoning from codex_list_models. Start default: high; send default: inherit session.'),
     timeout_ms: z.number().int().min(1000).max(1800000).optional(),
   };
-  const register = (name, description, inputSchema, action, readOnly = false) => {
+  const register = (name, description, inputSchema, action, readOnly = false, idempotent = true, destructive = false) => {
     server.registerTool(name, {
       description, inputSchema,
-      annotations: { readOnlyHint: readOnly, destructiveHint: false, idempotentHint: true, openWorldHint: !readOnly },
+      annotations: { readOnlyHint: readOnly, destructiveHint: destructive, idempotentHint: idempotent, openWorldHint: !readOnly },
     }, async input => {
       try {
         const result = await action(input);
@@ -44,5 +44,29 @@ export function createMcpServer(manager) {
   register('codex_stop_session', 'Stop only the active run of this managed session. Preserve its history for later resume. stopping is not yet stopped; poll status until terminal.', {
     session_id: z.string().uuid(),
   }, ({ session_id }) => manager.stop(session_id));
+  if (computer) {
+    register('powershell', 'Direct PowerShell 7 read-only query, independent of Codex. query must be version, location, system or processes. Arbitrary scripts, native commands, deletion and system changes are not supported.', {
+      cwd: z.string().min(1), query: z.enum(['version', 'location', 'system', 'processes']),
+      timeout_ms: z.number().int().min(1000).max(30000).optional(),
+    }, input => computer.powershell(input), true);
+    register('filesystem_list', 'List allowed files/directories with pagination. Protected paths, credentials and links are omitted. No glob expansion.', {
+      path: z.string().min(1), cursor: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(200).optional(),
+    }, input => computer.filesystem.list(input), true);
+    register('filesystem_read', 'Read one allowed UTF-8 text file up to 256 KiB and return its SHA-256. Credential/runtime/config paths and links are denied.', {
+      path: z.string().min(1),
+    }, input => computer.filesystem.read(input), true);
+    register('filesystem_write', 'Create a UTF-8 workspace file, or replace it only with the current expected_sha256 from filesystem_read. Parent must exist. Agent code/configuration and credentials are protected.', {
+      path: z.string().min(1), content: z.string().max(262144), expected_sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+    }, input => computer.filesystem.write(input), false, true, true);
+    register('filesystem_move', 'Move one ordinary UTF-8 workspace file to a new, nonexisting same-volume path. Requires source expected_sha256. No directories, overwrites, credential paths or links.', {
+      source: z.string().min(1), destination: z.string().min(1), expected_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    }, input => computer.filesystem.move(input), false, false, true);
+    register('git_status', 'Read local repository status. No index refresh locks, fsmonitor hooks, submodule traversal, network, commit or push. Repository root must be within read roots.', {
+      cwd: z.string().min(1),
+    }, input => computer.gitQuery(input, 'status'), true);
+    register('git_diff', 'Read an unstaged or staged diff for one existing allowed UTF-8 file. No directory-wide diff, deleted paths, external diff/textconv, network, commit or push.', {
+      cwd: z.string().min(1), path: z.string().min(1), staged: z.boolean().optional(),
+    }, input => computer.gitQuery(input, 'diff'), true);
+  }
   return server;
 }

@@ -1,12 +1,12 @@
-# Codex Session Bridge
+# Yuki Computer Agent
 
 独立的前置开发工具，不属于 Emilia Link 正式 ticket，也不依赖 `core/` 或 `providers/`。
 
-Bridge 只传输 prompt、管理 session/run、返回事件与回复。它不理解或编排 Skills；调用方可以直接在 prompt 中写 `$pair-with-docs`、`$implement` 等指令。会话由本工具新建并管理，不接管 Codex 桌面中正在运行的任务。
+保留 `tools/codex-session-bridge` 目录，避免迁移已有 session/runtime。Computer Agent 直接提供受控 PowerShell、文件和 Git 查询；Codex 模块只传输 prompt、管理 session/run、返回事件与回复。两条路径互不依赖：Codex 不可用不会阻止电脑工具启动。它不编排 Skills；调用方可在 prompt 中写 `$pair-with-docs`、`$implement`。会话由本工具新建并管理，不接管 Codex 桌面中正在运行的任务。
 
 ## 本机启动
 
-要求 Node.js 24+、可执行的 Codex CLI，以及 CLI 自己管理的既有登录。已验证 CLI `0.154.0-alpha.6.2`。Bridge 不读取、复制或保存 Codex 凭据。
+要求 Node.js 24+；电脑查询使用 PowerShell 7、Git。Codex 功能另外需要可执行的 CLI 及其既有登录，已验证 CLI `0.154.0-alpha.6.2`。Agent 不读取、复制或保存 Codex 凭据。
 
 在本目录运行（Windows 使用 PowerShell 7）：
 
@@ -19,7 +19,7 @@ HTTP 只绑定 `127.0.0.1`，默认 MCP 地址 `http://127.0.0.1:7391/mcp`，健
 
 可重复传入 `--allow-cwd` 添加管理员允许的工作目录。路径会取真实路径再校验，包含子目录，拒绝越界和指向允许目录之外的 junction/symlink。远端工具没有修改 allowlist、执行任意命令或传入 CLI flags 的能力。
 
-其他本地启动参数：`--port`、`--runtime`（绝对路径）、`--codex-bin`（Codex 可执行文件路径）。未指定 allowlist 时拒绝启动。`--help` 查看参数。
+`--allow-cwd` 同时限定 Codex 工作目录和文件写入范围。`--read-root` 可重复添加额外只读目录。其他本地参数：`--port`、`--runtime`（绝对路径）、`--codex-bin`、`--pwsh-bin`。未指定 allowlist 时拒绝启动。`--help` 查看参数。
 
 本地进程型 MCP 客户端也可使用 stdio，按各客户端 JSON 配置的 command/args 方式提供：
 
@@ -46,6 +46,25 @@ HTTP 只绑定 `127.0.0.1`，默认 MCP 地址 `http://127.0.0.1:7391/mcp`，健
 | `codex_get_status` | `session_id? / run_id?`，至少一个 | session、选定 run、当前 session 状态 |
 | `codex_get_output` | `run_id, cursor?, limit?` | 事件、`next_cursor`、`has_more`、最终回复 |
 | `codex_stop_session` | `session_id` | 停止进度，需继续查状态 |
+| `powershell` | `cwd, query, timeout_ms?` | `operation_id, exit_code, stdout, stderr, data` |
+| `filesystem_list` | `path, cursor?, limit?` | 分页普通文件/目录，隐藏受保护项 |
+| `filesystem_read` | `path` | UTF-8 内容、字节数、SHA-256 |
+| `filesystem_write` | `path, content, expected_sha256?` | 创建或按原内容哈希更新 |
+| `filesystem_move` | `source, destination, expected_sha256` | 同卷普通文件移动，不覆盖目标 |
+| `git_status` | `cwd` | porcelain 状态输出 |
+| `git_diff` | `cwd, path, staged?` | 单个允许文件的 diff |
+
+### 直接电脑工具边界
+
+`powershell` 的 `query` 当前只支持 `version`、`location`、`system`、`processes` 四种只读查询。它直接启动 PowerShell 7，不经过 Codex；固定 `.ps1` 接收 UTF-8 JSON stdin，不接受任意脚本、CMD 或动态表达式。查询最长 30 秒、输出总量 1 MiB、并发最多四个。`processes` 只返回前 200 个进程的名称/ID/资源用量，不返回命令行或环境变量。
+
+文件工具仅支持最大 256 KiB 的 UTF-8 普通文件；父目录必须已经存在。拒绝 junction/symlink、硬链接、UNC/device 路径、ADS 和含凭据/配置/runtime 的受保护路径。写入另外保护 Agent 自身安装目录及 `AGENTS.md` / `CLAUDE.md`。现有文件更新必须带读取时取得的 `expected_sha256`；内容冲突会拒绝。常见凭据格式会被拒绝，但模式识别不能覆盖所有秘密，应只允许可信的工作目录。
+
+移动仅支持同卷且支持硬链接的文件系统，以先建立新文件名、再移除旧文件名实现不覆盖目标；中断可能留下两个名字，内容仍在，但需要本机恢复。没有目录移动、删除、创建链接或系统配置工具。路径校验基于可信的本机文件系统，不是抵御其他本机进程并发篡改路径的操作系统沙箱。
+
+Git 只提供 status 和单文件 diff；仓库根也必须在允许读取目录中。禁用外部 diff、textconv、fsmonitor、pager 和子模块检查，不接受任意 Git 参数。没有 commit/push 工具。
+
+电脑操作记录到 `computer-audit.jsonl`，只保存操作、时间、结果和字节数等元数据，不记录文件内容、子进程输出、环境变量或凭据。只读查询同步返回，Codex 仍使用异步 run。
 
 首次创建默认 `gpt-6-astra / high`。模型目录来自当前 `codex app-server model/list`，含分页，缓存五分钟，可显式刷新；目录查询失败不猜测、不静默降级。新增模型无需修改 session 逻辑。
 
@@ -75,6 +94,7 @@ runtime/                  # 已由仓库 .gitignore 排除
   bridge.lock             # 单个 Bridge 写入者
   sessions.json           # session/run 元数据、request_id 幂等映射
   runs/<run-id>.jsonl      # 发送消息、Codex 事件、stderr、运行状态
+  computer-audit.jsonl    # 电脑工具操作元数据
 ```
 
 元数据写入临时文件并原子替换；事件逐条追加。接收请求时若追加或保存失败，回滚内存中的请求映射和会话锁，返回 `PERSISTENCE_FAILED`，不启动进程；可能留下的无引用日志只供排查，不会执行。
@@ -100,14 +120,16 @@ npm.cmd test
 npm.cmd run test:live
 ```
 
-常规测试不调用模型，包含真实 MCP HTTP 客户端、真实 Node 子进程 UTF-8 管道与 Windows 进程树终止。`test:live` 是显式联网验收，会使用 CLI 当前登录和模型额度：Astra high 首轮 → 原 thread 续聊 → 显式 Sol low 切换，验证含中文/引号/Windows 路径的原样回显、会话记忆、HTTP 重连和幂等。
+常规测试不调用模型，包含真实 MCP HTTP 客户端、PowerShell 7、临时文件/Git 仓库、Node UTF-8 管道与 Windows 进程树终止。`test:live` 是显式联网验收，会使用 CLI 当前登录和模型额度：同一 MCP 入口执行 PowerShell version、读取此 README，再完成 Astra high 首轮 → 原 thread 续聊 → 显式 Sol low 切换，验证中文/引号/Windows 路径原样回显、会话记忆、HTTP 重连和幂等。
 
 真实验收报告保存在 `runtime/live-<timestamp>/acceptance.json`；不会提交实际会话记录。此次初始本机验收三轮均成功，使用同一个 Codex thread。这不表示每个 reasoning 档位都已实际请求过。
 
-## 独立 tunnel 接入
+## 复用 Yuki Computer Agent tunnel
 
-保留现有 Yuki Windows tunnel/profile。新建独立 tunnel 和 ChatGPT connector，目标为 `http://127.0.0.1:7391/mcp`。已核验本机 `tunnel-client v0.0.14` 支持该 HTTP 入口；不要把新 daemon 接到旧 tunnel 的同一个 main channel。
+沿用用户已配置并命名为 **Yuki Computer Agent** 的 tunnel：`tunnel_6aa7f14d51c4819184211aa70d09e10e`。本机目标 `http://127.0.0.1:7391/mcp`，客户端 `tunnel-client v0.0.14`。内部 runtime alias/profile 继续使用 `codex-session-bridge`；不创建新 tunnel/key，也不修改其他 Windows-MCP tunnel。
 
-需要用户提供新 tunnel ID、runtime key 的本机文件或环境变量引用，并授权 tunnel-client 使用该引用；不在聊天、仓库或 Bridge 日志中粘贴 key。仅完成本地测试不能算 ChatGPT 全链路验收。最终需要 tunnel ready，并由艾米莉亚碳在 ChatGPT 实际完成 start → get_output → send → get_output。
+用户授权的本机凭据引用为 `file:C:\Users\KQ_Sh\select-key\yuki-computer-agent-key.txt`，仅 tunnel-client 读取用于认证；Agent 不读取它，不把内容加入 prompt、日志或 Git。名称变化不会要求重新生成 key；到期、撤销或损坏时才需要处理凭据。
+
+ChatGPT 插件尚需用户创建：名称 **Yuki Computer Agent**，选择 Tunnel 连接并使用上述 ID；不填写 localhost 地址或粘贴 runtime key。创建后检查 13 个工具，并实际调用 `powershell`（`cwd` 为允许目录，`query` 为 `version`）及 `filesystem_read`（本 README 的绝对路径），最后执行 Codex start → get_output → send → get_output。tunnel ready 和本机测试不代表已完成 ChatGPT 端到端验收。后续增加工具通常复用相同连接，仅刷新工具元数据。
 
 参考：[Codex 非交互模式](https://learn.chatgpt.com/docs/non-interactive-mode)、[App Server](https://learn.chatgpt.com/docs/app-server)、[MCP SDK](https://github.com/modelcontextprotocol/typescript-sdk/tree/v1.x)、[Tunnel 接入](https://github.com/openai/tunnel-client/blob/master/docs/enterprise-customer-onboarding.md)。
