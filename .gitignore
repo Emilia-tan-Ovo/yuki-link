@@ -1,0 +1,25 @@
+# Local credentials and runtime artifacts
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+*.pem
+*.key
+*.pfx
+*.p12
+*.log
+logs/
+runtime/
+.local/
+
+# Dependency and editor artifacts; no toolchain selected yet
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+node_modules/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
