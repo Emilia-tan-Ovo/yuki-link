@@ -3,9 +3,9 @@ import { lstatSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { BridgeError } from '../errors.js';
 
-const installation = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 // The JavaScript realpath implementation preserves Windows 8.3 names.
 const canonicalPath = realpathSync.native;
+const installation = canonicalPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'));
 const inside = (root, target) => {
   const relative = path.relative(root, target);
   return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));

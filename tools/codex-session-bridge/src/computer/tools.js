@@ -108,7 +108,7 @@ export class ComputerTools {
         clearTimeout(timer); this.children.delete(child);
         const rawStdout = Buffer.concat(stdout).toString('utf8');
         const result = { operation_id: operationId, exit_code: code, stdout: redact(rawStdout), stderr: redact(Buffer.concat(stderr).toString('utf8')) };
-        if (operation === 'git_diff' && result.stdout !== rawStdout) failure ??= new BridgeError('SENSITIVE_CONTENT', 'Diff resembles credentials and will not be returned.');
+        if (['git_diff', 'git_config_names'].includes(operation) && result.stdout !== rawStdout) failure ??= new BridgeError('SENSITIVE_CONTENT', 'Git output resembles credentials; the operation cannot continue safely.');
         if (code !== 0) failure ??= new BridgeError('PROCESS_EXIT_FAILED', 'Computer query exited unsuccessfully.', { exit_code: code, stderr: result.stderr });
         try { this.audit(operation, failure ? 'failed' : 'completed', { operation_id: operationId, exit_code: code, error_code: failure?.code ?? null, ...metadata }); }
         catch { failure ??= new BridgeError('AUDIT_FAILED', 'Query finished but its audit record could not be saved.'); }

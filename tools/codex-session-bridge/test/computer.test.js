@@ -129,6 +129,10 @@ test('git status and a literal file diff are read-only MCP operations', async t 
   assert.equal((await call('git_status', { cwd: workspace })).isError, false);
   assert.equal((await call('git_diff', { cwd: workspace, path: file })).isError, false);
   assert.equal(existsSync(marker), false, 'required process filters must also remain disabled');
+  // A filter name altered by output redaction must fail closed, never override
+  // the redacted name and accidentally leave the original command enabled.
+  git(['config', 'filter.sk-TESTONLYTESTONLY.clean', 'echo test-only']);
+  assert.equal((await call('git_status', { cwd: workspace })).error.code, 'SENSITIVE_CONTENT');
 });
 
 test('Windows short names cannot bypass protected installation or Git paths', { skip: process.platform !== 'win32' }, t => {
