@@ -221,3 +221,40 @@ test('stopProcessTree terminates an owned native process and its child', async (
   while (isProcessAlive(childPid) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
   assert.equal(isProcessAlive(childPid), false);
 });
+
+test('append/save failures roll back acceptance so identical requests can safely retry', async t => {
+  for (const failurePoint of ['append', 'save']) {
+    const { manager, executor, store, input } = setup(t);
+    const message = input();
+    const original = store[failurePoint].bind(store);
+    store[failurePoint] = () => { throw new Error('Simulated disk failure'); };
+    await assert.rejects(manager.start(message), { code: 'PERSISTENCE_FAILED' });
+    assert.equal(Object.keys(store.state.runs).length, 0);
+    assert.equal(Object.hasOwn(store.state.requests, message.request_id), false);
+    await tick(); assert.equal(executor.calls.length, 0);
+    store[failurePoint] = original;
+    const started = await manager.start(message);
+    assert.equal(started.deduplicated, false); await tick(); executor.complete(0);
+    const session = manager.session(started.session_id);
+    const next = { request_id: randomUUID(), session_id: session.id, prompt: 'retry send' };
+    store[failurePoint] = () => { throw new Error('Simulated disk failure'); };
+    await assert.rejects(manager.send(next), { code: 'PERSISTENCE_FAILED' });
+    assert.equal(session.active_run_id, null);
+    assert.equal(session.last_run_id, started.run_id);
+    store[failurePoint] = original;
+    const retried = await manager.send(next);
+    assert.equal(retried.deduplicated, false); await tick(); executor.complete(1);
+    assert.equal(executor.calls.length, 2);
+  }
+});
+
+test('stale lock acquisition never removes or replaces another starter lock', async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'bridge-stale-lock-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const lockFile = path.join(root, 'bridge.lock');
+  const oldLock = JSON.stringify({ pid: -1, token: 'stale-token' });
+  writeFileSync(lockFile, oldLock, 'utf8');
+  assert.throws(() => new RuntimeStore(root), { code: 'STALE_RUNTIME_LOCK' });
+  assert.throws(() => new RuntimeStore(root), { code: 'STALE_RUNTIME_LOCK' });
+  assert.equal(readFileSync(lockFile, 'utf8'), oldLock);
+});

@@ -111,12 +111,23 @@ export class SessionManager {
       timeout_ms: input.timeout_ms ?? this.defaultTimeoutMs, error: null, exit_code: null,
       completed_event: false, final_response: '', config_source: 'explicit_codex_cli_arguments',
     };
-    this.store.state.sessions[session.id] = session;
-    this.store.state.runs[run.id] = run;
-    Object.defineProperty(this.store.state.requests, input.request_id, { value: { fingerprint: hash, run_id: run.id }, enumerable: true, writable: true, configurable: true });
-    session.active_run_id = run.id; session.last_run_id = run.id;
-    this.store.append(run, 'message.sent', { sender: run.sender, text: input.prompt, model: run.model, reasoning: run.reasoning });
-    this.store.save();
+    const previousSession = Object.hasOwn(this.store.state.sessions, session.id) ? structuredClone(session) : null;
+    try {
+      this.store.state.sessions[session.id] = session;
+      this.store.state.runs[run.id] = run;
+      Object.defineProperty(this.store.state.requests, input.request_id, { value: { fingerprint: hash, run_id: run.id }, enumerable: true, writable: true, configurable: true });
+      session.active_run_id = run.id; session.last_run_id = run.id;
+      this.store.append(run, 'message.sent', { sender: run.sender, text: input.prompt, model: run.model, reasoning: run.reasoning });
+      this.store.save();
+    } catch {
+      // save() atomically replaces the snapshot only after all writes succeed.
+      // A leftover unreferenced log is diagnostic evidence, never a runnable job.
+      delete this.store.state.runs[run.id];
+      delete this.store.state.requests[input.request_id];
+      if (previousSession) Object.assign(session, previousSession);
+      else delete this.store.state.sessions[session.id];
+      throw new BridgeError('PERSISTENCE_FAILED', 'Could not durably accept this request. No process was launched. Retry the same request_id after fixing local storage.');
+    }
     // No process or model completion is awaited by a start/send tool call.
     setImmediate(() => {
       if (run.status === 'queued') this.launch(run, session, input.prompt);

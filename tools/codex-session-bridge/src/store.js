@@ -31,8 +31,9 @@ export class RuntimeStore {
       try { owner = JSON.parse(readFileSync(this.lockFile, 'utf8')); }
       catch { throw new BridgeError('RUNTIME_LOCKED', 'Runtime lock is unreadable. Inspect it before restarting.'); }
       if (isProcessAlive(owner.pid)) throw new BridgeError('RUNTIME_LOCKED', 'Another bridge owns this runtime directory.');
-      unlinkSync(this.lockFile);
-      this.acquire();
+      // Never unlink a stale lock during acquisition: another starter could have
+      // replaced it since our read, and we would delete that starter's live lock.
+      throw new BridgeError('STALE_RUNTIME_LOCK', 'A stale runtime lock remains. After verifying all bridge/run processes are stopped, move bridge.lock aside before restarting.');
     }
   }
 
