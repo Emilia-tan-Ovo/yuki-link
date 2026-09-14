@@ -137,7 +137,9 @@ test('git status and a literal file diff are read-only MCP operations', async t 
 
 test('Windows short names cannot bypass protected installation or Git paths', { skip: process.platform !== 'win32' }, t => {
   const repository = fileURLToPath(new URL('../../../', import.meta.url));
-  const policy = new PathPolicy([repository], [repository], path.join(repository, 'tools/codex-session-bridge/runtime'));
+  const runtime = mkdtempSync(path.join(os.tmpdir(), 'yuki-path-test-'));
+  t.after(() => rmSync(runtime, { recursive: true, force: true }));
+  const policy = new PathPolicy([repository], [repository], runtime);
   // Existing short names are probed as metadata only; no protected content is read.
   const aliases = [
     path.join(repository, 'tools/CODEX-~1/src/computer/query.ps1'),
