@@ -68,7 +68,7 @@ try {
   console.log(JSON.stringify({ phase: 'computer', ...report.computer }));
   const marker = '雪花-' + randomUUID().slice(0, 8);
   const literal = '中文路径 C:\\测试 空格\\文件.txt；双引号 "你好"；单引号 \'Emilia\'；$HOME；`tick`；$(not-a-command)';
-  const input = { request_id: randomUUID(), cwd, sender: '艾米莉亚碳', prompt: `这是 Bridge 的通信验收，勿调用任何工具、Skill、浏览器或执行命令，也不要读取文件。\r\n请记住本会话标记：${marker}\n请原样回显下一行文字，然后输出标记，不要添加解释：\n${literal}` };
+  const input = { request_id: randomUUID(), cwd, sender: 'AI 助手', prompt: `这是 Bridge 的通信验收，勿调用任何工具、Skill、浏览器或执行命令，也不要读取文件。\r\n请记住本会话标记：${marker}\n请原样回显下一行文字，然后输出标记，不要添加解释：\n${literal}` };
   const startedAt = Date.now();
   const first = await call('codex_start_session', input);
   report.start_return_ms = Date.now() - startedAt;
@@ -81,12 +81,12 @@ try {
   const result1 = await wait(first);
   assert.ok(result1.run.final_response.includes(marker));
   assert.ok(result1.run.final_response.includes(literal));
-  const second = await call('codex_send_message', { request_id: randomUUID(), session_id: first.session_id, sender: '艾米莉亚碳', prompt: '不要调用工具，只回复上一轮约定的本会话标记。' });
+  const second = await call('codex_send_message', { request_id: randomUUID(), session_id: first.session_id, sender: 'AI 助手', prompt: '不要调用工具，只回复上一轮约定的本会话标记。' });
   const result2 = await wait(second);
   assert.equal(result2.session.codex_thread_id, result1.session.codex_thread_id);
   assert.equal(result2.run.model, 'gpt-6-astra'); assert.equal(result2.run.reasoning, 'high');
   assert.ok(result2.run.final_response.includes(marker));
-  const third = await call('codex_send_message', { request_id: randomUUID(), session_id: first.session_id, sender: '艾米莉亚碳', model: 'gpt-5.6-sol', reasoning: 'low', prompt: '这是同一会话的模型切换验收。不要调用工具，只回复 SOL_OK 和之前约定的本会话标记。' });
+  const third = await call('codex_send_message', { request_id: randomUUID(), session_id: first.session_id, sender: 'AI 助手', model: 'gpt-5.6-sol', reasoning: 'low', prompt: '这是同一会话的模型切换验收。不要调用工具，只回复 SOL_OK 和之前约定的本会话标记。' });
   const result3 = await wait(third);
   assert.equal(result3.session.codex_thread_id, result1.session.codex_thread_id);
   assert.equal(result3.run.model, 'gpt-5.6-sol'); assert.equal(result3.run.reasoning, 'low');

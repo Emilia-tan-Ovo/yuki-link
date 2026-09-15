@@ -16,7 +16,7 @@
 
 包 metadata 自报来源为 `CursorTouch/Windows-MCP`、版本 `0.8.5`、MIT License、Python `>=3.12`。这是本地安装信息，不是联网核验结果。
 
-逐一比对 A、B、C 中的 65 个 Python 文件：三份一致，且全部符合各自 dist-info/RECORD 的 SHA-256 记录。未发现这些文件中的 Yuki / Emilia 专属标记，也未在此次搜索范围找到独立维护的 Yuki Windows Git 仓库。
+逐一比对 A、B、C 中的 65 个 Python 文件：三份一致，且全部符合各自 dist-info/RECORD 的 SHA-256 记录。未发现这些文件中的 项目专属标记，也未在此次搜索范围找到独立维护的 Yuki Windows Git 仓库。
 
 A 的 `windows_mcp/__main__.py` SHA-256：
 
@@ -48,7 +48,7 @@ Remote Desktop Commander 是 ChatGPT 中连接的外部插件，不属于我们�
 - 补查 `.cache`、Local Programs、Roaming 中相关名称，跳过依赖目录、常见缓存及重解析点。
 - 不全盘扫描文件内容，不读取凭证、设备身份、隧道配置内容或日志，不检查私有会话历史。未核验服务存活、隧道连通、客户端权限或控制行为。
 
-初始化前 `C:\Users\KQ_Sh\Desktop\yuki-link` 不存在，桌面不在其他 Git 工作树内，未发现阻止创建新骨架的目录冲突。
+初始化前仓库目标目录不存在，桌面不在其他 Git 工作树内，未发现阻止创建新骨架的目录冲突。
 
 ## 维护风险
 

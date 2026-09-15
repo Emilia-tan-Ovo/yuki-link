@@ -1,6 +1,6 @@
 # Yuki Computer Agent
 
-独立的前置开发工具，不属于 Emilia Link 正式 ticket，也不依赖 `core/` 或 `providers/`。
+独立的前置开发工具，不属于 yuki-link 正式 ticket，也不依赖 `core/` 或 `providers/`。
 
 保留 `tools/codex-session-bridge` 目录，避免迁移已有 session/runtime。Computer Agent 直接提供受控 PowerShell、文件和 Git 查询；Codex 模块只传输 prompt、管理 session/run、返回事件与回复。两条路径互不依赖：Codex 不可用不会阻止电脑工具启动。它不编排 Skills；调用方可在 prompt 中写 `$pair-with-docs`、`$implement`。会话由本工具新建并管理，不接管 Codex 桌面中正在运行的任务。
 
@@ -12,7 +12,7 @@
 
 ```powershell
 npm.cmd ci --ignore-scripts
-node src/main.js --transport http --allow-cwd 'C:\Users\KQ_Sh\Desktop\yuki-link'
+node src/main.js --transport http --allow-cwd 'C:\projects\yuki-link'
 ```
 
 HTTP 只绑定 `127.0.0.1`，默认 MCP 地址 `http://127.0.0.1:7391/mcp`，健康检查 `/healthz`。不监听局域网地址。仅信任本机调用方；远程接入必须由单独授权的 tunnel 保护。Host/Origin 校验阻止普通浏览器跨站请求和 DNS rebinding，不替代身份认证。
@@ -27,9 +27,9 @@ HTTP 只绑定 `127.0.0.1`，默认 MCP 地址 `http://127.0.0.1:7391/mcp`，健
 {
   "command": "node",
   "args": [
-    "C:\\Users\\KQ_Sh\\Desktop\\yuki-link\\tools\\codex-session-bridge\\src\\main.js",
+    "C:\\projects\\yuki-link\\tools\\codex-session-bridge\\src\\main.js",
     "--transport", "stdio",
-    "--allow-cwd", "C:\\Users\\KQ_Sh\\Desktop\\yuki-link"
+    "--allow-cwd", "C:\\projects\\yuki-link"
   ]
 }
 ```
@@ -126,10 +126,10 @@ npm.cmd run test:live
 
 ## 复用 Yuki Computer Agent tunnel
 
-沿用用户已配置并命名为 **Yuki Computer Agent** 的 tunnel：`tunnel_6aa7f14d51c4819184211aa70d09e10e`。本机目标 `http://127.0.0.1:7391/mcp`，客户端 `tunnel-client v0.0.14`。内部 runtime alias/profile 继续使用 `codex-session-bridge`；不创建新 tunnel/key，也不修改其他 Windows-MCP tunnel。
+沿用用户已配置并命名为 **Yuki Computer Agent** 的 tunnel（连接 ID 从本地配置获取，不记录在仓库中）。本机目标 `http://127.0.0.1:7391/mcp`，客户端 `tunnel-client v0.0.14`。内部 runtime alias/profile 继续使用 `codex-session-bridge`；不创建新 tunnel/key，也不修改其他 Windows-MCP tunnel。
 
-用户授权的本机凭据引用为 `file:C:\Users\KQ_Sh\select-key\yuki-computer-agent-key.txt`，仅 tunnel-client 读取用于认证；Agent 不读取它，不把内容加入 prompt、日志或 Git。名称变化不会要求重新生成 key；到期、撤销或损坏时才需要处理凭据。
+本机凭据引用由用户在本地配置，文档不记录实际存放路径，仅 tunnel-client 读取用于认证；Agent 不读取它，不把内容加入 prompt、日志或 Git。名称变化不会要求重新生成 key；到期、撤销或损坏时才需要处理凭据。
 
-ChatGPT 插件尚需用户创建：名称 **Yuki Computer Agent**，选择 Tunnel 连接并使用上述 ID；不填写 localhost 地址或粘贴 runtime key。创建后检查 13 个工具，并实际调用 `powershell`（`cwd` 为允许目录，`query` 为 `version`）及 `filesystem_read`（本 README 的绝对路径），最后执行 Codex start → get_output → send → get_output。tunnel ready 和本机测试不代表已完成 ChatGPT 端到端验收。后续增加工具通常复用相同连接，仅刷新工具元数据。
+ChatGPT 插件尚需用户创建：名称 **Yuki Computer Agent**，选择 Tunnel 连接并使用本地配置中的连接 ID；不填写 localhost 地址或粘贴 runtime key。创建后检查 13 个工具，并实际调用 `powershell`（`cwd` 为允许目录，`query` 为 `version`）及 `filesystem_read`（本 README 的绝对路径），最后执行 Codex start → get_output → send → get_output。tunnel ready 和本机测试不代表已完成 ChatGPT 端到端验收。后续增加工具通常复用相同连接，仅刷新工具元数据。
 
 参考：[Codex 非交互模式](https://learn.chatgpt.com/docs/non-interactive-mode)、[App Server](https://learn.chatgpt.com/docs/app-server)、[MCP SDK](https://github.com/modelcontextprotocol/typescript-sdk/tree/v1.x)、[Tunnel 接入](https://github.com/openai/tunnel-client/blob/master/docs/enterprise-customer-onboarding.md)。

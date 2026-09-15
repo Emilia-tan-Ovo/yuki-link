@@ -47,7 +47,7 @@ test('MCP directly queries PowerShell 7 even when Codex is unavailable', async t
 test('MCP creates, reads, updates with a hash, lists and moves a UTF-8 workspace file', async t => {
   const { workspace, call } = await connect(t);
   const file = path.join(workspace, '问候 [1].txt');
-  const content = '艾米莉亚碳 → 希尔薇酱 🌸\r\n"双引号" \'单引号\' $HOME `tick` C:\\中文 路径\\a.txt';
+  const content = 'AI 助手 → 协作助手 🌸\r\n"双引号" \'单引号\' $HOME `tick` C:\\中文 路径\\a.txt';
   const written = await call('filesystem_write', { path: file, content });
   assert.equal(written.isError, false);
   assert.equal(readFileSync(file, 'utf8'), content);

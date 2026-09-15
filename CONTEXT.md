@@ -1,12 +1,12 @@
-# Emilia Link
+# yuki-link
 
 连接个人设备与生活服务的统一能力系统。
 
 ## Language
 
-**Project Emilia Link**：项目的完整名称；`yuki-link` 是仓库名称。
+**yuki-link**：项目与仓库统一使用的名称。
 
-**Yuki Windows**：现有的 Windows 自定义接入名称；不等同于 Windows-MCP 上游项目，也不等同于整个 Emilia Link。
+**Yuki Windows**：现有的 Windows 自定义接入名称；不等同于 Windows-MCP 上游项目，也不等同于整个 yuki-link。
 
 **设备（Device）**：用户可以连接并执行操作的具体电脑或手机；设备类型并不决定生活能力的归属。
 

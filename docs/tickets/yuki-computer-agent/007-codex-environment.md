@@ -1,6 +1,6 @@
 # YCA-007 — 在 Codex 会话中实际使用 Skill 和 Context7
 
-**What to build:** 艾米莉亚在采用原生权限的同一 Codex session 内，完成实际 Skill 使用及 Context7 调用，并知道其他本机 MCP/Plugins 到底处于安装、识别、加载还是已调用状态。
+**What to build:** AI 助手在采用原生权限的同一 Codex session 内，完成实际 Skill 使用及 Context7 调用，并知道其他本机 MCP/Plugins 到底处于安装、识别、加载还是已调用状态。
 
 **Blocked by:** YCA-006 — Codex 原生权限选择、继承与旧会话兼容；需要其实际可操作且可继承模式的 session 来完成同会话验收。
 

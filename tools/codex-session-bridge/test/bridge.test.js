@@ -23,7 +23,7 @@ class FakeExecutor {
     callbacks.onSpawn(null);
     return { stop: async () => { callbacks.onDone({ code: 1, signal: null, error: null }); } };
   }
-  complete(index, text = '希尔薇回复 🌸') {
+  complete(index, text = '协作助手回复 🌸') {
     const { session, callbacks } = this.calls[index];
     callbacks.onEvent({ type: 'thread.started', thread_id: session.codex_thread_id ?? randomUUID() });
     callbacks.onEvent({ type: 'item.completed', item: { type: 'agent_message', text } });
@@ -44,7 +44,7 @@ function setup(t, options = {}) {
   const store = new RuntimeStore(runtime);
   const manager = new SessionManager({ store, catalog, executor, allowedCwds: [cwd], ...options });
   t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
-  const input = () => ({ cwd, request_id: randomUUID(), prompt: '你好\r\n"引号" $HOME `tick` C:\\中文 空格\\a.txt', sender: '艾米莉亚碳' });
+  const input = () => ({ cwd, request_id: randomUUID(), prompt: '你好\r\n"引号" $HOME `tick` C:\\中文 空格\\a.txt', sender: 'AI 助手' });
   return { root, cwd, runtime, catalog, executor, store, manager, input };
 }
 
@@ -148,7 +148,7 @@ test('runtime lock prevents a second writer and recovery refuses live orphan PID
 });
 
 test('UTF-8 split byte streams, multiline input and shell metacharacters round-trip through a native process', async () => {
-  const payload = '桓宇 🌸\r\n"double" \'single\' $HOME `tick` $(never) & | C:\\中文 空格\\文件.txt';
+  const payload = '用户 🌸\r\n"double" \'single\' $HOME `tick` $(never) & | C:\\中文 空格\\文件.txt';
   const child = spawnDirect(process.execPath, ['-e', 'process.stdin.on("data",b=>process.stdout.write(b));process.stdin.on("end",()=>process.stderr.write("独立错误流"));']);
   const chunks = []; const stderr = [];
   child.stdout.on('data', b => chunks.push(b)); child.stderr.on('data', b => stderr.push(b));
@@ -182,7 +182,7 @@ test('real MCP HTTP clients reconnect to durable runs; host/origin checks and ex
   const next = new Client({ name: 'reconnected', version: '1' });
   await next.connect(new StreamableHTTPClientTransport(url));
   const output = await next.callTool({ name: 'codex_get_output', arguments: { run_id } });
-  assert.equal(output.structuredContent.final_response, '希尔薇回复 🌸');
+  assert.equal(output.structuredContent.final_response, '协作助手回复 🌸');
   const invalid = await next.callTool({ name: 'codex_start_session', arguments: { ...input(), reasoning: 'imaginary' } });
   assert.equal(invalid.isError, true); assert.equal(invalid.structuredContent.error.code, 'UNSUPPORTED_REASONING');
   const forbidden = await fetch(url, { method: 'POST', headers: { origin: 'https://attacker.invalid', 'content-type': 'application/json' }, body: '{}' });
