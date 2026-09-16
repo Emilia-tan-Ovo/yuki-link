@@ -6,6 +6,8 @@ import { BridgeError } from '../errors.js';
 // The JavaScript realpath implementation preserves Windows 8.3 names.
 const canonicalPath = realpathSync.native;
 const installation = canonicalPath(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'));
+const controlInstallation = path.resolve(installation, '../control-center');
+const controlConfiguration = path.resolve(installation, '../../.local/control-center');
 const inside = (root, target) => {
   const relative = path.relative(root, target);
   return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
@@ -27,7 +29,8 @@ export class PathPolicy {
     if (parts.some(part => secretName.test(part))) throw new BridgeError('PROTECTED_PATH', 'Credential, agent configuration, Git metadata and runtime paths are protected.');
     if (process.platform === 'win32' && parts.some(part => /[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) throw new BridgeError('INVALID_PATH', 'Ambiguous Windows filename.');
     if (inside(this.runtime, target)) throw new BridgeError('PROTECTED_PATH', 'Agent runtime is private.');
-    if (write && (inside(installation, target) || /^(?:AGENTS|CLAUDE)\.md$/i.test(path.basename(target)))) throw new BridgeError('PROTECTED_PATH', 'The agent installation and instruction files cannot be changed through these tools.');
+    if (inside(controlConfiguration, target)) throw new BridgeError('PROTECTED_PATH', 'Local control configuration is private.');
+    if (write && (inside(installation, target) || inside(controlInstallation, target) || /^(?:AGENTS|CLAUDE)\.md$/i.test(path.basename(target)))) throw new BridgeError('PROTECTED_PATH', 'The agent installation and instruction files cannot be changed through these tools.');
     const roots = write ? this.writeRoots : this.readRoots;
     if (!roots.some(root => inside(root, target))) throw new BridgeError('PATH_NOT_ALLOWED', 'Path is outside the permitted directories.');
     // Walk every component, including junctions. Never follow a user-created link.

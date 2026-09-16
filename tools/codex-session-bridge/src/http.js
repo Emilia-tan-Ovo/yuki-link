@@ -2,7 +2,7 @@ import http from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpServer } from './mcp.js';
 
-export function createHttpServer(manager, computer) {
+export function createHttpServer(manager, computer, observation = {}) {
   return http.createServer(async (request, response) => {
     // Loopback binding alone does not protect against browser DNS rebinding.
     const host = request.headers.host ?? '';
@@ -17,10 +17,12 @@ export function createHttpServer(manager, computer) {
       response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ status: manager.closing ? 'stopping' : 'ok', service: 'yuki-computer-agent', version: '0.2.0' })); return;
     }
     if (request.url !== '/mcp') { response.writeHead(404).end(); return; }
+    if (observation.draining) { response.writeHead(503).end('Stopping'); return; }
     if (request.method !== 'POST') { response.writeHead(405, { Allow: 'POST' }).end(); return; }
     if (!request.headers['content-type']?.startsWith('application/json')) { response.writeHead(415).end(); return; }
     let bytes = 0;
     const chunks = [];
+    observation.active = (observation.active ?? 0) + 1;
     try {
       for await (const chunk of request) {
         bytes += chunk.length;
@@ -39,6 +41,6 @@ export function createHttpServer(manager, computer) {
     } catch {
       if (!response.headersSent) response.writeHead(500).end('MCP request failed');
       else response.end();
-    }
+    } finally { observation.active--; }
   });
 }

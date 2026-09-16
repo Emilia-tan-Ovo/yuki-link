@@ -31,6 +31,7 @@ providers/
 tests/                          后续契约与调用流程测试
 docs/                           盘点、结构设计与本地 ticket
 tools/codex-session-bridge/      独立前置工具：直接电脑操作与 Codex 会话通信
+tools/control-center/            本地服务控制页与 Supervisor（正式部署待授权验收）
 ```
 
 `computer`、`phone` 是设备 provider 分类；`alarm`、`ride`、`food`、`expense` 是 capability/service 分类。手机只是某种执行途径，不能决定能力的归属。
@@ -42,6 +43,7 @@ tools/codex-session-bridge/      独立前置工具：直接电脑操作与 Code
 - [结构与依赖方向](docs/architecture.md)
 - [Ticket 001：建立 Yuki Windows 可复现源码基线](docs/tickets/001-yuki-windows-baseline.md)
 - [Yuki Computer Agent：安装、工具与实际验证边界](tools/codex-session-bridge/README.md)
+- [Control Center V0：打开入口、恢复、自启与回滚](tools/control-center/README.md)
 - [YCA-001：真实 PowerShell 短脚本闭环](docs/tickets/yuki-computer-agent/001-powershell-execution.md)
 
 前置工具独立于 `core/` 和 `providers/`，沿用既有连接和 runtime；其交付不启动正式 yuki-link 基线票，也不表示统一核心已经实现。具体能力及尚未完成的验收以工具说明和对应票据为准。

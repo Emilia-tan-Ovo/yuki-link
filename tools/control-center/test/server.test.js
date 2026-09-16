@@ -1,0 +1,31 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import { createServer } from '../src/server.js';
+
+test('loopback management requires session, exact Origin, CSRF and fixed actions; diagnostic omits token', async t => {
+  const calls = [];
+  const supervisor = { snapshot: () => ({ version: 'test', units: {}, events: [] }), action: async (...args) => calls.push(args) };
+  const server = createServer(supervisor);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.close(); server.closeAllConnections(); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  assert.equal((await fetch(base + '/api/status')).status, 403);
+  const page = await fetch(base); const cookie = page.headers.get('set-cookie').split(';')[0];
+  assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/);
+  const state = await (await fetch(base + '/api/status', { headers: { cookie } })).json();
+  const headers = { cookie, origin: base, 'x-csrf-token': state.csrf, 'content-type': 'application/json' };
+  const send = (extra = {}, body = { id: 'all', action: 'start' }) => fetch(base + '/api/action', { method: 'POST', headers: { ...headers, ...extra }, body: JSON.stringify(body) });
+  assert.equal((await send({ origin: 'https://evil.example' })).status, 403);
+  assert.equal((await send({ 'x-csrf-token': 'bad' })).status, 403);
+  assert.equal((await send({ cookie: 'yuki_cc=' + 'é'.repeat(64) })).status, 403);
+  assert.equal((await send({ origin: '' })).status, 403);
+  assert.equal((await send({}, { id: 'yca', action: 'start', command: 'evil' })).status, 400);
+  assert.equal((await fetch(base + '/api/action', { headers })).status, 405);
+  assert.equal((await send()).status, 200); assert.equal(calls.length, 1);
+  const diagnostic = await (await fetch(base + '/api/diagnostic', { headers: { cookie } })).text();
+  assert.ok(!diagnostic.includes(state.csrf)); assert.ok(!diagnostic.includes(cookie));
+  const status = await new Promise(resolve => { const req = http.get(base + '/', { headers: { Host: 'evil.example' } }, r => { r.resume(); resolve(r.statusCode); }); req.on('error', e => { throw e; }); });
+  assert.equal(status, 403);
+  const duplicate = createServer(supervisor); await assert.rejects(new Promise((resolve, reject) => { duplicate.on('error', reject); duplicate.listen(server.address().port, '127.0.0.1', resolve); }), { code: 'EADDRINUSE' });
+});

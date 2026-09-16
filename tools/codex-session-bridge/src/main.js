@@ -10,6 +10,7 @@ import { createMcpServer } from './mcp.js';
 import { createHttpServer } from './http.js';
 import { publicError } from './errors.js';
 import { ComputerTools } from './computer/tools.js';
+import { createDiagnostics, toolSummary } from './diagnostics.js';
 
 const toolRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { values } = parseArgs({ options: {
@@ -21,6 +22,8 @@ const { values } = parseArgs({ options: {
   'pwsh-bin': { type: 'string', default: process.platform === 'win32' ? 'pwsh.exe' : 'pwsh' },
   'codex-bin': { type: 'string', default: 'codex' },
   help: { type: 'boolean', default: false },
+  'control-port': { type: 'string' },
+  'control-instance': { type: 'string' },
 } });
 
 if (values.help) {
@@ -29,6 +32,8 @@ if (values.help) {
   let store;
   let manager;
   let computer;
+  let httpServer;
+  let controlServer;
   try {
     if (!values['allow-cwd']?.length || !['stdio', 'http'].includes(values.transport)) throw new Error('Specify --allow-cwd and a supported --transport.');
     if (!path.isAbsolute(values.runtime) || [...values['allow-cwd'], ...(values['read-root'] ?? [])].some(p => !path.isAbsolute(p))) throw new Error('Runtime and allowlist paths must be absolute.');
@@ -40,13 +45,14 @@ if (values.help) {
     manager = new SessionManager({ store, catalog, executor: new CodexExecutor(values['codex-bin']), allowedCwds: values['allow-cwd'] });
     computer = new ComputerTools({ readRoots: [...values['allow-cwd'], ...(values['read-root'] ?? [])], writeRoots: values['allow-cwd'], runtime: values.runtime, pwsh: values['pwsh-bin'] });
     let server;
-    let httpServer;
+    const observation = { active: 0 };
     let shuttingDown = false;
     const shutdown = async () => {
       if (shuttingDown) return;
       shuttingDown = true;
       try {
         if (httpServer) { httpServer.close(); httpServer.closeIdleConnections(); }
+        if (controlServer) { controlServer.close(); controlServer.closeIdleConnections(); }
         await manager.close();
         await computer.close();
         if (server) await server.close();
@@ -56,8 +62,17 @@ if (values.help) {
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
     if (values.transport === 'http') {
-      httpServer = createHttpServer(manager, computer);
+      httpServer = createHttpServer(manager, computer, observation);
       await new Promise((resolve, reject) => { httpServer.once('error', reject); httpServer.listen(port, '127.0.0.1', resolve); });
+      if (values['control-port']) {
+        const controlPort = Number(values['control-port']);
+        if (!Number.isInteger(controlPort) || controlPort < 1 || controlPort > 65535 || !values['control-instance']) throw new Error('Invalid local control configuration.');
+        const controlToken = process.env.YUKI_CONTROL_TOKEN;
+        delete process.env.YUKI_CONTROL_TOKEN; // Do not propagate control credentials to tools/Codex.
+        controlServer = createDiagnostics({ manager, computer, instance: values['control-instance'], token: controlToken,
+          summary: await toolSummary(), requests: () => observation.active, shutdown, drain: () => { observation.draining = true; } });
+        await new Promise((resolve, reject) => { controlServer.once('error', reject); controlServer.listen(controlPort, '127.0.0.1', resolve); });
+      }
       console.error(`Yuki Computer Agent ready at http://127.0.0.1:${port}/mcp`);
     } else {
       server = createMcpServer(manager, computer);
@@ -67,6 +82,8 @@ if (values.help) {
       console.error('Yuki Computer Agent ready on stdio');
     }
   } catch (error) {
+    httpServer?.close(); httpServer?.closeAllConnections();
+    controlServer?.close(); controlServer?.closeAllConnections();
     console.error(JSON.stringify(publicError(error)));
     if (manager) await manager.close();
     else store?.close();
