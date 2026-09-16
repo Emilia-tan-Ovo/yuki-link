@@ -2,7 +2,7 @@
 
 面向用户与 AI 助手的统一 MCP / Bridge 项目。以统一核心连接设备与生活服务，让同一项能力可以由不同设备或服务提供。
 
-**当前状态：统一核心与 provider 仍是项目骨架；独立前置工具 Yuki Computer Agent 已有可运行的 MCP / Codex Bridge。** 前置工具位于 `tools/codex-session-bridge`，提供固定 PowerShell 查询、真实短脚本、专用文件/Git 工具及 Codex 会话通信。YCA-001 的 ChatGPT 既有连接验收仍待执行；正式 yuki-link 的首张基线票尚未启动。
+**当前状态：统一核心与 provider 仍是项目骨架；独立前置工具 Yuki Computer Agent 已有可运行的 MCP / Codex Bridge。** 前置工具位于 `tools/codex-session-bridge`，提供固定 PowerShell 查询、真实短脚本、专用文件/Git 工具及 Codex 会话通信。YCA-001 的本机回归与 ChatGPT 端验收已通过，待 PR 审阅与合并；正式 yuki-link 的首张基线票尚未启动。
 
 ## 三者的区别
 

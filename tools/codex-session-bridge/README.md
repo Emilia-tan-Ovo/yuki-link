@@ -186,7 +186,7 @@ npm.cmd run test:live
 
 常规测试不调用模型，包含真实 MCP HTTP/stdio 客户端、PowerShell 短脚本文件闭环、退出语义、部分输出、Windows 自有进程树终止、最小故障注入、断线不重放、临时文件/Git 仓库及既有 Bridge 回归。独立 stdio 服务用无效 `--codex-bin` 验证直接能力不依赖 Codex。`test:live` 是另外的显式联网验收，会使用 CLI 当前登录和模型额度；YCA-001 不需要运行它。
 
-YCA-001 本机验证与 ChatGPT 验收分别记录：当前新增脚本已做本机针对性验证；常驻服务尚未由本次实施重启，真实 ChatGPT 经既有连接调用新工具的验收仍待执行，不由本机测试或健康检查代替。交付加载新代码并刷新工具元数据后，按 [YCA-001](../../docs/tickets/yuki-computer-agent/001-powershell-execution.md) 的可复现方式验收；不重建 tunnel/key，不清空历史。
+YCA-001 本机回归 39/39 通过；2026-09-16 用户确认 ChatGPT → Yuki Computer Agent → PowerShell 7 的真实验收通过，全程未经过 Codex。中文/引号/多行文件闭环、两流与退出语义、超时/超限部分输出及四种旧查询均通过，详见 [YCA-001 验收记录](../../docs/tickets/yuki-computer-agent/001-powershell-execution.md#本地实现与验收状态)。输出超限用例的根进程已退出，但 `tree_kill=unconfirmed`，保留这一未确认状态；超时用例则确认 `tree_kill=succeeded`。本机结果与用户提供的 ChatGPT 验收证据分别记录。
 
 真实验收报告保存在 `runtime/live-<timestamp>/acceptance.json`；不会提交实际会话记录。此次初始本机验收三轮均成功，使用同一个 Codex thread。这不表示每个 reasoning 档位都已实际请求过。
 
@@ -196,6 +196,8 @@ YCA-001 本机验证与 ChatGPT 验收分别记录：当前新增脚本已做本
 
 本机凭据引用由用户在本地配置，文档不记录实际存放路径，仅 tunnel-client 读取用于认证；Agent 不读取它，不把内容加入 prompt、日志或 Git。名称变化不会要求重新生成 key；到期、撤销或损坏时才需要处理凭据。
 
-沿用现有 **Yuki Computer Agent** ChatGPT 连接，不重新创建插件、tunnel 或 key。加载本次代码后应发现 14 个工具，其中 `powershell` 仍为固定查询，`powershell_execute` 为新脚本入口。刷新工具元数据后，通过 ChatGPT 实际创建、修改、读取唯一验收目录中的文件，再核对错误、超时/超限结果；A1 全程不调用 Codex 模型。tunnel ready、本机测试及工具发现均不代表 ChatGPT 脚本验收已完成。Codex 协作验收属于独立后续安排。
+继续复用现有 **Yuki Computer Agent** tunnel 和 key。YCA-001 交付时，本机已暴露 14 个工具，但 ChatGPT 端插件刷新后仍只有旧 13 个；用户删除后重新安装插件，才加载到包含 `powershell_execute` 的完整清单。遇到同类情况应以实际工具清单和新对话调用为准，必要时重装 ChatGPT 端插件并选择原 tunnel，不重建 tunnel/key，不清空 runtime。
+
+加载后应发现 14 个工具，其中 `powershell` 仍为固定查询，`powershell_execute` 为新脚本入口。通过 ChatGPT 实际创建、修改、读取唯一验收目录中的文件，再核对错误、超时/超限结果；A1 全程不调用 Codex 模型。tunnel ready、本机测试及工具发现不能单独替代 ChatGPT 脚本验收。YCA-001 本次实际验收已通过，Codex 协作验收属于独立后续安排。
 
 参考：[Codex 非交互模式](https://learn.chatgpt.com/docs/non-interactive-mode)、[App Server](https://learn.chatgpt.com/docs/app-server)、[MCP SDK](https://github.com/modelcontextprotocol/typescript-sdk/tree/v1.x)、[Tunnel 接入](https://github.com/openai/tunnel-client/blob/master/docs/enterprise-customer-onboarding.md)。

@@ -4,7 +4,7 @@
 
 **Blocked by:** None — 无技术阻塞；本轮首推的 A1 独立交付。
 
-**Status:** ready-for-agent — 设计已确认，本票本地实现与自动化验证已完成；常驻服务加载新代码及 ChatGPT 既有连接验收待执行，验收项保持未勾选，不代表整票已验收。
+**Status:** 验收通过，待 PR 审阅与合并 — 本地实现、自动化回归及用户确认的 ChatGPT 端验收均已完成；下方分别记录两类验证证据。
 
 **GitHub Issue:** [#1](https://github.com/Emilia-tan-Ovo/yuki-link/issues/1) — 已发布并复读核验，标签 `ready-for-agent`。
 
@@ -19,13 +19,13 @@
 
 ## 验收标准
 
-- [ ] A1-AC1：ChatGPT → 现有 YCA 连接 → PowerShell，创建、修改、读取验收文件，返回与实际文件一致的内容；全程无 Codex 模型调用。
-- [ ] A1-AC2：实际 PowerShell 执行覆盖中文内容、中文/空格路径、单双引号与多行脚本；只做转义函数或 Node 回显测试不算完成。
-- [ ] A1-AC3：成功返回 stdout、stderr 和真实退出状态；先向两路输出写入不同标记再非零退出，两路已捕获内容和非零退出码都可取回。
-- [ ] A1-AC4：覆盖 PowerShell 错误与原生命令非零退出，按明确退出语义报告结果；不把 stderr 非空直接等同失败，也不伪造成功。
-- [ ] A1-AC5：先输出标记再超时、先输出标记再超过输出限制，两类调用分别报告原因，尽可能保留部分输出，说明截断/中断以及自有进程结束情况。
-- [ ] A1-AC6：Codex 不可用条件下直接调用仍成功；现有固定查询、文件/Git 查询及受影响通信行为通过针对性回归。
-- [ ] 未确认结果不会自动重新执行脚本；保留必要审计和错误信息，既有连接、认证及运行历史不被重建或删除。
+- [x] A1-AC1：ChatGPT → 现有 YCA 连接 → PowerShell，创建、修改、读取验收文件，返回与实际文件一致的内容；全程无 Codex 模型调用。
+- [x] A1-AC2：实际 PowerShell 执行覆盖中文内容、中文/空格路径、单双引号与多行脚本；只做转义函数或 Node 回显测试不算完成。
+- [x] A1-AC3：成功返回 stdout、stderr 和真实退出状态；先向两路输出写入不同标记再非零退出，两路已捕获内容和非零退出码都可取回。
+- [x] A1-AC4：覆盖 PowerShell 错误与原生命令非零退出，按明确退出语义报告结果；不把 stderr 非空直接等同失败，也不伪造成功。
+- [x] A1-AC5：先输出标记再超时、先输出标记再超过输出限制，两类调用分别报告原因，尽可能保留部分输出，说明截断/中断以及自有进程结束情况。
+- [x] A1-AC6：Codex 不可用条件下直接调用仍成功；现有固定查询、文件/Git 查询及受影响通信行为通过针对性回归。
+- [x] 未确认结果不会自动重新执行脚本；保留必要审计和错误信息，既有连接、认证及运行历史不被重建或删除。
 
 ## 可复现验收方式
 
@@ -44,7 +44,17 @@
 
 2026-09-16：新增 `powershell_execute` 并复用共享执行生命周期，保留查询兼容、部分输出、退出与停止状态；已同步根 README 和工具 README。`npm.cmd test` **39/39 通过、0 跳过**，修改的 JavaScript 通过 `node --check`，README JSON 示例解析通过。包括真实 MCP HTTP/stdio、PowerShell 文件闭环/错误语义、自有父子进程终止、最小故障注入、服务关闭时对存活自有进程的有限期收尾、断开不重放及现有 Bridge/文件/Git 回归；未运行付费模型矩阵。
 
-独立 stdio 服务实际使用 PowerShell 7.6.5，并在无效 `--codex-bin` 下成功执行脚本。本机证据不替代真实 ChatGPT 验收：本次尚未重启常驻服务、迁移连接或更新远端验收状态，待获准加载新代码并由 ChatGPT 经既有连接复现后再记录端到端结果。
+本机回归的独立 stdio 服务使用 PowerShell 7.6.5，并在无效 `--codex-bin` 下成功执行脚本。后续已加载实现提交 `35491db`，恢复原 tunnel，保留密钥引用及运行历史。本机测试与以下 ChatGPT 端验收分别记录。
+
+**ChatGPT 端验收（2026-09-16，依据用户提供的验收结果）：通过。** 工具列表为 14 个，包含 `powershell_execute`；实际链路为 ChatGPT → Yuki Computer Agent → PowerShell 7，全程未经过 Codex。
+
+- 中文、空格路径、单双引号、多行脚本与 cwd 均正常；通过脚本创建、写入、读取、追加修改并再次读取临时文件，最终清理返回 `CLEANUP_OK=True`。
+- stdout/stderr 均保留；存在非终止 stderr 且最终 `exit_code=0` 时仍成功。PowerShell 执行错误返回 `PROCESS_EXIT_FAILED`；原生命令显式退出 7 保留真实退出码、失败前两流及嵌套 `error.details.result`。
+- `timeout_ms=1000` 执行 Sleep 5 秒触发 `QUERY_TIMEOUT`；两流前缀保留，`completion_reason=timeout`、`incomplete=true`、`termination.requested=true`、`tree_kill=succeeded`，最终 `process_state=exited`。
+- 超过 1 MiB 输出触发 `OUTPUT_LIMIT`，`limit_bytes=1048576`、`stdout_bytes=1048576`、`stdout_truncated=true`、`incomplete=true`；保留预算内输出，敏感形状样本被 `[REDACTED]`，最终 `process_state=exited`。该用例同时观察到 `exit_code=0` 与 `termination.tree_kill=unconfirmed`：根进程已退出，但整树终止未确认，不能改记为 succeeded；仍按输出超限判失败。超时用例已独立验证树终止成功，用户确认此观察不阻塞合并。
+- 旧 `powershell` 的 `version`、`location`、`system`、`processes` 四种查询均通过；Codex 不可用、文件/Git 兼容、断开不重放及故障注入由上述本机回归覆盖。
+
+**插件加载经验：** 本次刷新后仍只有旧 13 个工具，用户删除后重新安装 ChatGPT 端插件，才发现 `powershell_execute` 并完成验收；继续复用原 Yuki Computer Agent tunnel/key。后续交付应实际核对工具清单与调用，不把刷新操作本身视为新工具已加载。
 
 ## ticket-design 建议
 
