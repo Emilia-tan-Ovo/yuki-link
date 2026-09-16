@@ -2,11 +2,11 @@
 
 独立的前置开发工具，不属于 yuki-link 正式 ticket，也不依赖 `core/` 或 `providers/`。
 
-保留 `tools/codex-session-bridge` 目录，避免迁移已有 session/runtime。Computer Agent 直接提供受控 PowerShell、文件和 Git 查询；Codex 模块只传输 prompt、管理 session/run、返回事件与回复。两条路径互不依赖：Codex 不可用不会阻止电脑工具启动。它不编排 Skills；调用方可在 prompt 中写 `$pair-with-docs`、`$implement`。会话由本工具新建并管理，不接管 Codex 桌面中正在运行的任务。
+保留 `tools/codex-session-bridge` 目录，避免迁移已有 session/runtime。Computer Agent 直接提供固定 PowerShell 查询、真实短脚本及专用文件/Git 工具；Codex 模块只传输 prompt、管理 session/run、返回事件与回复。两条路径互不依赖：Codex 不可用不会阻止电脑工具启动。它不编排 Skills；调用方可在 prompt 中写 `$pair-with-docs`、`$implement`。会话由本工具新建并管理，不接管 Codex 桌面中正在运行的任务。
 
 ## 本机启动
 
-要求 Node.js 24+；电脑查询使用 PowerShell 7、Git。Codex 功能另外需要可执行的 CLI 及其既有登录，已验证 CLI `0.154.0-alpha.6.2`。Agent 不读取、复制或保存 Codex 凭据。
+要求 Node.js 24+；电脑查询使用 PowerShell 7、Git，真实脚本入口要求 PowerShell 7.4+ 的原生命令错误语义，已在独立服务进程验证 7.6.5。Codex 功能另外需要可执行的 CLI 及其既有登录，历史验证 CLI 为 `0.154.0-alpha.6.2`。Agent 不读取、复制或保存 Codex 凭据。
 
 在本目录运行（Windows 使用 PowerShell 7）：
 
@@ -17,7 +17,7 @@ node src/main.js --transport http --allow-cwd 'C:\projects\yuki-link'
 
 HTTP 只绑定 `127.0.0.1`，默认 MCP 地址 `http://127.0.0.1:7391/mcp`，健康检查 `/healthz`。不监听局域网地址。仅信任本机调用方；远程接入必须由单独授权的 tunnel 保护。Host/Origin 校验阻止普通浏览器跨站请求和 DNS rebinding，不替代身份认证。
 
-可重复传入 `--allow-cwd` 添加管理员允许的工作目录。路径会取真实路径再校验，包含子目录，拒绝越界和指向允许目录之外的 junction/symlink。远端工具没有修改 allowlist、执行任意命令或传入 CLI flags 的能力。
+可重复传入 `--allow-cwd` 添加管理员允许的工作目录。路径会取真实路径再校验，包含子目录，拒绝越界和 junction/symlink。脚本入口仍校验 cwd，但这不是脚本的访问沙箱：脚本实际读写、原生命令和外部访问受运行账号与系统权限影响。工具不提供任意 CLI flags 或提权开关，不增加额外批准机制。
 
 `--allow-cwd` 同时限定 Codex 工作目录和文件写入范围。`--read-root` 可重复添加额外只读目录。其他本地参数：`--port`、`--runtime`（绝对路径）、`--codex-bin`、`--pwsh-bin`。未指定 allowlist 时拒绝启动。`--help` 查看参数。
 
@@ -47,6 +47,7 @@ HTTP 只绑定 `127.0.0.1`，默认 MCP 地址 `http://127.0.0.1:7391/mcp`，健
 | `codex_get_output` | `run_id, cursor?, limit?` | 事件、`next_cursor`、`has_more`、最终回复 |
 | `codex_stop_session` | `session_id` | 停止进度，需继续查状态 |
 | `powershell` | `cwd, query, timeout_ms?` | `operation_id, exit_code, stdout, stderr, data` |
+| `powershell_execute` | `cwd, script, timeout_ms?` | 执行结果；失败时位于 `error.details.result`，包含部分输出及终止信息 |
 | `filesystem_list` | `path, cursor?, limit?` | 分页普通文件/目录，隐藏受保护项 |
 | `filesystem_read` | `path` | UTF-8 内容、字节数、SHA-256 |
 | `filesystem_write` | `path, content, expected_sha256?` | 创建或按原内容哈希更新 |
@@ -58,13 +59,76 @@ HTTP 只绑定 `127.0.0.1`，默认 MCP 地址 `http://127.0.0.1:7391/mcp`，健
 
 `powershell` 的 `query` 当前只支持 `version`、`location`、`system`、`processes` 四种只读查询。它直接启动 PowerShell 7，不经过 Codex；固定 `.ps1` 接收 UTF-8 JSON stdin，不接受任意脚本、CMD 或动态表达式。查询最长 30 秒、输出总量 1 MiB、并发最多四个。`processes` 只返回前 200 个进程的名称/ID/资源用量，不返回命令行或环境变量。
 
+`powershell_execute` 是独立的可写、非幂等工具，可能产生破坏性操作及访问外部环境。`script` 必填且非空白，不接受 `query` 或额外输入字段。`cwd` 为现有允许目录，单独作为进程工作目录；原样脚本文本通过 UTF-8 JSON stdin 送入固定入口，整体解析执行，不拼入命令行。保留 LF/CRLF、中文、单双引号及多行语法。仅支持短时非交互调用；stdin 已被请求消费，不能使用交互提示，也不能依赖用户脚本文件的 `$PSScriptRoot`。实际进程使用 `-NoProfile -NonInteractive`，不修改全局 PowerShell 配置。
+
+| 预算 | 值 |
+| --- | --- |
+| 脚本默认执行时长 | 30,000 ms |
+| 固定查询默认执行时长 | 10,000 ms |
+| 两入口可设执行时长 | 1,000～30,000 ms |
+| 脚本文本 | 最多 128 KiB UTF-8 字节；HTTP 整体请求仍受 1 MiB 限制 |
+| 输出 | stdout、stderr 合计最多 1 MiB 原始字节 |
+| 并发 | 脚本、查询及 Git 执行共享 4 个自有执行名额；繁忙时报错，不排队 |
+| 终止收尾 | 触发终止后合计最多 5 秒，包含终止操作及管道收齐，不叠加等待 |
+
+这些是执行和收尾预算，不是端到端网络延迟保证。A1 不提供运行中查询或主动停止接口；长任务管理留给 YCA-005。停止不回滚已经发生的文件或外部副作用。
+
+### 脚本示例与退出语义
+
+下面是 `powershell_execute` 的 JSON 输入示例。cwd 必须已经存在；脚本在其中创建唯一验收目录，创建、修改并读取中文文件：
+
+```json
+{
+  "cwd": "C:\\projects\\yuki-link",
+  "script": "$dir = Join-Path (Get-Location) ('A1 验收 ' + [guid]::NewGuid().ToString('N'))\nNew-Item -ItemType Directory -Path $dir | Out-Null\n$file = Join-Path $dir '中文 文件.txt'\n$text = '中文 \"双引号\" 与 ''单引号'''\nSet-Content -LiteralPath $file -Value $text -Encoding utf8 -NoNewline\nAdd-Content -LiteralPath $file -Value '：已修改' -Encoding utf8 -NoNewline\nGet-Content -LiteralPath $file -Raw -Encoding utf8",
+  "timeout_ms": 30000
+}
+```
+
+脚本入口默认设置 `ErrorActionPreference=Stop` 和 `PSNativeCommandUseErrorActionPreference=true`。未处理的 PowerShell/解析错误退出 1；显式 `exit N` 和未处理的原生命令非零退出保留 N。脚本捕获并处理错误后可以正常结束；不根据 stderr 非空、历史错误记录或陈旧 LASTEXITCODE 判失败。
+
+例如 `[Console]::Error.WriteLine('诊断'); exit 0` 成功；`[Console]::Out.WriteLine('OUT'); [Console]::Error.WriteLine('ERR'); exit 7` 报失败但保留两路输出和退出码 7。需要接受某个原生命令的特定非零码时，在局部显式覆盖策略并自行判断，例如 Git diff 的 1 表示存在差异：
+
+```powershell
+& {
+    $PSNativeCommandUseErrorActionPreference = $false
+    git.exe diff --quiet
+    if ($LASTEXITCODE -gt 1) { throw "git diff failed: $LASTEXITCODE" }
+    if ($LASTEXITCODE -eq 1) { '存在差异' }
+}
+```
+
+这里只表示脚本按其有效错误策略正常结束，不保证每条命令都成功。显式改用 `-ErrorAction Continue` 或其他策略时，由脚本负责后续判断。UTF-8 文本按两条操作系统输出流返回，不提供 PowerShell 六类流的独立结构；任意旧原生程序自选编码或二进制输出不保证无损解码。
+
+### 失败、部分输出与结束情况
+
+成功结果直接包含执行对象；失败沿用 `isError:true` 及 `error.code/message/details`，完整执行对象在 `error.details.result`。text content 与 structuredContent 携带同样的 JSON。非零退出的既有 `details.exit_code/stderr` 字段保持可读。参数或开始审计失败等执行前错误没有执行对象；尝试启动失败则明确返回未启动、null 退出码与空输出。
+
+| 结果字段 | 含义 |
+| --- | --- |
+| `operation_id`, `stdout`, `stderr`, `exit_code`, `signal` | 本次标识、独立两路输出、实际 pwsh 退出码或 null、实际信号；不承诺跨流总顺序 |
+| `completion_reason` | `exited / timeout / output_limit / spawn_error / stdin_error / stream_error / shutdown`；超时/超限原因不会被停止造成的退出码覆盖 |
+| `process_state` | `not_started / running / exited`；只有观察到根进程退出才报告 exited |
+| `timeout_ms` | 此次采用的执行预算 |
+| `termination.requested`, `termination.tree_kill` | 是否请求停止；`not_requested / succeeded / failed / unconfirmed` 是自有树停止操作结果，与根进程退出分开报告；失败时附错误信息 |
+| `output` | `limit_bytes`、两流保留字节数、各流 `*_truncated`、`incomplete`、`redacted`；字节数按脱敏前计算 |
+| `audit` | `recorded / failed`；结束审计失败不覆盖已观察输出和退出状态 |
+
+`QUERY_TIMEOUT`、`OUTPUT_LIMIT` 会尽可能保留预算内的两流前缀；跨上限的 chunk 不整块丢弃，UTF-8 边界截断不制造乱码。超时表示中断，不一定发生输出截断。停止失败或尚未确认时如实返回，仍运行的根进程继续占用共享名额。根进程退出但后代未关闭管道时，也会有限期返回不完整输出，不能将此视作整棵进程树已结束。只读 Git 的敏感内容拒绝仍不附回被拒绝正文。
+
+后续服务关闭时，会对已返回结果但仍存活的自有根进程单独尝试一次停止，最多收尾 5 秒；仍不能确认停止则报告 `STOP_FAILED`。这不延长先前调用的预算，也不改写已返回的结果。
+
+输出沿用常见凭据格式脱敏；`redacted=true` 表示返回文本经过改写，不能把它当作逐字原始输出。审计只记录必要元数据，不写脚本文本、输出正文或环境。HTTP 断开不会自动重放脚本，operation_id 不提供去重或历史查询。未收到结果时先核对实际文件等事实，不无条件重发；工具的非幂等注解不是 exactly-once 保证。
+
+### 专用文件与 Git 工具
+
 文件工具仅支持最大 256 KiB 的 UTF-8 普通文件；父目录必须已经存在。拒绝 junction/symlink、硬链接、UNC/device 路径、ADS 和含凭据/配置/runtime 的受保护路径。写入另外保护 Agent 自身安装目录及 `AGENTS.md` / `CLAUDE.md`。现有文件更新必须带读取时取得的 `expected_sha256`；内容冲突会拒绝。常见凭据格式会被拒绝，但模式识别不能覆盖所有秘密，应只允许可信的工作目录。
 
-移动仅支持同卷且支持硬链接的文件系统，以先建立新文件名、再移除旧文件名实现不覆盖目标；中断可能留下两个名字，内容仍在，但需要本机恢复。没有目录移动、删除、创建链接或系统配置工具。路径校验基于可信的本机文件系统，不是抵御其他本机进程并发篡改路径的操作系统沙箱。
+专用移动仅支持同卷且支持硬链接的文件系统，以先建立新文件名、再移除旧文件名实现不覆盖目标；中断可能留下两个名字，内容仍在，但需要本机恢复。专用文件入口尚不提供目录移动、删除、创建链接或系统配置操作。其路径检查不约束通用脚本，也不是抵御其他本机进程并发篡改路径的操作系统沙箱。
 
 Git 只提供 status 和单文件 diff；仓库根也必须在允许读取目录中。禁用外部 diff、textconv、fsmonitor、pager、clean/process 过滤器和子模块检查，不接受任意 Git 参数。过滤器仅枚举配置键名以设置本次禁用项，不读取配置值。没有 commit/push 工具。
 
-电脑操作记录到 `computer-audit.jsonl`，只保存操作、时间、结果和字节数等元数据，不记录文件内容、子进程输出、环境变量或凭据。只读查询同步返回，Codex 仍使用异步 run。
+电脑操作记录到 `computer-audit.jsonl`，只保存操作、时间、结果和字节数等元数据，不记录文件内容、子进程输出、环境变量或凭据。固定查询与短脚本同步返回，Codex 仍使用异步 run。
 
 首次创建默认 `gpt-6-astra / high`。模型目录来自当前 `codex app-server model/list`，含分页，缓存五分钟，可显式刷新；目录查询失败不猜测、不静默降级。新增模型无需修改 session 逻辑。
 
@@ -120,7 +184,9 @@ npm.cmd test
 npm.cmd run test:live
 ```
 
-常规测试不调用模型，包含真实 MCP HTTP 客户端、PowerShell 7、临时文件/Git 仓库、Node UTF-8 管道与 Windows 进程树终止。`test:live` 是显式联网验收，会使用 CLI 当前登录和模型额度：同一 MCP 入口执行 PowerShell version、读取此 README，再完成 Astra high 首轮 → 原 thread 续聊 → 显式 Sol low 切换，验证中文/引号/Windows 路径原样回显、会话记忆、HTTP 重连和幂等。
+常规测试不调用模型，包含真实 MCP HTTP/stdio 客户端、PowerShell 短脚本文件闭环、退出语义、部分输出、Windows 自有进程树终止、最小故障注入、断线不重放、临时文件/Git 仓库及既有 Bridge 回归。独立 stdio 服务用无效 `--codex-bin` 验证直接能力不依赖 Codex。`test:live` 是另外的显式联网验收，会使用 CLI 当前登录和模型额度；YCA-001 不需要运行它。
+
+YCA-001 本机验证与 ChatGPT 验收分别记录：当前新增脚本已做本机针对性验证；常驻服务尚未由本次实施重启，真实 ChatGPT 经既有连接调用新工具的验收仍待执行，不由本机测试或健康检查代替。交付加载新代码并刷新工具元数据后，按 [YCA-001](../../docs/tickets/yuki-computer-agent/001-powershell-execution.md) 的可复现方式验收；不重建 tunnel/key，不清空历史。
 
 真实验收报告保存在 `runtime/live-<timestamp>/acceptance.json`；不会提交实际会话记录。此次初始本机验收三轮均成功，使用同一个 Codex thread。这不表示每个 reasoning 档位都已实际请求过。
 
@@ -130,6 +196,6 @@ npm.cmd run test:live
 
 本机凭据引用由用户在本地配置，文档不记录实际存放路径，仅 tunnel-client 读取用于认证；Agent 不读取它，不把内容加入 prompt、日志或 Git。名称变化不会要求重新生成 key；到期、撤销或损坏时才需要处理凭据。
 
-ChatGPT 插件尚需用户创建：名称 **Yuki Computer Agent**，选择 Tunnel 连接并使用本地配置中的连接 ID；不填写 localhost 地址或粘贴 runtime key。创建后检查 13 个工具，并实际调用 `powershell`（`cwd` 为允许目录，`query` 为 `version`）及 `filesystem_read`（本 README 的绝对路径），最后执行 Codex start → get_output → send → get_output。tunnel ready 和本机测试不代表已完成 ChatGPT 端到端验收。后续增加工具通常复用相同连接，仅刷新工具元数据。
+沿用现有 **Yuki Computer Agent** ChatGPT 连接，不重新创建插件、tunnel 或 key。加载本次代码后应发现 14 个工具，其中 `powershell` 仍为固定查询，`powershell_execute` 为新脚本入口。刷新工具元数据后，通过 ChatGPT 实际创建、修改、读取唯一验收目录中的文件，再核对错误、超时/超限结果；A1 全程不调用 Codex 模型。tunnel ready、本机测试及工具发现均不代表 ChatGPT 脚本验收已完成。Codex 协作验收属于独立后续安排。
 
 参考：[Codex 非交互模式](https://learn.chatgpt.com/docs/non-interactive-mode)、[App Server](https://learn.chatgpt.com/docs/app-server)、[MCP SDK](https://github.com/modelcontextprotocol/typescript-sdk/tree/v1.x)、[Tunnel 接入](https://github.com/openai/tunnel-client/blob/master/docs/enterprise-customer-onboarding.md)。

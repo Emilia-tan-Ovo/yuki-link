@@ -49,6 +49,11 @@ export function createMcpServer(manager, computer) {
       cwd: z.string().min(1), query: z.enum(['version', 'location', 'system', 'processes']),
       timeout_ms: z.number().int().min(1000).max(30000).optional(),
     }, input => computer.powershell(input), true);
+    register('powershell_execute', 'Execute a short noninteractive PowerShell script directly, without Codex. May modify files, run native commands or access external systems. Not idempotent: never blindly retry an unknown result. cwd is separate from script. Default 30s, maximum 30s, then at most 5s termination cleanup; combined output 1 MiB. Failures preserve partial output in error.details.result.', z.object({
+      cwd: z.string().min(1),
+      script: z.string().min(1).max(131072).describe('Complete PowerShell text, passed verbatim over UTF-8 JSON stdin; at most 128 KiB UTF-8. No interactive stdin.'),
+      timeout_ms: z.number().int().min(1000).max(30000).optional(),
+    }).strict(), input => computer.powershellExecute(input), false, false, true);
     register('filesystem_list', 'List allowed files/directories with pagination. Protected paths, credentials and links are omitted. No glob expansion.', {
       path: z.string().min(1), cursor: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(200).optional(),
     }, input => computer.filesystem.list(input), true);

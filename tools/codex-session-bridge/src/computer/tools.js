@@ -4,26 +4,29 @@ import { appendFileSync, mkdirSync, statSync, realpathSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { PathPolicy } from './paths.js';
 import { WorkspaceFiles } from './filesystem.js';
-import { spawnDirect, stopProcessTree } from '../process.js';
-import { BridgeError, redact } from '../errors.js';
+import { ComputerExecution } from './execution.js';
+import { BridgeError } from '../errors.js';
 
 const queryFile = fileURLToPath(new URL('./query.ps1', import.meta.url));
+const scriptFile = fileURLToPath(new URL('./execute.ps1', import.meta.url));
 
 export class ComputerTools {
-  constructor({ readRoots, writeRoots, runtime, pwsh = process.platform === 'win32' ? 'pwsh.exe' : 'pwsh', git = process.platform === 'win32' ? 'git.exe' : 'git' }) {
+  constructor({ readRoots, writeRoots, runtime, pwsh = process.platform === 'win32' ? 'pwsh.exe' : 'pwsh', git = process.platform === 'win32' ? 'git.exe' : 'git', spawnProcess, stopProcess, appendAudit = appendFileSync }) {
     mkdirSync(runtime, { recursive: true });
     this.paths = new PathPolicy(readRoots, writeRoots, runtime);
     this.auditFile = path.join(runtime, 'computer-audit.jsonl');
+    this.appendAudit = appendAudit;
     this.filesystem = new WorkspaceFiles(this.paths, this.audit.bind(this));
     this.pwsh = pwsh;
     this.git = git;
-    this.children = new Set();
+    this.processAdapters = { spawnProcess, stopProcess };
+    this.executions = new Set();
     this.closing = false;
   }
 
   audit(operation, status, metadata) {
     // Never log scripts, file contents, subprocess streams, environment or key refs.
-    appendFileSync(this.auditFile, JSON.stringify({ at: new Date().toISOString(), operation, status, ...metadata }) + '\n', { encoding: 'utf8', flush: true });
+    this.appendAudit(this.auditFile, JSON.stringify({ at: new Date().toISOString(), operation, status, ...metadata }) + '\n', { encoding: 'utf8', flush: true });
   }
 
   directory(cwd) {
@@ -55,8 +58,16 @@ export class ComputerTools {
     cwd = this.directory(cwd);
     const result = await this.execute('powershell', this.executable(this.pwsh), ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', queryFile], cwd, JSON.stringify({ query }), timeout_ms, { query });
     try { result.data = JSON.parse(result.stdout); }
-    catch { throw new BridgeError('INVALID_QUERY_OUTPUT', 'PowerShell did not return valid JSON.'); }
+    catch { throw new BridgeError('INVALID_QUERY_OUTPUT', 'PowerShell did not return valid JSON.', { result }); }
     return result;
+  }
+
+  async powershellExecute({ cwd, script, timeout_ms = 30_000 }) {
+    if (typeof script !== 'string' || !script.trim() || Buffer.byteLength(script, 'utf8') > 131072) {
+      throw new BridgeError('INVALID_SCRIPT', 'Provide a nonblank script of at most 128 KiB UTF-8.');
+    }
+    cwd = this.directory(cwd);
+    return this.execute('powershell_execute', this.executable(this.pwsh), ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', scriptFile], cwd, JSON.stringify({ script }), timeout_ms);
   }
 
   async gitQuery({ cwd, path: file, staged = false }, kind) {
@@ -83,42 +94,26 @@ export class ComputerTools {
 
   execute(operation, executable, args, cwd, stdin, timeoutMs, metadata = {}) {
     if (this.closing) throw new BridgeError('SHUTTING_DOWN', 'Computer tools are shutting down.');
-    if (this.children.size >= 4) throw new BridgeError('COMPUTER_BUSY', 'Too many active computer queries.');
+    if (this.executions.size >= 4) throw new BridgeError('COMPUTER_BUSY', 'Too many active computer executions.');
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 30_000) throw new BridgeError('INVALID_TIMEOUT', 'Computer query timeout must be 1000–30000 ms.');
     const operationId = randomUUID();
-    this.audit(operation, 'started', { operation_id: operationId, ...metadata });
-    return new Promise((resolve, reject) => {
-      const child = spawnDirect(executable, args, { cwd, detached: process.platform !== 'win32' });
-      this.children.add(child);
-      let failure = null;
-      let bytes = 0;
-      const stdout = []; const stderr = [];
-      const abort = error => { if (failure) return; failure = error; stopProcessTree(child).catch(() => {}); };
-      const capture = (chunks, buffer) => {
-        bytes += buffer.length;
-        if (bytes > 1024 * 1024) { abort(new BridgeError('OUTPUT_LIMIT', 'Computer query output exceeded 1 MiB.')); return; }
-        chunks.push(buffer);
-      };
-      child.stdout.on('data', b => capture(stdout, b)); child.stderr.on('data', b => capture(stderr, b));
-      child.once('error', error => { failure ??= new BridgeError('PROCESS_FAILED', redact(error.message)); });
-      child.stdin.on('error', error => { failure ??= new BridgeError('STDIN_FAILED', redact(error.message)); });
-      child.once('spawn', () => child.stdin.end(stdin, 'utf8'));
-      const timer = setTimeout(() => abort(new BridgeError('QUERY_TIMEOUT', 'Computer query timed out.')), timeoutMs);
-      child.once('close', code => {
-        clearTimeout(timer); this.children.delete(child);
-        const rawStdout = Buffer.concat(stdout).toString('utf8');
-        const result = { operation_id: operationId, exit_code: code, stdout: redact(rawStdout), stderr: redact(Buffer.concat(stderr).toString('utf8')) };
-        if (['git_diff', 'git_config_names'].includes(operation) && result.stdout !== rawStdout) failure ??= new BridgeError('SENSITIVE_CONTENT', 'Git output resembles credentials; the operation cannot continue safely.');
-        if (code !== 0) failure ??= new BridgeError('PROCESS_EXIT_FAILED', 'Computer query exited unsuccessfully.', { exit_code: code, stderr: result.stderr });
-        try { this.audit(operation, failure ? 'failed' : 'completed', { operation_id: operationId, exit_code: code, error_code: failure?.code ?? null, ...metadata }); }
-        catch { failure ??= new BridgeError('AUDIT_FAILED', 'Query finished but its audit record could not be saved.'); }
-        if (failure) reject(failure); else resolve(result);
-      });
+    try { this.audit(operation, 'started', { operation_id: operationId, ...metadata }); }
+    catch { throw new BridgeError('AUDIT_FAILED', 'Could not record execution intent; no process was started.'); }
+    const execution = new ComputerExecution({
+      operation, operationId, executable, args, cwd, stdin, timeoutMs,
+      ...this.processAdapters,
+      audit: (status, result) => this.audit(operation, status, { operation_id: operationId, ...metadata, ...result }),
+      release: () => this.executions.delete(execution),
     });
+    this.executions.add(execution);
+    return execution.run();
   }
 
   async close() {
     this.closing = true;
-    await Promise.allSettled([...this.children].map(child => stopProcessTree(child)));
+    const outcomes = await Promise.allSettled([...this.executions].map(execution => execution.shutdown()));
+    if (outcomes.some(outcome => outcome.status === 'rejected')) {
+      throw new BridgeError('STOP_FAILED', 'Could not confirm all owned computer processes stopped during shutdown.');
+    }
   }
 }
