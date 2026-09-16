@@ -4,7 +4,9 @@
 
 **Blocked by:** None — 无技术阻塞；本轮首推的 A1 独立交付。
 
-**Status:** ready-for-agent — 票据范围与验收标准已审阅；实施仍遵守技术依赖及 ticket-design 建议，未授权批量实施，验收待执行。
+**Status:** 验收通过，待 PR 审阅与合并 — 本地实现、自动化回归及用户确认的 ChatGPT 端验收均已完成；下方分别记录两类验证证据。
+
+**GitHub Issue:** [#1](https://github.com/Emilia-tan-Ovo/yuki-link/issues/1) — 已发布并复读核验，标签 `ready-for-agent`。
 
 **Spec:** [已审阅规范](../../specs/yuki-computer-agent.md)；User Stories 1～8、33；“A1：命令执行与结果”、兼容要求、Testing Decisions 的 A1 全部六项。验收别名见[索引](README.md)。
 
@@ -17,13 +19,13 @@
 
 ## 验收标准
 
-- [ ] A1-AC1：ChatGPT → 现有 YCA 连接 → PowerShell，创建、修改、读取验收文件，返回与实际文件一致的内容；全程无 Codex 模型调用。
-- [ ] A1-AC2：实际 PowerShell 执行覆盖中文内容、中文/空格路径、单双引号与多行脚本；只做转义函数或 Node 回显测试不算完成。
-- [ ] A1-AC3：成功返回 stdout、stderr 和真实退出状态；先向两路输出写入不同标记再非零退出，两路已捕获内容和非零退出码都可取回。
-- [ ] A1-AC4：覆盖 PowerShell 错误与原生命令非零退出，按明确退出语义报告结果；不把 stderr 非空直接等同失败，也不伪造成功。
-- [ ] A1-AC5：先输出标记再超时、先输出标记再超过输出限制，两类调用分别报告原因，尽可能保留部分输出，说明截断/中断以及自有进程结束情况。
-- [ ] A1-AC6：Codex 不可用条件下直接调用仍成功；现有固定查询、文件/Git 查询及受影响通信行为通过针对性回归。
-- [ ] 未确认结果不会自动重新执行脚本；保留必要审计和错误信息，既有连接、认证及运行历史不被重建或删除。
+- [x] A1-AC1：ChatGPT → 现有 YCA 连接 → PowerShell，创建、修改、读取验收文件，返回与实际文件一致的内容；全程无 Codex 模型调用。
+- [x] A1-AC2：实际 PowerShell 执行覆盖中文内容、中文/空格路径、单双引号与多行脚本；只做转义函数或 Node 回显测试不算完成。
+- [x] A1-AC3：成功返回 stdout、stderr 和真实退出状态；先向两路输出写入不同标记再非零退出，两路已捕获内容和非零退出码都可取回。
+- [x] A1-AC4：覆盖 PowerShell 错误与原生命令非零退出，按明确退出语义报告结果；不把 stderr 非空直接等同失败，也不伪造成功。
+- [x] A1-AC5：先输出标记再超时、先输出标记再超过输出限制，两类调用分别报告原因，尽可能保留部分输出，说明截断/中断以及自有进程结束情况。
+- [x] A1-AC6：Codex 不可用条件下直接调用仍成功；现有固定查询、文件/Git 查询及受影响通信行为通过针对性回归。
+- [x] 未确认结果不会自动重新执行脚本；保留必要审计和错误信息，既有连接、认证及运行历史不被重建或删除。
 
 ## 可复现验收方式
 
@@ -38,6 +40,32 @@
 - 工具使用说明补充脚本输入、输出/错误/退出语义、超时/超限、中文多行示例、固定查询兼容及真实验收状态。
 - 记录“首票仅短时非交互，任务管理后续交付”，不另开架构文档支线。
 
+## 本地实现与验收状态
+
+2026-09-16：新增 `powershell_execute` 并复用共享执行生命周期，保留查询兼容、部分输出、退出与停止状态；已同步根 README 和工具 README。`npm.cmd test` **39/39 通过、0 跳过**，修改的 JavaScript 通过 `node --check`，README JSON 示例解析通过。包括真实 MCP HTTP/stdio、PowerShell 文件闭环/错误语义、自有父子进程终止、最小故障注入、服务关闭时对存活自有进程的有限期收尾、断开不重放及现有 Bridge/文件/Git 回归；未运行付费模型矩阵。
+
+本机回归的独立 stdio 服务使用 PowerShell 7.6.5，并在无效 `--codex-bin` 下成功执行脚本。后续已加载实现提交 `35491db`，恢复原 tunnel，保留密钥引用及运行历史。本机测试与以下 ChatGPT 端验收分别记录。
+
+**ChatGPT 端验收（2026-09-16，依据用户提供的验收结果）：通过。** 工具列表为 14 个，包含 `powershell_execute`；实际链路为 ChatGPT → Yuki Computer Agent → PowerShell 7，全程未经过 Codex。
+
+- 中文、空格路径、单双引号、多行脚本与 cwd 均正常；通过脚本创建、写入、读取、追加修改并再次读取临时文件，最终清理返回 `CLEANUP_OK=True`。
+- stdout/stderr 均保留；存在非终止 stderr 且最终 `exit_code=0` 时仍成功。PowerShell 执行错误返回 `PROCESS_EXIT_FAILED`；原生命令显式退出 7 保留真实退出码、失败前两流及嵌套 `error.details.result`。
+- `timeout_ms=1000` 执行 Sleep 5 秒触发 `QUERY_TIMEOUT`；两流前缀保留，`completion_reason=timeout`、`incomplete=true`、`termination.requested=true`、`tree_kill=succeeded`，最终 `process_state=exited`。
+- 超过 1 MiB 输出触发 `OUTPUT_LIMIT`，`limit_bytes=1048576`、`stdout_bytes=1048576`、`stdout_truncated=true`、`incomplete=true`；保留预算内输出，敏感形状样本被 `[REDACTED]`，最终 `process_state=exited`。该用例同时观察到 `exit_code=0` 与 `termination.tree_kill=unconfirmed`：根进程已退出，但整树终止未确认，不能改记为 succeeded；仍按输出超限判失败。超时用例已独立验证树终止成功，用户确认此观察不阻塞合并。
+- 旧 `powershell` 的 `version`、`location`、`system`、`processes` 四种查询均通过；Codex 不可用、文件/Git 兼容、断开不重放及故障注入由上述本机回归覆盖。
+
+**插件加载经验：** 本次刷新后仍只有旧 13 个工具，用户删除后重新安装 ChatGPT 端插件，才发现 `powershell_execute` 并完成验收；继续复用原 Yuki Computer Agent tunnel/key。后续交付应实际核对工具清单与调用，不把刷新操作本身视为新工具已加载。
+
 ## ticket-design 建议
 
-**建议先做。** 需要定清脚本输入如何兼容原查询契约、PowerShell/原生命令退出语义、失败时输出结构及超时/超限的终止结果。它们会改变用户可见结果，应先在现有接口上形成简短决策；不研究新调度或隔离系统。
+**已完成并通过统一审阅（2026-09-16）。** 设计条件已具备，无待确认设计阻断；具体决策见下方 Implementation Notes 及[已审阅设计稿](001-powershell-execution-design.md)。设计确认不代表授权 implement 或验收完成。
+
+## Implementation Notes
+
+- **入口（Q1=B）**：保留 `powershell(cwd, query, timeout_ms?)` 的四种查询、正常结果/data 和只读注解；新增 `powershell_execute(cwd, script, timeout_ms?)`，script 必填、非空白，不接受 query，不采用 query/script 二选一结构。新工具标注可写、非幂等、可能破坏及访问外部环境；不增加批准或隔离机制。
+- **传递与复用**：cwd 通过进程工作目录单独传入；原样脚本文本通过 UTF-8 JSON stdin 交给固定 PowerShell 入口，整体解析执行，使用参数数组及 `shell:false`。两个工具共享现有执行器、输出捕获、终止和错误处理，不复制生命周期代码，不经过 Codex 模型。
+- **退出语义（Q2=A）**：仅本次脚本进程设置 `ErrorActionPreference=Stop`、`PSNativeCommandUseErrorActionPreference=true`。未处理 PowerShell/解析错误退出 1，显式 exit 及未处理原生非零保留对应退出码；已捕获处理的错误可正常结束，允许局部覆盖策略并自行处理。不根据 stderr 非空、历史错误记录或陈旧 LASTEXITCODE 判失败，不改全局配置；实现时验证实际服务所用 pwsh。
+- **结果兼容（Q3=A）**：成功返回执行结果；失败保留 `isError` 和原 error 字段，在 `error.details.result` 附完整结果，并保留既有非零详情字段。实际已启动的失败路径尽可能保留两路输出、真实退出码/信号、执行原因、截断/不完整及终止状态；未知退出码为 null。次要审计错误不覆盖主要执行结果；既有 Git 敏感内容拒绝结果不得因新增详情而泄露。不为外观重构整套 MCP 包装器。
+- **预算（Q4=B）**：新脚本默认 30,000 ms，旧查询默认 10,000 ms，均可设 1,000～30,000 ms；两路输出合计 1 MiB，脚本文本最多 128 KiB UTF-8 字节。沿用共享的 4 个自有执行名额，不按工具分别计数。触发终止后的进程/管道收尾合计最多 5 秒，不叠加等待；这些是执行与收尾预算，不是端到端网络延迟保证。
+- **输出与结束**：跨输出上限的 chunk 保留预算内前缀，正确处理 UTF-8 边界；超时/超限只终止持有的自有进程树，有期限地收集部分输出并区分停止请求、根进程退出和树终止结果。未确认结束不得伪报成功或提前解除仍运行进程的所有权；不自动重放未知结果。长任务、查询/主动停止接口留给 YCA-005。
+- **验证与交付**：复用既有探针；实现后按设计稿 A1 映射运行真实 MCP/pwsh、实际文件与自有进程验证、旧查询/文件/Git/通信回归，并仅对难触发的失败采用最小故障注入。校验新脚本必填、拒绝 query、大小限制及两入口共享并发，替换原互斥输入方案。单独记录本机与 ChatGPT 既有连接验收，未执行项不勾选；随交付更新两份 README，不重复付费模型矩阵。

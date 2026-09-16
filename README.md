@@ -2,7 +2,7 @@
 
 面向用户与 AI 助手的统一 MCP / Bridge 项目。以统一核心连接设备与生活服务，让同一项能力可以由不同设备或服务提供。
 
-**当前状态：仅有项目骨架和设计文档，没有可运行的 MCP、Bridge 或 provider。** 尚未选择语言、框架、部署方式或社区 mobile MCP。
+**当前状态：统一核心与 provider 仍是项目骨架；独立前置工具 Yuki Computer Agent 已有可运行的 MCP / Codex Bridge。** 前置工具位于 `tools/codex-session-bridge`，提供固定 PowerShell 查询、真实短脚本、专用文件/Git 工具及 Codex 会话通信。YCA-001 的本机回归与 ChatGPT 端验收已通过，待 PR 审阅与合并；正式 yuki-link 的首张基线票尚未启动。
 
 ## 三者的区别
 
@@ -30,6 +30,7 @@ providers/
   services/                     不依赖特定设备的服务 provider
 tests/                          后续契约与调用流程测试
 docs/                           盘点、结构设计与本地 ticket
+tools/codex-session-bridge/      独立前置工具：直接电脑操作与 Codex 会话通信
 ```
 
 `computer`、`phone` 是设备 provider 分类；`alarm`、`ride`、`food`、`expense` 是 capability/service 分类。手机只是某种执行途径，不能决定能力的归属。
@@ -40,5 +41,7 @@ docs/                           盘点、结构设计与本地 ticket
 - [本机盘点与证据边界](docs/inventory.md)
 - [结构与依赖方向](docs/architecture.md)
 - [Ticket 001：建立 Yuki Windows 可复现源码基线](docs/tickets/001-yuki-windows-baseline.md)
+- [Yuki Computer Agent：安装、工具与实际验证边界](tools/codex-session-bridge/README.md)
+- [YCA-001：真实 PowerShell 短脚本闭环](docs/tickets/yuki-computer-agent/001-powershell-execution.md)
 
-本轮仅在此目录内初始化文件与本地 Git。现有代码、启动方式、凭证及敏感配置保持原状；未安装依赖、启动服务、配置远程仓库或发布。
+前置工具独立于 `core/` 和 `providers/`，沿用既有连接和 runtime；其交付不启动正式 yuki-link 基线票，也不表示统一核心已经实现。具体能力及尚未完成的验收以工具说明和对应票据为准。
