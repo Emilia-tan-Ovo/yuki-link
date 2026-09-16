@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "observeOnly": true,
+  "allowStartupChanges": false,
+  "port": 7392,
+  "stateDir": "C:\\projects\\yuki-link\\.local\\control-center\\runtime",
+  "node": "C:\\Program Files\\nodejs\\node.exe",
+  "pwsh": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+  "codex": "C:\\tools\\codex.exe",
+  "yca": {
+    "entry": "C:\\projects\\yuki-link\\tools\\codex-session-bridge\\src\\main.js",
+    "cwd": "C:\\projects\\yuki-link\\tools\\codex-session-bridge",
+    "repo": "C:\\projects\\yuki-link",
+    "runtime": "C:\\projects\\yuki-link\\tools\\codex-session-bridge\\runtime\\service",
+    "port": 7391,
+    "controlPort": 7393
+  },
+  "tunnel": {
+    "bin": "D:\\tools\\openai-tunnel-client\\v0.0.14\\tunnel-client.exe",
+    "alias": "codex-session-bridge",
+    "profile": "C:\\projects\\yuki-link\\tools\\codex-session-bridge\\runtime\\tunnel\\codex-session-bridge.yaml",
+    "stateRoot": "C:\\Users\\example\\.local\\state\\tunnel-client",
+    "target": "http://127.0.0.1:7391/mcp"
+  }
+}
