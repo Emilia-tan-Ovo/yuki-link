@@ -193,7 +193,7 @@ test('real MCP HTTP clients reconnect to durable runs; host/origin checks and ex
 test('executor parses native-process JSONL and reports malformed output and spawn failure', async () => {
   const payload = '中文 🌸\n$HOME `test` "quoted" C:\\空 格\\a.txt';
   const script = 'let s="";process.stdin.setEncoding("utf8");process.stdin.on("data",b=>s+=b);process.stdin.on("end",()=>{console.log(JSON.stringify({type:"echo",text:s}));process.stderr.write("stderr only");});';
-  const executor = new CodexExecutor('codex', (_command, args, options) => {
+  const executor = new CodexExecutor(process.execPath, (_command, args, options) => {
     assert.equal(args.at(-1), '-');
     assert.ok(!args.includes(payload));
     return spawnDirect(process.execPath, ['-e', script], options);
@@ -201,10 +201,11 @@ test('executor parses native-process JSONL and reports malformed output and spaw
   const events = []; const stderr = [];
   const done = await new Promise(resolve => executor.start({ model: 'gpt-6-astra', reasoning: 'high' }, { cwd: process.cwd(), codex_thread_id: null }, payload, { onEvent: e => events.push(e), onStderr: s => stderr.push(s), onSpawn: () => {}, onDone: resolve }));
   assert.equal(done.code, 0); assert.equal(events[0].text, payload); assert.deepEqual(stderr, ['stderr only']);
-  const malformed = new CodexExecutor('codex', (_command, _args, options) => spawnDirect(process.execPath, ['-e', 'process.stdout.write("not-json\\n");setInterval(()=>{},1000)'], options));
+  const malformed = new CodexExecutor(process.execPath, (_command, _args, options) => spawnDirect(process.execPath, ['-e', 'process.stdout.write("not-json\\n");setInterval(()=>{},1000)'], options));
   const bad = await new Promise(resolve => malformed.start({ model: 'gpt-6-astra', reasoning: 'high' }, { cwd: process.cwd(), codex_thread_id: null }, 'test', { onEvent: () => {}, onStderr: () => {}, onSpawn: () => {}, onDone: resolve }));
   assert.equal(bad.error.code, 'INVALID_CODEX_OUTPUT');
-  const missing = new CodexExecutor('nonexistent-bridge-executable-12345');
+  // Simulate removal between discovery and spawn without using a real install.
+  const missing = new CodexExecutor('nonexistent-bridge-executable-12345', spawnDirect, executable => ({ executable }));
   const failed = await new Promise(resolve => missing.start({ model: 'gpt-6-astra', reasoning: 'high' }, { cwd: process.cwd(), codex_thread_id: null }, 'test', { onEvent: () => {}, onStderr: () => {}, onSpawn: () => {}, onDone: resolve }));
   assert.equal(failed.error.code, 'SPAWN_FAILED');
 });

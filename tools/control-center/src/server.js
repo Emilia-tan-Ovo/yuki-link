@@ -8,7 +8,7 @@ const equal = (a, b) => {
   const left = Buffer.from(a), right = Buffer.from(b);
   return left.length === right.length && timingSafeEqual(left, right);
 };
-export function createServer(supervisor, { codexCheck, startup } = {}) {
+export function createServer(supervisor, { codexCheck, startup, deploymentCheck, deploymentUpdate } = {}) {
   const session = randomBytes(32).toString('hex'), csrf = randomBytes(32).toString('hex');
   return http.createServer(async (req, res) => {
     const origin = `http://127.0.0.1:${req.socket.localPort}`;
@@ -38,6 +38,12 @@ export function createServer(supervisor, { codexCheck, startup } = {}) {
       else if (req.url === '/api/recovery') await supervisor.setRecovery(body.enabled);
       else if (req.url === '/api/confirm-tools') await supervisor.confirmTools();
       else if (req.url === '/api/codex-check') await codexCheck();
+      else if (req.url === '/api/deployment') {
+        if (Object.keys(body).some(k => !['action', 'confirm'].includes(k)) || !['check', 'prepare', 'update-restart'].includes(body.action)
+            || (body.confirm !== undefined && typeof body.confirm !== 'boolean')) return json(400, { code: 'INVALID_ACTION' });
+        if (body.action === 'check') await deploymentCheck();
+        else await deploymentUpdate(body.action === 'update-restart', body.confirm === true);
+      }
       else if (req.url === '/api/startup') await startup.change(body.action);
       else return json(404, { code: 'NOT_FOUND' });
       json(200, { ok: true });

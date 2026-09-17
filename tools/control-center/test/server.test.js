@@ -4,9 +4,9 @@ import http from 'node:http';
 import { createServer } from '../src/server.js';
 
 test('loopback management requires session, exact Origin, CSRF and fixed actions; diagnostic omits token', async t => {
-  const calls = [];
+  const calls = [], deploymentCalls = [];
   const supervisor = { snapshot: () => ({ version: 'test', units: {}, events: [] }), action: async (...args) => calls.push(args) };
-  const server = createServer(supervisor);
+  const server = createServer(supervisor, { deploymentCheck: async () => deploymentCalls.push(['check']), deploymentUpdate: async (...args) => deploymentCalls.push(args) });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.close(); server.closeAllConnections(); });
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -23,6 +23,13 @@ test('loopback management requires session, exact Origin, CSRF and fixed actions
   assert.equal((await send({}, { id: 'yca', action: 'start', command: 'evil' })).status, 400);
   assert.equal((await fetch(base + '/api/action', { headers })).status, 405);
   assert.equal((await send()).status, 200); assert.equal(calls.length, 1);
+  const deploy = body => fetch(base + '/api/deployment', { method: 'POST', headers, body: JSON.stringify(body) });
+  assert.equal((await deploy({ action: 'check', repo: 'evil' })).status, 400);
+  assert.equal((await deploy({ action: 'arbitrary' })).status, 400);
+  assert.equal((await deploy({ action: 'check' })).status, 200);
+  assert.equal((await deploy({ action: 'prepare' })).status, 200);
+  assert.equal((await deploy({ action: 'update-restart', confirm: true })).status, 200);
+  assert.deepEqual(deploymentCalls, [['check'], [false, false], [true, true]]);
   const diagnostic = await (await fetch(base + '/api/diagnostic', { headers: { cookie } })).text();
   assert.ok(!diagnostic.includes(state.csrf)); assert.ok(!diagnostic.includes(cookie));
   const status = await new Promise(resolve => { const req = http.get(base + '/', { headers: { Host: 'evil.example' } }, r => { r.resume(); resolve(r.statusCode); }); req.on('error', e => { throw e; }); });

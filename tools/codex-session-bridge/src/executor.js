@@ -1,5 +1,6 @@
 import { spawnDirect, readLines, stopProcessTree } from './process.js';
 import { BridgeError, redact } from './errors.js';
+import { resolveCodexExecutable } from './codex-executable.js';
 
 export function execArguments(run, session) {
   const args = [
@@ -16,13 +17,14 @@ export function execArguments(run, session) {
 }
 
 export class CodexExecutor {
-  constructor(executable = 'codex', spawnChild = spawnDirect) { this.executable = executable; this.spawnChild = spawnChild; }
+  constructor(executable = 'codex', spawnChild = spawnDirect, resolveExecutable = resolveCodexExecutable) { this.executable = executable; this.spawnChild = spawnChild; this.resolveExecutable = resolveExecutable; }
 
   start(run, session, prompt, { onEvent, onStderr, onSpawn, onDone }) {
     const env = { ...process.env };
     // A bridge-created session must not impersonate the parent Codex task.
     delete env.CODEX_THREAD_ID;
-    const child = this.spawnChild(this.executable, execArguments(run, session), { cwd: session.cwd, env, detached: process.platform !== 'win32' });
+    const { executable } = this.resolveExecutable(this.executable);
+    const child = this.spawnChild(executable, execArguments(run, session), { cwd: session.cwd, env, detached: process.platform !== 'win32' });
     let failure = null;
     let stopped = false;
     const stop = async () => { stopped = true; await stopProcessTree(child); };
@@ -44,7 +46,8 @@ export class CodexExecutor {
       child.stdin.end(prompt, 'utf8');
     });
     child.stdin.on('error', error => { if (!stopped) failure ??= new BridgeError('STDIN_FAILED', redact(error.message)); });
-    child.on('error', error => { failure ??= new BridgeError('SPAWN_FAILED', redact(error.message)); });
+    child.on('error', error => { failure ??= new BridgeError('SPAWN_FAILED', 'Codex launch failed after executable discovery; check the installation and session cwd.',
+      { spawn_code: ['ENOENT', 'EACCES', 'EPERM', 'EINVAL', 'ENOEXEC'].includes(error.code) ? error.code : 'UNKNOWN' }); });
     child.once('close', (code, signal) => onDone({ code, signal, error: failure }));
     return { stop, child };
   }

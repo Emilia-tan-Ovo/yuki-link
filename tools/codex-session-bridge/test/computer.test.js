@@ -228,11 +228,21 @@ test('MCP retains first-chunk prefixes, split UTF-8, exact budgets and stream er
 test('real stdio service executes scripts with an unavailable Codex executable', async t => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'yuki-stdio-'));
   const workspace = path.join(root, '工作区 空格'); mkdirSync(workspace);
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === 'localappdata') { delete env[key]; env.LOCALAPPDATA = root; }
+    if (key.toLowerCase() === 'path') {
+      const withoutCodex = env[key].split(path.delimiter)
+        .filter(p => !existsSync(path.join(p.replace(/^"|"$/g, ''), process.platform === 'win32' ? 'codex.exe' : 'codex'))).join(path.delimiter);
+      delete env[key]; env.PATH = withoutCodex; // SDK merges an uppercase PATH default.
+    }
+  }
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [fileURLToPath(new URL('../src/main.js', import.meta.url)), '--transport', 'stdio',
       '--allow-cwd', workspace, '--runtime', path.join(root, 'runtime'), '--codex-bin', path.join(root, 'missing-codex.exe')],
     stderr: 'pipe',
+    env,
   });
   transport.stderr.resume();
   const client = new Client({ name: 'script-stdio-test', version: '1' });

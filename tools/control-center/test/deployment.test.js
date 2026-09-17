@@ -11,7 +11,7 @@ import { StreamableHTTPClientTransport } from '../../codex-session-bridge/node_m
 import { YcaUnit } from '../src/units.js';
 import { WindowsHost } from '../src/host.js';
 import { Events, run, sleep } from '../src/common.js';
-import { prepareDeployment, readDeployment, selectDeployment } from '../src/deployment.js';
+import { latestDeployment, prepareDeployment, readDeployment, selectDeployment } from '../src/deployment.js';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', windowsHide: true }).trim();
 async function port() { const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; }
@@ -55,10 +55,13 @@ test('prepare follows remote HEAD beside a dirty developer branch and reuses one
 
 test('remote default branch changes create a new release and preserve the previous source', async t => {
   const f = fixture(t), first = await prepareDeployment(f.options);
+  assert.deepEqual(await latestDeployment(f.repo), { branch: 'merged', commit: first.commit });
   git(f.repo, 'switch', '-c', 'new-default');
   writeFileSync(path.join(f.bridge, 'src/main.js'), '// second release\n');
   git(f.repo, 'add', '.'); git(f.repo, 'commit', '-m', 'second');
   git(f.repo, 'push', 'origin', 'new-default'); git(f.remote, 'symbolic-ref', 'HEAD', 'refs/heads/new-default');
+  const remote = await latestDeployment(f.repo);
+  assert.equal(remote.branch, 'new-default'); assert.equal(remote.commit, git(f.repo, 'rev-parse', 'HEAD'));
   const second = await prepareDeployment(f.options);
   assert.equal(second.branch, 'new-default'); assert.notEqual(second.commit, first.commit);
   assert.equal(readFileSync(first.entry, 'utf8').trim(), '// merged entry');
@@ -148,12 +151,19 @@ test('real deployed YCA reports the target commit and YCA-002 contract; preparat
     const protectedResult = await client.callTool({ name: 'filesystem_read', arguments: { path: path.join(controlRoot, 'config.json') } });
     assert.equal(protectedResult.isError, true); assert.match(JSON.stringify(protectedResult), /PROTECTED_PATH/);
     writeFileSync(path.join(config.runtime, 'history-marker.txt'), 'preserved history');
-    writeFileSync(path.join(f.repo, 'release.txt'), 'next'); git(f.repo, 'add', '.'); git(f.repo, 'commit', '-m', 'next'); git(f.repo, 'push', 'origin', 'merged');
+    const mcpFile = path.join(f.bridge, 'src/mcp.js');
+    const mcpSource = readFileSync(mcpFile, 'utf8');
+    assert.match(mcpSource, /  return server;\r?\n}/);
+    writeFileSync(mcpFile, mcpSource.replace(/  return server;\r?\n}/,
+      "  register('deployment_test_marker', 'Deployment lifecycle test marker.', {}, () => ({ marker: true }), true);\n  return server;\n}"));
+    git(f.repo, 'add', '.'); git(f.repo, 'commit', '-m', 'next'); git(f.repo, 'push', 'origin', 'merged');
     const second = await prepareDeployment(options);
+    assert.equal(second.tools.count, first.tools.count + 1); assert.notEqual(second.tools.sha256, first.tools.sha256);
     unit = new YcaUnit(config, host, state, () => {}, events); // manager reconstruction retains the old entry
     const pending = await unit.observe();
     assert.equal(pending.pid, running.pid); assert.equal(pending.owned, true); assert.equal(pending.deployment.state, 'update-pending');
     assert.equal(pending.deployment.running.commit, first.commit); assert.equal(pending.deployment.target.commit, second.commit);
+    assert.equal(pending.tools.sha256, first.tools.sha256, 'prepared candidate must not replace running tool evidence');
     await client.close(); await unit.stop();
     await unit.start({ recovery: true });
     const recovered = await until(async () => { const o = await unit.observe(); return o.healthy && o; });
@@ -161,6 +171,12 @@ test('real deployed YCA reports the target commit and YCA-002 contract; preparat
     await unit.stop(); await unit.start();
     const switched = await until(async () => { const o = await unit.observe(); return o.healthy && o; });
     assert.equal(switched.deployment.running.commit, second.commit);
+    assert.equal(switched.tools.sha256, second.tools.sha256);
+    const switchedClient = new Client({ name: 'deployment-switched', version: '1' });
+    try {
+      await switchedClient.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${config.port}/mcp`)));
+      assert.ok((await switchedClient.listTools()).tools.some(tool => tool.name === 'deployment_test_marker'));
+    } finally { await switchedClient.close(); }
     assert.equal(readFileSync(path.join(config.runtime, 'history-marker.txt'), 'utf8'), 'preserved history');
   } finally { await client.close(); await unit.stop(); }
 });

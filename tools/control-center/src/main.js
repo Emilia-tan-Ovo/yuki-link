@@ -4,12 +4,14 @@ import { mkdirSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { loadConfig } from './config.js';
-import { Events, run, claimStateDirectory, readJson } from './common.js';
+import { Events, run, claimStateDirectory, readJson, fail } from './common.js';
 import { WindowsHost } from './host.js';
 import { YcaUnit, TunnelUnit } from './units.js';
 import { Supervisor } from './supervisor.js';
 import { createServer } from './server.js';
 import { Startup } from './startup.js';
+import { latestDeployment, prepareDeployment } from './deployment.js';
+import { resolveCodexExecutable } from '../../codex-session-bridge/src/codex-executable.js';
 
 const { values } = parseArgs({ options: { config: { type: 'string', default: fileURLToPath(new URL('../../../.local/control-center/config.json', import.meta.url)) } } });
 let server, timer;
@@ -26,12 +28,20 @@ try {
   }, { startup, codexCheck: async () => {
     await supervisor.serial(async () => {
       try {
-        const r = await run(c.codex, ['--version']);
+        const resolved = resolveCodexExecutable(c.codex);
+        const r = await run(resolved.executable, ['--version']);
         supervisor.codex = { cli: r.code === 0 && /^codex-cli [\w.+-]+\s*$/.test(r.output) ? r.output.trim() : '检查失败',
+          source: resolved.source, refreshed: resolved.refreshed,
           account: '未检查（需授权使用已有账号）', inference: '未在此验证', at: new Date().toISOString() };
-      } catch { supervisor.codex = { cli: '路径不可用', account: '未检查', inference: '未在此验证' }; }
+      } catch (error) { supervisor.codex = { cli: error.code === 'CODEX_EXECUTABLE_UNAVAILABLE' ? '配置路径失效，自动发现未找到可用 CLI' : 'CLI 启动检查失败', code: error.code, account: '未检查', inference: '未在此验证' }; }
     });
-  } });
+  }, deploymentCheck: () => supervisor.checkDeployment(async () => {
+    if (!c.yca.deploymentRoot) throw fail('DEPLOYMENT_NOT_CONFIGURED');
+    return latestDeployment(c.yca.repo);
+  }), deploymentUpdate: (restart, confirm) => supervisor.updateDeployment(async () => {
+    if (!c.yca.deploymentRoot) throw fail('DEPLOYMENT_NOT_CONFIGURED');
+    return prepareDeployment({ repo: c.yca.repo, root: c.yca.deploymentRoot, node: c.node });
+  }, { restart, confirm }) });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(c.port, '127.0.0.1', resolve); });
   claimStateDirectory(c.stateDir, c.port, configFile);
   supervisor = new Supervisor({ stateFile: path.join(c.stateDir, 'state.json'), events, observeOnly: c.observeOnly,
