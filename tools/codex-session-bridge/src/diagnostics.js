@@ -20,7 +20,7 @@ export function activity(manager, computer, requests = 0) {
   return { codex: Object.values(manager.store.state.runs).filter(r => ['queued', 'running', 'stopping'].includes(r.status)).length, computer: computer.executions.size, requests };
 }
 
-export function createDiagnostics({ manager, computer, instance, token, summary, requests, shutdown, drain = () => {} }) {
+export function createDiagnostics({ manager, computer, instance, token, summary, source = null, requests, shutdown, drain = () => {} }) {
   if (!/^[a-f0-9]{64}$/.test(token ?? '')) throw new Error('Control token must contain 32 random bytes.');
   return http.createServer(async (req, res) => {
     const reply = (status, body) => res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(body));
@@ -31,7 +31,7 @@ export function createDiagnostics({ manager, computer, instance, token, summary,
     const active = activity(manager, computer, requests());
     if (req.method === 'GET' && req.url === '/status') {
       const latest = Object.values(manager.store.state.runs).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
-      return reply(200, { service: 'yuki-local-control', instance, pid: process.pid, at: new Date().toISOString(), active, closing: manager.closing, tools: summary,
+      return reply(200, { service: 'yuki-local-control', instance, pid: process.pid, at: new Date().toISOString(), active, closing: manager.closing, tools: summary, source,
         lastBridge: latest ? { status: latest.status, at: latest.finished_at ?? latest.started_at ?? latest.created_at, code: latest.error?.code ?? null, exitCode: latest.exit_code } : null });
     }
     if (req.method === 'POST' && req.url === '/stop') {

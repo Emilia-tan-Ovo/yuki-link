@@ -6,6 +6,8 @@
 
 ## 本机启动
 
+常驻 Control Center 部署应使用[独立部署副本与更新入口](../control-center/README.md#常驻-yca-源码部署issue-11)，避免功能分支或未提交修改与已合并版本脱节。部署源码和原 `--runtime` 数据目录分离；不迁移 session/history/tunnel/key，也不要求所有开发票据使用 worktree。受认证的本机诊断会记录启动时的源码 commit/dirty 和实际工具摘要；正式切换与 ChatGPT 验收需在合并后执行。
+
 要求 Node.js 24+；电脑查询使用 PowerShell 7、Git，真实脚本入口要求 PowerShell 7.4+ 的原生命令错误语义，已在独立服务进程验证 7.6.5。Codex 功能另外需要可执行的 CLI 及其既有登录，历史验证 CLI 为 `0.154.0-alpha.6.2`。Agent 不读取、复制或保存 Codex 凭据。
 
 在本目录运行（Windows 使用 PowerShell 7）：

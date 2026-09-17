@@ -5,10 +5,11 @@ import { existsSync, readFileSync, renameSync, copyFileSync } from 'node:fs';
 import { fail, get, readJson, run, sleep } from './common.js';
 import { matches } from './host.js';
 import { tunnelEvents } from './tunnel-events.js';
+import { deploymentTarget, verifyDeployment } from './deployment.js';
 
 export class YcaUnit {
   constructor(config, host, state, persist, events) { Object.assign(this, { config, host, state, persist, events }); }
-  markers(instance = this.state.instance) { return [this.config.entry, ...(instance ? ['--control-instance', instance] : ['--runtime', this.config.runtime])]; }
+  markers(instance = this.state.instance) { return [this.state.entry ?? this.config.entry, ...(instance ? ['--control-instance', instance] : ['--runtime', this.config.runtime])]; }
   async observe() {
     const found = await this.host.inspect(this.config.node, this.markers());
     if (found.length > 1) return { running: true, owned: false, healthy: false, code: 'MULTIPLE_INSTANCES' };
@@ -36,14 +37,26 @@ export class YcaUnit {
       const lock = readJson(path.join(this.config.runtime, 'bridge.lock'), null);
       if (lock?.pid === p.pid) { this.state.lock = lock; this.persist(); }
     }
-    return { running: true, owned, pid: p.pid, created: p.created, healthy: Boolean(health && diagnostic && !diagnostic.closing),
+    let target = null, deploymentCode = null;
+    try { if (this.config.deploymentRoot) target = deploymentTarget(this.config.deploymentRoot); }
+    catch (e) { deploymentCode = e.code; }
+    const runningSource = diagnostic?.source ?? null;
+    const expected = this.state.deployment;
+    const verified = expected && runningSource?.commit === expected.commit && runningSource.dirty === false && diagnostic?.tools?.sha256 === expected.tools.sha256;
+    const deployment = { running: runningSource, target, launched: expected ?? null,
+      state: deploymentCode ? 'invalid-target' : !this.config.deploymentRoot ? 'unmanaged' : !verified ? 'unverified' : target?.commit !== expected.commit ? 'update-pending' : 'verified' };
+    return { running: true, owned, pid: p.pid, created: p.created, healthy: Boolean(health && diagnostic && !diagnostic.closing && (!expected || verified)), deployment,
       activity: diagnostic?.active ?? null, tools: diagnostic?.tools ?? null, lastBridge: diagnostic?.lastBridge ?? null,
-      code: !owned ? 'OBSERVED_UNOWNED' : !diagnostic ? 'ACTIVITY_UNKNOWN' : !health ? 'HEALTH_FAILED' : null };
+      code: !owned ? 'OBSERVED_UNOWNED' : !diagnostic ? 'ACTIVITY_UNKNOWN' : expected && !verified ? 'DEPLOYMENT_UNVERIFIED' : !health ? 'HEALTH_FAILED' : deploymentCode };
   }
-  async start() {
+  async start({ recovery = false } = {}) {
     const before = await this.observe();
     if (before.running) { if (before.owned) return; throw fail(before.code ?? 'OBSERVED_UNOWNED'); }
-    for (const file of [this.config.node, this.config.entry, this.config.pwsh, this.config.codex]) if (!existsSync(file)) throw fail('PATH_MISSING');
+    if (recovery && this.config.deploymentRoot && !this.state.deployment) throw fail('DEPLOYMENT_EXPLICIT_START_REQUIRED');
+    const deployment = this.config.deploymentRoot
+      ? await verifyDeployment(this.config.deploymentRoot, recovery ? this.state.deployment.commit : undefined, this.config.node) : null;
+    const entry = deployment?.entry ?? this.config.entry, cwd = deployment?.cwd ?? this.config.cwd;
+    for (const file of [this.config.node, entry, this.config.pwsh, this.config.codex]) if (!existsSync(file)) throw fail('PATH_MISSING');
     await this.host.free(this.config.port); await this.host.free(this.config.controlPort);
     const lockFile = path.join(this.config.runtime, 'bridge.lock');
     if (existsSync(lockFile)) {
@@ -58,11 +71,14 @@ export class YcaUnit {
       }
       renameSync(lockFile, `${lockFile}.control-backup-${Date.now()}`);
     }
-    this.state.instance = randomUUID(); this.state.token = randomBytes(32).toString('hex'); this.state.process = null; this.state.lock = null; this.persist();
-    const args = [this.config.entry, '--transport', 'http', '--port', String(this.config.port), '--allow-cwd', this.config.repo,
+    this.state.instance = randomUUID(); this.state.token = randomBytes(32).toString('hex'); this.state.process = null; this.state.lock = null;
+    this.state.entry = entry; this.state.deployment = deployment ? { commit: deployment.commit, tools: deployment.tools } : null; this.persist();
+    const args = [entry, '--transport', 'http', '--port', String(this.config.port), '--allow-cwd', this.config.repo,
       '--runtime', this.config.runtime, '--codex-bin', this.config.codex, '--pwsh-bin', this.config.pwsh,
       '--control-port', String(this.config.controlPort), '--control-instance', this.state.instance];
-    const child = spawn(this.config.node, args, { cwd: this.config.cwd, shell: false, windowsHide: true, detached: true,
+    // Older unmanaged YCA entries may not understand the deployment-era option.
+    if (deployment) for (const root of this.config.controlRoots ?? []) args.push('--control-root', root);
+    const child = spawn(this.config.node, args, { cwd, shell: false, windowsHide: true, detached: true,
       env: { ...process.env, YUKI_CONTROL_TOKEN: this.state.token }, stdio: ['ignore', 'ignore', 'ignore'] });
     const launchedInstance = this.state.instance;
     child.once('exit', code => {

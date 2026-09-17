@@ -24,7 +24,8 @@ async function refresh() {
     $('#startup-state').textContent = '自启：' + state.startup.state;
     const latest = state.units.yca.lastBridge;
     $('#codex-state').textContent = `CLI：${state.codex.cli} / 账号：${state.codex.account} / 模型：${state.codex.inference} / 最近 Bridge：${latest ? latest.status + ' · ' + latest.at : '无可观测结果'}`;
-    const t = state.tools; $('#tools').textContent = `本地 ${t.local?.count ?? '—'} 项 · SHA-256 ${t.local?.sha256 ?? '—'}\n最近人工确认：${t.confirmed?.at ?? '暂无'}${t.possibleRefresh ? ' · 可能需要刷新定义' : ''}`;
+    const t = state.tools, d = state.units.yca.deployment;
+    $('#tools').textContent = `运行中 YCA ${t.running?.count ?? '—'} 项 · SHA-256 ${t.running?.sha256 ?? '—'}\n源码 commit：${d?.running?.commit ?? '未知'} · 部署核验：${d?.state ?? '未知'}\n已准备目标：${d?.target?.commit ?? '未配置'}\n最近人工确认：${t.confirmed?.at ?? '暂无'}${t.possibleRefresh ? ' · 可能需要刷新定义' : ''}`;
     $('#events').textContent = state.events.map(e => `${e.at}  ${e.component} / ${e.action}${e.code ? ' / ' + e.code : ''}${e.exitCode !== null ? ' / exit=' + e.exitCode : ''}`).join('\n') || '暂无事件';
     document.querySelectorAll('[data-action]').forEach(b => b.disabled = busy || state.observeOnly || Boolean(state.busy));
   } catch { $('#overall').textContent = '面板连接中断 · 展示数据已过期'; document.querySelectorAll('.status').forEach(e => { e.textContent = '未知'; e.dataset.status = '未知'; }); }
