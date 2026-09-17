@@ -36,6 +36,22 @@ async function command(executable, args, cwd, code, timeout = 120_000) {
 }
 const git = (cwd, ...args) => command('git', ['--no-optional-locks', '-c', 'core.hooksPath=', '-c', 'core.fsmonitor=false', ...args], cwd, 'DEPLOYMENT_GIT_FAILED');
 
+async function deploymentSource(repo) {
+  repo = path.resolve(repo);
+  const remote = await git(repo, 'remote', 'get-url', 'origin');
+  const head = await git(repo, 'ls-remote', '--symref', remote, 'HEAD');
+  const branch = /^ref: refs\/heads\/(.+)\s+HEAD$/m.exec(head)?.[1];
+  const commit = /^([a-f0-9]{40})\s+HEAD$/m.exec(head)?.[1];
+  if (!branch) throw fail('DEPLOYMENT_DEFAULT_BRANCH_UNKNOWN');
+  if (!sha(commit)) throw fail('DEPLOYMENT_INVALID');
+  return { remote, branch, commit };
+}
+
+export async function latestDeployment(repo) {
+  const { branch, commit } = await deploymentSource(repo);
+  return { branch, commit };
+}
+
 async function probe(node, cwd) {
   const source = pathToFileURL(path.join(cwd, 'src/source.js')).href;
   await command(node, ['--input-type=module', '-e', `const source=await import(${JSON.stringify(source)}); if(source.deploymentProtocol!==1) process.exit(1);`], cwd, 'DEPLOYMENT_PROTOCOL_UNSUPPORTED');
@@ -99,7 +115,7 @@ export async function selectDeployment(root, commit, node = process.execPath) {
 export async function prepareDeployment({ repo, root, node = process.execPath, npmCli = path.join(path.dirname(node), 'node_modules/npm/bin/npm-cli.js') }) {
   repo = path.resolve(repo); root = path.resolve(root);
   noLinks(root);
-  const remote = await git(repo, 'remote', 'get-url', 'origin');
+  const { remote, branch, commit } = await deploymentSource(repo);
   if (!existsSync(root)) {
     mkdirSync(path.dirname(root), { recursive: true });
     // Exclusive creation prevents two first-time preparers claiming one root.
@@ -114,12 +130,9 @@ export async function prepareDeployment({ repo, root, node = process.execPath, n
     noLinks(bare);
     if (!existsSync(bare)) await git(root, 'clone', '--bare', '--', remote, bare);
     if (await git(bare, 'remote', 'get-url', 'origin') !== remote) throw fail('DEPLOYMENT_NOT_OWNED');
-    const head = await git(root, 'ls-remote', '--symref', remote, 'HEAD');
-    const branch = /^ref: refs\/heads\/(.+)\s+HEAD$/m.exec(head)?.[1];
-    if (!branch) throw fail('DEPLOYMENT_DEFAULT_BRANCH_UNKNOWN');
     await git(bare, 'fetch', '--no-tags', 'origin', `+refs/heads/${branch}:refs/deployment/default`);
-    const commit = await git(bare, 'rev-parse', 'refs/deployment/default^{commit}');
-    if (!sha(commit)) throw fail('DEPLOYMENT_INVALID');
+    try { await git(bare, 'cat-file', '-e', `${commit}^{commit}`); }
+    catch { throw fail('DEPLOYMENT_SOURCE_CHANGED'); }
     const release = path.join(root, 'releases', commit), cwd = path.join(release, bridgePath);
     const manifestFile = path.join(root, 'manifests', commit + '.json');
     const buildFile = path.join(root, 'builds', commit + '.json');

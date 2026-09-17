@@ -1,10 +1,12 @@
 import { spawnDirect, readLines } from './process.js';
 import { BridgeError } from './errors.js';
+import { resolveCodexExecutable } from './codex-executable.js';
 
 // Capability discovery is independent of session execution and contains no model table.
 export class ModelCatalog {
-  constructor(executable = 'codex', { ttlMs = 300_000, timeoutMs = 20_000 } = {}) {
+  constructor(executable = 'codex', { ttlMs = 300_000, timeoutMs = 20_000, resolveExecutable = resolveCodexExecutable } = {}) {
     this.executable = executable;
+    this.resolveExecutable = resolveExecutable;
     this.ttlMs = ttlMs;
     this.timeoutMs = timeoutMs;
     this.snapshot = null;
@@ -26,12 +28,20 @@ export class ModelCatalog {
   }
 
   async discover() {
-    const child = spawnDirect(this.executable, ['app-server', '--stdio']);
+    let executable;
+    try { executable = this.resolveExecutable(this.executable).executable; }
+    catch (error) { throw new BridgeError('CAPABILITY_UNAVAILABLE', error.message, error.details); }
+    const child = spawnDirect(executable, ['app-server', '--stdio']);
     const pending = new Map();
     let nextId = 1;
     let finished = false;
     const fail = error => { for (const request of pending.values()) request.reject(error); pending.clear(); };
-    child.on('error', () => fail(new BridgeError('CAPABILITY_UNAVAILABLE', 'Cannot start the local Codex capability service.')));
+    child.on('error', error => fail(new BridgeError(
+      'CAPABILITY_UNAVAILABLE',
+      'Cannot start the local Codex capability service after executable discovery. The installation may have changed; retry or check --codex-bin and the Codex installation.',
+      // Only expose the OS error category, never paths, environment or raw diagnostics.
+      { spawn_code: ['ENOENT', 'EACCES', 'EPERM', 'EINVAL', 'ENOEXEC', 'EMFILE', 'ENFILE', 'ENOMEM', 'EAGAIN'].includes(error.code) ? error.code : 'UNKNOWN' },
+    )));
     child.on('exit', () => { if (!finished) fail(new BridgeError('CAPABILITY_UNAVAILABLE', 'Codex capability service exited early.')); });
     // Never expose startup diagnostics that may contain account/configuration details.
     child.stderr.resume();

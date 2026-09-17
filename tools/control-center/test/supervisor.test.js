@@ -50,7 +50,7 @@ test('automatic recovery explicitly requests the previous deployment, never the 
   const f = setup(t);
   let options;
   f.units.yca.start = async function (input) { options = input; this.running = true; this.healthy = true; };
-  await f.manager.action('yca', 'start'); assert.equal(options.recovery, false);
+  await f.manager.action('yca', 'start'); assert.equal(options.recovery ?? false, false);
   await f.manager.setRecovery(true); f.units.yca.running = false; f.units.yca.healthy = false;
   await f.manager.tick(); f.advance(2000); await f.manager.tick();
   assert.equal(options.recovery, true);
@@ -130,4 +130,205 @@ test('single state directory cannot be used by a second control port', t => {
   const { root } = setup(t); claimStateDirectory(root, 7392, 'fixed'); claimStateDirectory(root, 7392, 'fixed');
   assert.throws(() => claimStateDirectory(root, 7394, 'other'), { code: 'STATE_BINDING_CONFLICT' });
   assert.equal(JSON.parse(readFileSync(path.join(root, 'binding.json'))).port, 7392);
+});
+
+test('prepared release stays pending across ordinary restart and switches only through update-restart', async t => {
+  const f = setup(t), m = f.manager, u = f.units.yca;
+  const first = 'a'.repeat(40), second = 'b'.repeat(40);
+  const firstTools = { count: 14, sha256: '1'.repeat(64) }, secondTools = { count: 18, sha256: '2'.repeat(64) };
+  u.running = true; u.healthy = true; u.commit = first; u.target = first; u.tools = firstTools;
+  m.state.units.yca.ownership.deployment = { commit: first, tools: firstTools };
+  u.observe = async function() {
+    return { running: this.running, healthy: this.healthy, owned: true, activity: this.activity,
+      deployment: { running: this.running ? { commit: this.commit } : null, target: { commit: this.target },
+        launched: m.state.units.yca.ownership.deployment, state: this.running && this.commit === this.target ? 'verified' : 'update-pending' },
+      tools: this.running ? this.tools : null, controlPlane: { state: 'healthy' } };
+  };
+  const starts = [];
+  u.start = async function(input = {}) {
+    starts.push({ ...input }); this.running = true; this.healthy = true;
+    this.commit = input.commit ?? this.target;
+    this.tools = this.commit === second ? secondTools : firstTools;
+    m.state.units.yca.ownership.deployment = { commit: this.commit, tools: this.tools };
+  };
+  u.stop = async function() { this.stops++; this.running = false; this.healthy = false; };
+  const prepare = async () => { u.target = second; return { commit: second, branch: 'merged', tools: secondTools }; };
+
+  await m.observe();
+  await m.updateDeployment(prepare, { restart: false });
+  let snapshot = m.snapshot();
+  assert.equal(snapshot.units.yca.deployment.running.commit, first);
+  assert.equal(snapshot.units.yca.deployment.target.commit, second);
+  assert.equal(snapshot.units.yca.deployment.restartRequired, true);
+  assert.equal(snapshot.tools.running.sha256, firstTools.sha256, 'preparing must not advertise candidate tools as running');
+
+  await m.action('yca', 'restart');
+  snapshot = m.snapshot();
+  assert.equal(starts.at(-1).commit, first, 'ordinary restart must pin the currently running release');
+  assert.equal(snapshot.units.yca.deployment.running.commit, first);
+  assert.equal(snapshot.tools.running.sha256, firstTools.sha256);
+
+  await m.updateDeployment(prepare, { restart: true });
+  snapshot = m.snapshot();
+  assert.equal(starts.at(-1).commit, second);
+  assert.equal(snapshot.units.yca.deployment.running.commit, second);
+  assert.equal(snapshot.units.yca.deployment.restartRequired, false);
+  assert.equal(snapshot.tools.running.sha256, secondTools.sha256);
+});
+
+test('update-restart rechecks activity after prepare and leaves current release running when work appears', async t => {
+  const f = setup(t), m = f.manager, u = f.units.yca;
+  const first = 'a'.repeat(40), second = 'b'.repeat(40), tools = { count: 14, sha256: '3'.repeat(64) };
+  u.running = true; u.healthy = true; u.commit = first; u.target = first; u.tools = tools;
+  m.state.units.yca.ownership.deployment = { commit: first, tools };
+  u.observe = async function() { return { running: this.running, healthy: this.healthy, owned: true, activity: this.activity,
+    deployment: { running: this.running ? { commit: this.commit } : null, target: { commit: this.target }, launched: m.state.units.yca.ownership.deployment, state: 'update-pending' },
+    tools: this.running ? this.tools : null, controlPlane: { state: 'healthy' } }; };
+  let stopped = false; u.stop = async function() { stopped = true; this.running = false; this.healthy = false; };
+  await m.observe();
+  const prepare = async () => { u.target = second; u.activity.computer = 1; return { commit: second, branch: 'merged', tools: { count: 18, sha256: '4'.repeat(64) } }; };
+  await assert.rejects(m.updateDeployment(prepare, { restart: true }), { code: 'ACTIVE_TASKS' });
+  const snapshot = m.snapshot();
+  assert.equal(stopped, false);
+  assert.equal(snapshot.units.yca.deployment.running.commit, first);
+  assert.equal(snapshot.units.yca.deployment.target.commit, second);
+  assert.equal(snapshot.tools.running.sha256, tools.sha256);
+});
+test('failed candidate start restores the captured previous release', async t => {
+  const f = setup(t), m = f.manager, u = f.units.yca;
+  const first = 'a'.repeat(40), second = 'b'.repeat(40);
+  const firstTools = { count: 14, sha256: '5'.repeat(64) }, secondTools = { count: 18, sha256: '6'.repeat(64) };
+  u.running = true; u.healthy = true; u.commit = first; u.target = first; u.tools = firstTools;
+  m.state.units.yca.ownership.deployment = { commit: first, tools: firstTools };
+  u.observe = async function() { return { running: this.running, healthy: this.healthy, owned: true, activity: this.activity,
+    deployment: { running: this.running ? { commit: this.commit } : null, target: { commit: this.target }, launched: m.state.units.yca.ownership.deployment, state: this.running && this.commit === this.target ? 'verified' : 'update-pending' },
+    tools: this.running ? this.tools : null, controlPlane: { state: 'healthy' } }; };
+  const starts = [];
+  u.start = async function(input = {}) {
+    starts.push(input.commit ?? null);
+    if (input.commit === second) throw fail('SPAWN_FAILED');
+    this.running = true; this.healthy = true; this.commit = input.commit ?? this.target; this.tools = firstTools;
+    m.state.units.yca.ownership.deployment = { commit: this.commit, tools: this.tools };
+  };
+  u.stop = async function() { this.stops++; this.running = false; this.healthy = false; };
+  await m.observe();
+  const prepare = async () => { u.target = second; return { commit: second, branch: 'merged', tools: secondTools }; };
+  await assert.rejects(m.updateDeployment(prepare, { restart: true }), { code: 'SPAWN_FAILED' });
+  const snapshot = m.snapshot();
+  assert.deepEqual(starts, [second, first]);
+  assert.equal(snapshot.units.yca.deployment.running.commit, first);
+  assert.equal(snapshot.units.yca.deployment.target.commit, second);
+  assert.equal(snapshot.tools.running.sha256, firstTools.sha256);
+});
+test('failed remote check keeps the previous result only as stale evidence', async t => {
+  const { manager: m, units: u } = setup(t);
+  u.yca.observe = async function() { return { running: false, owned: false, healthy: false, activity: this.activity,
+    deployment: { target: { commit: 'a'.repeat(40) }, state: 'stopped' } }; };
+  await m.checkDeployment(async () => ({ branch: 'merged', commit: 'a'.repeat(40) }));
+  assert.equal(m.snapshot().units.yca.deployment.remoteDiffers, false);
+  await assert.rejects(m.checkDeployment(async () => { throw fail('DEPLOYMENT_GIT_FAILED'); }), { code: 'DEPLOYMENT_GIT_FAILED' });
+  const deployment = m.snapshot().units.yca.deployment;
+  assert.equal(deployment.latest.commit, 'a'.repeat(40));
+  assert.equal(deployment.latest.stale, true);
+  assert.equal(deployment.latest.error, 'DEPLOYMENT_GIT_FAILED');
+  assert.equal(deployment.remoteDiffers, null, 'stale remote evidence must not be presented as current equality');
+});
+test('pre-switch release change rejects update without rolling the new owner back to the old release', async t => {
+  const f = setup(t), m = f.manager, u = f.units.yca;
+  const first = 'a'.repeat(40), second = 'b'.repeat(40), concurrent = 'c'.repeat(40);
+  const firstTools = { count: 14, sha256: '7'.repeat(64) }, concurrentTools = { count: 16, sha256: '8'.repeat(64) };
+  u.running = true; u.healthy = true; u.owned = true; u.commit = first; u.target = first; u.tools = firstTools; u.pid = 101; u.created = 'first-process';
+  m.state.units.yca.ownership.deployment = { commit: first, tools: firstTools };
+  u.observe = async function() { return { running: this.running, healthy: this.healthy, owned: this.owned, activity: this.activity,
+    pid: this.pid, created: this.created,
+    deployment: { running: this.running ? { commit: this.commit } : null, target: { commit: this.target }, launched: m.state.units.yca.ownership.deployment, state: 'update-pending' },
+    tools: this.running ? this.tools : null, controlPlane: { state: 'healthy' } }; };
+  let stopped = 0; const starts = [];
+  u.stop = async function() { stopped++; this.running = false; this.healthy = false; };
+  u.start = async function(input = {}) { starts.push(input.commit ?? null); this.running = true; this.commit = input.commit ?? this.target; };
+  await m.observe();
+  const prepare = async () => {
+    u.target = second;
+    u.commit = concurrent; u.tools = concurrentTools; u.pid = 202; u.created = 'concurrent-process';
+    m.state.units.yca.ownership.deployment = { commit: concurrent, tools: concurrentTools };
+    return { commit: second, branch: 'merged', tools: { count: 18, sha256: '9'.repeat(64) } };
+  };
+  await assert.rejects(m.updateDeployment(prepare, { restart: true }), { code: 'DEPLOYMENT_CURRENT_CHANGED' });
+  const snapshot = m.snapshot();
+  assert.equal(stopped, 0); assert.deepEqual(starts, []);
+  assert.equal(snapshot.units.yca.deployment.running.commit, concurrent);
+});
+
+test('pre-switch ownership loss rejects update without any rollback stop or start', async t => {
+  const f = setup(t), m = f.manager, u = f.units.yca;
+  const first = 'a'.repeat(40), second = 'b'.repeat(40), tools = { count: 14, sha256: 'a'.repeat(64) };
+  u.running = true; u.healthy = true; u.owned = true; u.commit = first; u.target = first; u.tools = tools; u.pid = 303; u.created = 'owned-process';
+  m.state.units.yca.ownership.deployment = { commit: first, tools };
+  u.observe = async function() { return { running: this.running, healthy: this.healthy, owned: this.owned, activity: this.activity,
+    pid: this.pid, created: this.created,
+    deployment: { running: this.running ? { commit: this.commit } : null, target: { commit: this.target }, launched: m.state.units.yca.ownership.deployment, state: 'update-pending' },
+    tools: this.running ? this.tools : null, controlPlane: { state: 'healthy' } }; };
+  let stopped = 0; const starts = [];
+  u.stop = async function() { stopped++; this.running = false; };
+  u.start = async function(input = {}) { starts.push(input.commit ?? null); };
+  await m.observe();
+  const prepare = async () => { u.target = second; u.owned = false; return { commit: second, branch: 'merged', tools: { count: 18, sha256: 'b'.repeat(64) } }; };
+  await assert.rejects(m.updateDeployment(prepare, { restart: true }), { code: 'OBSERVED_UNOWNED' });
+  assert.equal(stopped, 0); assert.deepEqual(starts, []); assert.equal(u.running, true);
+});
+test('rollback refuses to stop a concurrent non-candidate process after the old release was stopped', async t => {
+  const f = setup(t), m = f.manager, u = f.units.yca;
+  const first = 'a'.repeat(40), second = 'b'.repeat(40), concurrent = 'c'.repeat(40);
+  const firstTools = { count: 14, sha256: 'c'.repeat(64) }, secondTools = { count: 18, sha256: 'd'.repeat(64) }, concurrentTools = { count: 16, sha256: 'e'.repeat(64) };
+  u.running = true; u.healthy = true; u.owned = true; u.commit = first; u.target = first; u.tools = firstTools; u.pid = 404; u.created = 'old-process';
+  m.state.units.yca.ownership.deployment = { commit: first, tools: firstTools };
+  u.observe = async function() { return { running: this.running, healthy: this.healthy, owned: this.owned, activity: this.activity,
+    pid: this.pid, created: this.created,
+    deployment: { running: this.running ? { commit: this.commit } : null, target: { commit: this.target }, launched: m.state.units.yca.ownership.deployment, state: 'update-pending' },
+    tools: this.running ? this.tools : null, controlPlane: { state: 'healthy' } }; };
+  let stops = 0; const starts = [];
+  u.stop = async function() { stops++; this.running = false; this.healthy = false; };
+  u.start = async function(input = {}) {
+    starts.push(input.commit ?? null);
+    if (input.commit === second) {
+      this.running = true; this.healthy = true; this.owned = true; this.commit = concurrent; this.tools = concurrentTools; this.pid = 505; this.created = 'concurrent-process';
+      m.state.units.yca.ownership.deployment = { commit: concurrent, tools: concurrentTools };
+      throw fail('SPAWN_FAILED');
+    }
+  };
+  await m.observe();
+  const prepare = async () => { u.target = second; return { commit: second, branch: 'merged', tools: secondTools }; };
+  await assert.rejects(m.updateDeployment(prepare, { restart: true }), { code: 'DEPLOYMENT_ROLLBACK_CONFLICT' });
+  assert.equal(stops, 1, 'only the captured old release may have been stopped');
+  assert.deepEqual(starts, [second]);
+  assert.equal(u.running, true); assert.equal(u.commit, concurrent);
+});
+test('rollback does not stop an externally replaced process even when it runs the same candidate commit', async t => {
+  const f = setup(t), m = f.manager, u = f.units.yca;
+  const first = 'a'.repeat(40), second = 'b'.repeat(40);
+  const firstTools = { count: 14, sha256: 'f'.repeat(64) }, secondTools = { count: 18, sha256: '0'.repeat(64) };
+  u.running = true; u.healthy = true; u.owned = true; u.commit = first; u.target = first; u.tools = firstTools; u.pid = 606; u.created = 'old-process';
+  m.state.units.yca.ownership.deployment = { commit: first, tools: firstTools };
+  m.state.units.yca.ownership.instance = 'old-instance';
+  u.observe = async function() { return { running: this.running, healthy: this.healthy, owned: this.owned, activity: this.activity,
+    pid: this.pid, created: this.created,
+    deployment: { running: this.running ? { commit: this.commit } : null, target: { commit: this.target }, launched: m.state.units.yca.ownership.deployment, state: 'update-pending' },
+    tools: this.running ? this.tools : null, controlPlane: { state: 'healthy' } }; };
+  let stops = 0; const starts = [];
+  u.stop = async function() { stops++; this.running = false; this.healthy = false; };
+  u.start = async function(input = {}) {
+    starts.push({ commit: input.commit ?? null, instance: input.instance ?? null });
+    if (input.commit === second) {
+      this.running = true; this.healthy = true; this.owned = true; this.commit = second; this.tools = secondTools; this.pid = 707; this.created = 'external-same-commit';
+      m.state.units.yca.ownership.deployment = { commit: second, tools: secondTools };
+      m.state.units.yca.ownership.instance = 'external-instance';
+      throw fail('SPAWN_FAILED');
+    }
+  };
+  await m.observe();
+  const prepare = async () => { u.target = second; return { commit: second, branch: 'merged', tools: secondTools }; };
+  await assert.rejects(m.updateDeployment(prepare, { restart: true }), { code: 'DEPLOYMENT_ROLLBACK_CONFLICT' });
+  assert.equal(stops, 1, 'rollback must not stop the replacement B');
+  assert.equal(starts.length, 1); assert.equal(starts[0].commit, second); assert.ok(starts[0].instance);
+  assert.equal(u.running, true); assert.equal(u.commit, second); assert.equal(m.state.units.yca.ownership.instance, 'external-instance');
 });

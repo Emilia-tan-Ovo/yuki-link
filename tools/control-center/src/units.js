@@ -6,6 +6,7 @@ import { fail, get, readJson, run, sleep } from './common.js';
 import { matches } from './host.js';
 import { tunnelEvents } from './tunnel-events.js';
 import { deploymentTarget, verifyDeployment } from './deployment.js';
+import { resolveCodexExecutable } from '../../codex-session-bridge/src/codex-executable.js';
 
 export class YcaUnit {
   constructor(config, host, state, persist, events) { Object.assign(this, { config, host, state, persist, events }); }
@@ -14,13 +15,19 @@ export class YcaUnit {
     const found = await this.host.inspect(this.config.node, this.markers());
     if (found.length > 1) return { running: true, owned: false, healthy: false, code: 'MULTIPLE_INSTANCES' };
     const p = found[0];
+    let target = null, deploymentCode = null;
+    try { if (this.config.deploymentRoot) target = deploymentTarget(this.config.deploymentRoot); }
+    catch (e) { deploymentCode = e.code; }
+    const expected = this.state.deployment;
     if (!p) {
       // A foreign launcher can use relative src/main.js. The port is a second
       // independent conflict check and never grounds permission to terminate it.
       try { await this.host.free(this.config.port); }
       catch { return { running: true, owned: false, healthy: false, code: 'PORT_CONFLICT' }; }
       const oldLock = readJson(path.join(this.config.runtime, 'bridge.lock'), null);
-      return { running: false, owned: false, healthy: false, code: oldLock && oldLock.token !== this.state.lock?.token ? 'LEGACY_RUNTIME_LOCK' : null, lastExit: this.state.lastExit ?? null };
+      const deployment = { running: null, target, launched: expected ?? null,
+        state: deploymentCode ? 'invalid-target' : !this.config.deploymentRoot ? 'unmanaged' : target?.commit !== expected?.commit ? 'update-pending' : 'stopped' };
+      return { running: false, owned: false, healthy: false, deployment, code: oldLock && oldLock.token !== this.state.lock?.token ? 'LEGACY_RUNTIME_LOCK' : deploymentCode, lastExit: this.state.lastExit ?? null };
     }
     let owned = matches(p, this.state.process);
     let diagnostic;
@@ -37,11 +44,7 @@ export class YcaUnit {
       const lock = readJson(path.join(this.config.runtime, 'bridge.lock'), null);
       if (lock?.pid === p.pid) { this.state.lock = lock; this.persist(); }
     }
-    let target = null, deploymentCode = null;
-    try { if (this.config.deploymentRoot) target = deploymentTarget(this.config.deploymentRoot); }
-    catch (e) { deploymentCode = e.code; }
     const runningSource = diagnostic?.source ?? null;
-    const expected = this.state.deployment;
     const verified = expected && runningSource?.commit === expected.commit && runningSource.dirty === false && diagnostic?.tools?.sha256 === expected.tools.sha256;
     const deployment = { running: runningSource, target, launched: expected ?? null,
       state: deploymentCode ? 'invalid-target' : !this.config.deploymentRoot ? 'unmanaged' : !verified ? 'unverified' : target?.commit !== expected.commit ? 'update-pending' : 'verified' };
@@ -49,14 +52,16 @@ export class YcaUnit {
       activity: diagnostic?.active ?? null, tools: diagnostic?.tools ?? null, lastBridge: diagnostic?.lastBridge ?? null,
       code: !owned ? 'OBSERVED_UNOWNED' : !diagnostic ? 'ACTIVITY_UNKNOWN' : expected && !verified ? 'DEPLOYMENT_UNVERIFIED' : !health ? 'HEALTH_FAILED' : deploymentCode };
   }
-  async start({ recovery = false } = {}) {
+  async start({ commit = null, recovery = false, instance = null } = {}) {
     const before = await this.observe();
     if (before.running) { if (before.owned) return; throw fail(before.code ?? 'OBSERVED_UNOWNED'); }
-    if (recovery && this.config.deploymentRoot && !this.state.deployment) throw fail('DEPLOYMENT_EXPLICIT_START_REQUIRED');
+    const pinnedCommit = commit ?? (recovery ? this.state.deployment?.commit : null);
+    if ((commit || recovery) && this.config.deploymentRoot && !pinnedCommit) throw fail('DEPLOYMENT_EXPLICIT_START_REQUIRED');
     const deployment = this.config.deploymentRoot
-      ? await verifyDeployment(this.config.deploymentRoot, recovery ? this.state.deployment.commit : undefined, this.config.node) : null;
+      ? await verifyDeployment(this.config.deploymentRoot, pinnedCommit ?? undefined, this.config.node) : null;
     const entry = deployment?.entry ?? this.config.entry, cwd = deployment?.cwd ?? this.config.cwd;
-    for (const file of [this.config.node, entry, this.config.pwsh, this.config.codex]) if (!existsSync(file)) throw fail('PATH_MISSING');
+    for (const [name, file] of Object.entries({ NODE: this.config.node, YCA_ENTRY: entry, PWSH: this.config.pwsh })) if (!existsSync(file)) throw fail(`${name}_PATH_MISSING`);
+    this.codexResolution = resolveCodexExecutable(this.config.codex);
     await this.host.free(this.config.port); await this.host.free(this.config.controlPort);
     const lockFile = path.join(this.config.runtime, 'bridge.lock');
     if (existsSync(lockFile)) {
@@ -71,10 +76,10 @@ export class YcaUnit {
       }
       renameSync(lockFile, `${lockFile}.control-backup-${Date.now()}`);
     }
-    this.state.instance = randomUUID(); this.state.token = randomBytes(32).toString('hex'); this.state.process = null; this.state.lock = null;
+    this.state.instance = instance ?? randomUUID(); this.state.token = randomBytes(32).toString('hex'); this.state.process = null; this.state.lock = null;
     this.state.entry = entry; this.state.deployment = deployment ? { commit: deployment.commit, tools: deployment.tools } : null; this.persist();
     const args = [entry, '--transport', 'http', '--port', String(this.config.port), '--allow-cwd', this.config.repo,
-      '--runtime', this.config.runtime, '--codex-bin', this.config.codex, '--pwsh-bin', this.config.pwsh,
+      '--runtime', this.config.runtime, '--codex-bin', this.codexResolution.executable, '--pwsh-bin', this.config.pwsh,
       '--control-port', String(this.config.controlPort), '--control-instance', this.state.instance];
     // Older unmanaged YCA entries may not understand the deployment-era option.
     if (deployment) for (const root of this.config.controlRoots ?? []) args.push('--control-root', root);

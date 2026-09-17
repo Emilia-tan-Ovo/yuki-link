@@ -8,6 +8,10 @@
 
 本机配置准备在仓库 `.local/control-center/config.json`，并生成 `.local/control-center/Open-ControlCenter.cmd`。该入口查找同一面板或隐藏启动后台，再打开浏览器。配置/状态/凭据引用不提交 Git。其他机器以 `config.example.json` 为结构示例，所有路径应重新核对，不能直接运行示例。
 
+Codex 路径在每次启动 YCA、点击“检查 CLI”、Bridge 查询能力及启动/续聊时重新验证。有效显式配置优先；失效后自动查找当前用户 Desktop 安装的 `OpenAI\Codex\bin\*\codex.exe`，再尝试 PATH 中的原生 CLI。文件需通过 `--version` 探测；不修改保存的配置、PATH、tunnel 或会话记录。面板显示是否自动重新发现；找不到时报 `CODEX_EXECUTABLE_UNAVAILABLE`。Node、PowerShell、YCA 入口缺失分别报告 `NODE_PATH_MISSING`、`PWSH_PATH_MISSING`、`YCA_ENTRY_PATH_MISSING`，不再笼统归为 PATH 问题。
+
+同类路径排查（2026-09-17）：Codex 启动、CLI 检查及长期运行 Bridge 的路径已共用重新发现逻辑。PowerShell 若配置在第三方 runtime 缓存目录，缓存被清理后仍需修正 `pwsh` 配置；通用软件发现、Supervisor 自身 Node/PowerShell 引导恢复不在本次小修范围。tunnel 的固定版本校验、profile/健康地址的每次读取和进程归属校验保留。
+
 ```powershell
 pwsh.exe -NoProfile -File tools/control-center/scripts/Open-ControlCenter.ps1 -Config .local/control-center/config.json
 ```
@@ -45,7 +49,14 @@ if ($LASTEXITCODE -ne 0) { throw '部署准备失败，保留原服务与现场'
 4. 从此次输出 `cwd` 的相邻 `tools/control-center/scripts/Open-ControlCenter.ps1` 启动新版 Supervisor，`-Config` 仍指原配置文件。将本机 Control Center 启动入口指向这个固定、已核验版本的脚本，不能再指向开发分支。已有计划任务如需换入口须另行按原自启流程授权，本流程不修改计划任务。
 5. 面板点击 YCA“启动”，核对下面的独立验收。Supervisor 仍按原进程身份/诊断认证核验所有权。部署路径在启动前固定到实例记录，准备新版或重启 Supervisor 都不会丢失旧进程的所有权证据。
 
-以后更新只需重新执行准备命令，再由面板显式“重启 YCA”（也可停止后启动）。准备期间 `update-pending` 表示旧进程仍运行；自动恢复只拉起上次已启动的 commit，不会趁旧进程退出时自动切换候选版。没有历史部署记录时自动恢复拒绝首次切换。无需手工复制源码。Control Center 本身的升级仍需上述 Supervisor 退出及入口切换；YCA 更新不隐式升级 Supervisor。
+以后更新可以直接使用面板的“检查远端版本 / 准备远端版本 / 更新并重启 YCA”。三种动作语义分开：
+
+- **检查远端版本**：只读取仓库实际 `origin` 的远端 HEAD，记录默认分支及完整 commit，不准备 release，也不停止服务。该网络检查只在用户显式操作时执行，不进入 5 秒本地轮询。远端 commit 与已选 commit 不同只表示“版本不同”，可能是前进、回滚或分叉，不据此猜测新旧关系；检查失败保留上次成功结果并标记为过期。
+- **准备远端版本**：对一次检查得到的确切 commit 执行 fetch、依赖安装、部署协议与工具摘要核验，成功后原子更新 `selected.json`；运行中的 YCA 不停止，因此允许出现“运行 A、已准备 B”。失败不会改变原 selected，也不会改动旧 release、service runtime、session/history 或 tunnel。
+- **仅重启当前版本 / 重启全部（不更新）**：重启前从真实受管进程锁定正在运行的 commit，再严格启动同一个 release；即使 `selected.json` 已指向 B，也不会把 A 偷偷升级成 B。自动恢复同样固定上次已启动的 commit。服务已停止时“启动已选版本”才使用 selected。
+- **更新并重启 YCA**：先检查活动任务并记住当前 release A，再准备并核验确切候选 B；准备结束后立即再次检查活动任务和当前所有权，避免准备期间新任务进入。通过后停止 A，只启动本次已验证的 B，并以真实运行 commit 与工具摘要确认切换成功。若用户在开始时明确确认中断活动任务，该确认也覆盖准备期间新进入且在最终检查时仍活动的任务；未确认时最终检查会拒绝停止。B 启动或 readiness/摘要核验失败时，只在本次操作已经实际停止 A 或开始启动 B 后尝试恢复 A；切换前的版本、进程身份或 ownership 变化只会拒绝，不触发回退。回退仅允许停止能确认属于本次候选 B 的受管实例，并重新核对 A 的健康、commit 与旧工具摘要；发现其他实例则停止自动处理。selected 仍可保持 B，页面会明确显示“已准备版本尚未切换”。
+
+准备期间或准备成功后，`update-pending` 表示运行版本与已选版本不同，不等于服务异常。Control Center 本身的升级仍需上述 Supervisor 退出及入口切换；YCA 更新不隐式升级 Supervisor。该流程不是零停机部署，也不承诺新 release 若对共享 runtime 做不可逆迁移仍可安全回退；当前 YCA 启动约定必须继续保持 runtime/session/history 向后兼容。
 
 失败语义：
 
@@ -59,6 +70,11 @@ if ($LASTEXITCODE -ne 0) { throw '部署准备失败，保留原服务与现场'
 | `COMMAND_TIMEOUT/OUTPUT_LIMIT` | 可能存在未结束的 Git/npm 后代，保留更新锁；人工核验进程全部退出后备份移开锁再重试 |
 | `DEPLOYMENT_NODE_CHANGED` | Node 主版本变化，拒绝复用；核查并为新 Node 准备新的部署根目录，不改写已发布依赖 |
 | `DEPLOYMENT_UNVERIFIED` | 运行进程源码/工具摘要不符，报告失败并暂停自动恢复；不得用“HTTP 健康”代替版本验收 |
+| `DEPLOYMENT_SOURCE_CHANGED` | 检查与 fetch 之间远端 HEAD 已变化，本次不把另一 commit 冒充刚检查的候选；重新检查后再准备 |
+| `DEPLOYMENT_CURRENT_UNKNOWN/CURRENT_CHANGED` | 无法可靠锁定当前 release，或准备期间真实运行版本发生变化；拒绝停止/隐式升级，保留当前服务 |
+| `DEPLOYMENT_SWITCH_UNVERIFIED` | 候选启动后 commit、健康或工具摘要未与本次准备结果一致；自动尝试恢复切换前的 release |
+| `DEPLOYMENT_ROLLBACK_FAILED` | 候选切换失败且旧 release 也未恢复；保留现场并停止继续猜测或自动切换 |
+| `DEPLOYMENT_ROLLBACK_CONFLICT` | 回退阶段发现当前实例既不是原 release，也不能确认属于本次候选；不停止该实例、不强行拉回旧版，保留现场核查 |
 
 回滚时先在面板安全停止 YCA，再选择**已经准备且验证过**的旧 commit：
 

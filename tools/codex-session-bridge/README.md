@@ -23,6 +23,10 @@ HTTP 只绑定 `127.0.0.1`，默认 MCP 地址 `http://127.0.0.1:7391/mcp`，健
 
 `--allow-cwd` 同时限定 Codex 工作目录和文件写入范围。`--read-root` 可重复添加额外只读目录，用于目录列举、Git 查询和直接 PowerShell cwd 校验。`filesystem_read` 可读取任务明确指定的区外普通文本，仍受下文保护规则约束；其他入口范围不随之扩大。其他本地参数：`--port`、`--runtime`（绝对路径）、`--codex-bin`、`--pwsh-bin`。未指定 allowlist 时拒绝启动。`--help` 查看参数。
 
+Windows 常驻服务可以显式传入 `--codex-bin 'C:\path\to\codex.exe'`，并继续使用原来的 `--runtime`。每次能力发现或会话启动前验证文件及原生 `--version` 探测；有效显式路径优先。路径失效时先查 `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe`（按文件修改时间从新到旧尝试），再查服务 PATH 中的原生 CLI；默认 `codex` 则先查 PATH 再查 Desktop 安装。无须修改 PATH 或手工跟随 hash 更新。发现结果仅用于运行时，不回写已有配置；成功探测缓存每次按文件身份、大小和时间重新验证，删除/替换后重新发现。拒绝 `.ps1/.cmd/.bat` shim，始终 `shell:false`。
+
+`CAPABILITY_UNAVAILABLE` 的 `details.configured_status` / `discovery_status` 区分配置路径和自动发现失败；`ENOENT` 表示缺失，`ENOEXEC` 表示不可用原生程序，`ETIMEDOUT` 表示探测超时。会话执行阶段发现失败使用 `CODEX_EXECUTABLE_UNAVAILABLE`。检查安装或 `--codex-bin`，不能简单归因于 PATH；无需重新登录、重建 tunnel 或清空 runtime。对外不返回 CLI 路径、环境或启动 stderr。能力查询仍按需执行，失败不会阻止独立启动的 YCA 直接电脑工具。
+
 本地进程型 MCP 客户端也可使用 stdio，按各客户端 JSON 配置的 command/args 方式提供：
 
 ```json
