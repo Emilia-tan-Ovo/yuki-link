@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, cpSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, cpSync, unlinkSync, renameSync, symlinkSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 import { Client } from '../../codex-session-bridge/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';
@@ -105,6 +105,16 @@ test('runtime without deployment provenance support is rejected before it can be
   writeFileSync(path.join(f.bridge, 'src/source.js'), 'export const deploymentProtocol = 0;');
   git(f.repo, 'add', '.'); git(f.repo, 'commit', '-m', 'unsupported'); git(f.repo, 'push', 'origin', 'merged');
   await assert.rejects(prepareDeployment(f.options), { code: 'DEPLOYMENT_PROTOCOL_UNSUPPORTED' });
+});
+
+test('a replaced releases directory is refused before checkout writes outside the owned root', async t => {
+  const f = fixture(t); await prepareDeployment(f.options);
+  const releases = path.join(f.root, 'releases'), outside = path.join(f.directory, 'outside');
+  mkdirSync(outside); renameSync(releases, path.join(f.root, 'original-releases'));
+  symlinkSync(outside, releases, process.platform === 'win32' ? 'junction' : 'dir');
+  writeFileSync(path.join(f.repo, 'next.txt'), 'next'); git(f.repo, 'add', '.'); git(f.repo, 'commit', '-m', 'next'); git(f.repo, 'push', 'origin', 'merged');
+  await assert.rejects(prepareDeployment(f.options), { code: 'DEPLOYMENT_LINK_REFUSED' });
+  assert.deepEqual(readdirSync(outside), []);
 });
 
 test('real deployed YCA reports the target commit and YCA-002 contract; preparation leaves it running', { skip: process.platform !== 'win32', timeout: 90_000 }, async t => {

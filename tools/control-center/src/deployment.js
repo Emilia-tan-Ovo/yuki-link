@@ -16,6 +16,7 @@ function noLinks(file) {
 }
 function ownedRoot(root, remote) {
   noLinks(root);
+  for (const name of ['owner.json', 'repository.git', 'releases', 'builds', 'manifests', 'selected.json']) noLinks(path.join(root, name));
   const owner = readJson(path.join(root, 'owner.json'), {});
   if (owner.kind !== 'yca-deployment-v1' || owner.root !== root || (remote && owner.remote !== remote)) throw fail('DEPLOYMENT_NOT_OWNED');
   return owner;
@@ -52,6 +53,7 @@ export async function readDeployment(root, commit) {
   commit ??= readJson(path.join(root, 'selected.json')).commit;
   if (!sha(commit)) throw fail('DEPLOYMENT_INVALID');
   const release = path.join(root, 'releases', commit), cwd = path.join(release, bridgePath);
+  noLinks(path.join(root, 'manifests', commit + '.json'));
   const manifest = readJson(path.join(root, 'manifests', commit + '.json'));
   if (manifest.commit !== commit || manifest.entry !== path.join(cwd, 'src/main.js') || manifest.cwd !== cwd
       || manifest.lockHash !== hash(path.join(cwd, 'package-lock.json'))) throw fail('DEPLOYMENT_CHANGED');
@@ -121,6 +123,7 @@ export async function prepareDeployment({ repo, root, node = process.execPath, n
     const release = path.join(root, 'releases', commit), cwd = path.join(release, bridgePath);
     const manifestFile = path.join(root, 'manifests', commit + '.json');
     const buildFile = path.join(root, 'builds', commit + '.json');
+    for (const file of [release, manifestFile, buildFile]) noLinks(file);
     let manifest, dependencies;
     if (existsSync(manifestFile)) {
       manifest = await verifyDeployment(root, commit, node);
