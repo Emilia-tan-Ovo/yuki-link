@@ -200,7 +200,11 @@ npm.cmd run test:live
 
 YCA-002 的 `test/text.test.js` 使用真实 HTTP/MCP 和临时文件，封堵并计数 model start/send/executor，验证文件调用为零模型调用。覆盖区外/Skill 文本、BOM/换行、短读/增长/大小边界、冲突/no-op、敏感路径/内容、链接及其他入口不扩围。Windows 测试报告实际可用的 8.3 别名数量。可在当前 PowerShell 进程设置 `YCA_TEST_SKILL` 为获准读取的真实 `.agents/skills/.../SKILL.md` 或 `.codex/skills/.../SKILL.md`，再运行 `node --test test/text.test.js`，只读取并核对原字节、哈希及未修改状态；未指定时该真实文件用例跳过，其他用例使用夹具。仓库没有 typecheck 脚本，使用 `node --check` 检查 JavaScript 语法。
 
-本票本机测试不代表已部署，也不替代 ChatGPT 经现有连接直接读取区外资料及更新样本文本的验收。该端到端验收尚待执行，见 [YCA-002](../../docs/tickets/yuki-computer-agent/002-text-and-skills.md)。
+YCA-002 在代码提交 `f6495fb` 完成 Bridge 52/52、Control Center 16/16、文本/路径针对性检查 13/13，均无跳过。两个独立审查轴中，Standards 初审/复查均 0 项；Spec 发现 1 项 UNC 分隔符问题，修复后复查剩余 0 项。后续仅更新验收文档，未重跑全套测试。
+
+艾米莉亚独立审阅该提交，16 组检查及三次独立请求的交互核验通过。实际路由是 **ChatGPT → 现有 YCA 的 `powershell_execute` → 隔离候选版本公开 HTTP/MCP**：读取区外资料、真实 ticket-design Skill（6098 字节，仅只读）及样本，携带先前实际返回的哈希更新，再核对返回内容与磁盘哈希。最终样本 95 字节，SHA-256 为 `a15d6f590104e5448aad081452248cddca07136d853c562ff85c2fe0d4b6677b`；manager start/send、executor、spawn、catalog 均 0 调用。验收进程已退出，临时样本已清理。
+
+这是经过现有连接的候选版本独立读写往返；常驻 YCA 和 ChatGPT 已注册 `filesystem_*` 工具均未切换到新版本，没有部署或重启。因此不表示常驻工具加载后的验收或所有端到端验收完成；原验收框仍未勾选，详见 [YCA-002 验收记录与传输诊断](../../docs/tickets/yuki-computer-agent/002-text-and-skills.md#yca-002-本地实现与验收状态)。
 
 YCA-001 本机回归 39/39 通过；2026-09-16 用户确认 ChatGPT → Yuki Computer Agent → PowerShell 7 的真实验收通过，全程未经过 Codex。中文/引号/多行文件闭环、两流与退出语义、超时/超限部分输出及四种旧查询均通过，详见 [YCA-001 验收记录](../../docs/tickets/yuki-computer-agent/001-powershell-execution.md#本地实现与验收状态)。输出超限用例的根进程已退出，但 `tree_kill=unconfirmed`，保留这一未确认状态；超时用例则确认 `tree_kill=succeeded`。本机结果与用户提供的 ChatGPT 验收证据分别记录。
 
