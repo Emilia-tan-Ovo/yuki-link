@@ -437,13 +437,13 @@ test('MCP creates, reads, updates with a hash, lists and moves a UTF-8 workspace
   assert.equal(readFileSync(destination, 'utf8'), '第二版');
 });
 
-test('filesystem denies out-of-root, read-only writes, credentials, links and overwrite moves', async t => {
+test('filesystem allows addressed outside text but denies read-only writes, credentials, links and overwrite moves', async t => {
   const { root, workspace, readOnly, call } = await connect(t);
   const publicFile = path.join(readOnly, 'public.txt'); writeFileSync(publicFile, '只读资料', 'utf8');
   assert.equal((await call('filesystem_read', { path: publicFile })).content, '只读资料');
   assert.equal((await call('filesystem_write', { path: publicFile, content: '改写' })).error.code, 'PATH_NOT_ALLOWED');
   const outside = path.join(root, 'outside.txt'); writeFileSync(outside, 'outside', 'utf8');
-  assert.equal((await call('filesystem_read', { path: outside })).error.code, 'PATH_NOT_ALLOWED');
+  assert.equal((await call('filesystem_read', { path: outside })).content, 'outside');
   const key = path.join(workspace, '.env'); writeFileSync(key, 'TEST_ONLY=placeholder', 'utf8');
   assert.equal((await call('filesystem_read', { path: key })).error.code, 'PROTECTED_PATH');
   const secretDirectory = path.join(workspace, 'select-key'); mkdirSync(secretDirectory);

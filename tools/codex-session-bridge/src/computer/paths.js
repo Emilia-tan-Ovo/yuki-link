@@ -21,18 +21,27 @@ export class PathPolicy {
     this.runtime = canonicalPath(runtime);
   }
 
-  resolve(input, { write = false, missing = false } = {}) {
+  resolve(input, { write = false, missing = false, intent } = {}) {
+    // Only a complete text read can cross read roots; directory and mutation
+    // callers retain their existing policy, including during canonical recursion.
+    const textRead = intent === 'text-read' && !write && !missing;
     if (typeof input !== 'string' || !path.isAbsolute(input) || /[\x00-\x1f]/.test(input)) throw new BridgeError('INVALID_PATH', 'Use an absolute local filesystem path.');
-    if (process.platform === 'win32' && (input.startsWith('\\\\') || input.slice(2).includes(':'))) throw new BridgeError('INVALID_PATH', 'Network/device paths and alternate data streams are not supported.');
+    // Windows accepts forward and mixed separators in UNC paths too.
+    if (process.platform === 'win32' && (input.replaceAll('/', '\\').startsWith('\\\\') || input.slice(2).includes(':'))) throw new BridgeError('INVALID_PATH', 'Network/device paths and alternate data streams are not supported.');
     const target = path.resolve(input);
     const parts = target.slice(path.parse(target).root.length).split(path.sep);
-    if (parts.some(part => secretName.test(part))) throw new BridgeError('PROTECTED_PATH', 'Credential, agent configuration, Git metadata and runtime paths are protected.');
+    if (parts.some((part, index) => {
+      // Exempt this component only, never all descendants of a Skill directory.
+      const skillContainer = textRead && /^(?:\.agents|\.codex)$/i.test(part)
+        && /^skills$/i.test(parts[index + 1] ?? '') && index + 2 < parts.length;
+      return secretName.test(part) && !skillContainer;
+    })) throw new BridgeError('PROTECTED_PATH', 'Credential, agent configuration, Git metadata and runtime paths are protected.');
     if (process.platform === 'win32' && parts.some(part => /[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) throw new BridgeError('INVALID_PATH', 'Ambiguous Windows filename.');
     if (inside(this.runtime, target)) throw new BridgeError('PROTECTED_PATH', 'Agent runtime is private.');
     if (inside(controlConfiguration, target)) throw new BridgeError('PROTECTED_PATH', 'Local control configuration is private.');
     if (write && (inside(installation, target) || inside(controlInstallation, target) || /^(?:AGENTS|CLAUDE)\.md$/i.test(path.basename(target)))) throw new BridgeError('PROTECTED_PATH', 'The agent installation and instruction files cannot be changed through these tools.');
     const roots = write ? this.writeRoots : this.readRoots;
-    if (!roots.some(root => inside(root, target))) throw new BridgeError('PATH_NOT_ALLOWED', 'Path is outside the permitted directories.');
+    if (!textRead && !roots.some(root => inside(root, target))) throw new BridgeError('PATH_NOT_ALLOWED', 'Path is outside the permitted directories.');
     // Walk every component, including junctions. Never follow a user-created link.
     let current = path.parse(target).root;
     for (let index = 0; index < parts.length; index++) {
@@ -44,7 +53,7 @@ export class PathPolicy {
           const canonical = path.join(canonicalPath(path.dirname(target)), path.basename(target));
           // Revalidate canonical parent names too: Windows 8.3 aliases can hide
           // protected directories even when the new leaf does not exist yet.
-          if (canonical !== target) return this.resolve(canonical, { write, missing });
+          if (canonical !== target) return this.resolve(canonical, { write, missing, intent });
           return target;
         }
         throw new BridgeError(error.code === 'ENOENT' ? 'PATH_NOT_FOUND' : 'PATH_UNAVAILABLE', 'Path is missing or inaccessible.');
@@ -54,10 +63,10 @@ export class PathPolicy {
       if (!info.isDirectory() && !info.isFile()) throw new BridgeError('PATH_NOT_ALLOWED', 'Only ordinary files and directories are supported.');
     }
     const canonical = canonicalPath(target);
-    if (!roots.some(root => inside(root, canonical))) throw new BridgeError('PATH_NOT_ALLOWED', 'Resolved path is outside permitted directories.');
+    if (!textRead && !roots.some(root => inside(root, canonical))) throw new BridgeError('PATH_NOT_ALLOWED', 'Resolved path is outside permitted directories.');
     // Root containment alone is insufficient: aliases must not bypass .git,
     // runtime, credential names, instruction files or our own installation.
-    if (canonical !== target) return this.resolve(canonical, { write, missing });
+    if (canonical !== target) return this.resolve(canonical, { write, missing, intent });
     return canonical;
   }
 }

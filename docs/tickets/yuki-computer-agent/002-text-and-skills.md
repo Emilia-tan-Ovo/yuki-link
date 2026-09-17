@@ -4,7 +4,7 @@
 
 **Blocked by:** None — 基于现有专用文件接口即可交付，不需要 A1 脚本接口；实施优先级仍位于 A1 之后的 A2。
 
-**Status:** ready-for-agent — 票据范围与验收标准已审阅；实施仍遵守技术依赖及 ticket-design 建议，未授权批量实施，验收待执行。
+**Status:** ready-for-agent — 本票候选实现与隔离路由独立核验已完成，常驻工具切换后的验收尚未执行；详见下方记录。未授权批量实施。
 
 **Spec:** [已审阅规范](../../specs/yuki-computer-agent.md)；User Stories 9～11、14、33；A2 文件读取条款、兼容要求；A2-AC1 的文本/Skills 部分、AC4、AC8，别名见[索引](README.md)。目录创建的完整场景由 YCA-003 交付。
 
@@ -38,3 +38,19 @@
 ## ticket-design 建议
 
 **建议先做。** 现有路径拒绝规则把普通文档与敏感配置位置混在一起，需定清用户可读场景和专用接口语义；读取大小的处理若涉及新外部契约也在本票解决。不引入自定义强隔离或批准平台，不重新询问已确认的文本优先范围。
+
+## YCA-002 本地实现与验收状态
+
+设计以 [Issue #2 的 Implementation Notes](https://github.com/Emilia-tan-Ovo/yuki-link/issues/2) 七项已确认决策为准。实现只为正文读取增加路径意图；Skill 配置目录按组件豁免，其他保护和各入口范围继续保留。共享文件读取采用有界读取并处理短读，不增加分页或工具；同内容 `changed:false` 保留旧 hash/no hash 的 no-op 兼容。具体格式、错误及示例见 [文件接口说明](../../../tools/codex-session-bridge/README.md#专用文件与-git-工具)。
+
+2026-09-17 本机文本与路径针对性检查 13/13 通过（含真实本机 Skill 只读用例），Windows 8.3 别名实际覆盖 2/2 场景。测试经临时 HTTP/MCP 服务，模型 start/send/executor 被封堵并核对零调用；真实 Skill 的原字节、哈希和未修改状态一致。没有读取真实凭据或修改真实 Skill。
+
+上述针对性检查及 Bridge 完整 `npm test` 52/52、Control Center 回归 16/16 均在代码提交 `f6495fb` 通过，无跳过；后者使用隔离测试服务，不操作当前 YCA/tunnel/Control Center。JavaScript 语法与 diff 空白检查通过；仓库没有 typecheck 脚本，未运行 `test:live` 或付费模型验收。后续收尾只更新验收文档，未重跑这些测试。
+
+两个独立代理并行审查：Standards 初审及最终复查均 0 项发现；Spec 初审发现 1 项 Windows 正斜杠 UNC 拒绝缺口，已在 `f6495fb` 修复，复查剩余 0 项。Spec 审查者另行运行 UNC 回归 1/1 通过。
+
+艾米莉亚独立审阅 `f6495fb`，16 组独立检查全部通过。证据路由为 **ChatGPT → 现有 YCA 的 `powershell_execute` → 隔离候选版本公开 HTTP/MCP**，是真实经过现有连接的独立读写往返，不只是复述本机测试。真实 ticket-design Skill 6098 字节只读及哈希核对通过；另以三次独立请求完成区外/Skill/样本读取、携带实际读取所得旧哈希更新，以及返回内容与磁盘哈希交叉核对。最终样本 95 字节，SHA-256 为 `a15d6f590104e5448aad081452248cddca07136d853c562ff85c2fe0d4b6677b`；manager start/send、executor、spawn、catalog 均 0 调用。验收进程已退出，唯一临时样本目录已清理。
+
+首次隔离实例启动返回 `STREAM_FAILED`、退出码 0 及部分 ready 输出，没有重放启动；后续独立请求和磁盘/清理核对确认了实际结果，未推断流错误根因。
+
+常驻 YCA 及 ChatGPT 已注册的 `filesystem_*` 工具没有切换到候选版本，也没有部署或重启。上述隔离路由通过，不代表常驻工具加载后已验收或所有端到端验收完成。原验收框保持未勾选，不据此关闭 Issue。

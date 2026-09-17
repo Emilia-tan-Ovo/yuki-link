@@ -19,7 +19,7 @@ HTTP 只绑定 `127.0.0.1`，默认 MCP 地址 `http://127.0.0.1:7391/mcp`，健
 
 可重复传入 `--allow-cwd` 添加管理员允许的工作目录。路径会取真实路径再校验，包含子目录，拒绝越界和 junction/symlink。脚本入口仍校验 cwd，但这不是脚本的访问沙箱：脚本实际读写、原生命令和外部访问受运行账号与系统权限影响。工具不提供任意 CLI flags 或提权开关，不增加额外批准机制。
 
-`--allow-cwd` 同时限定 Codex 工作目录和文件写入范围。`--read-root` 可重复添加额外只读目录。其他本地参数：`--port`、`--runtime`（绝对路径）、`--codex-bin`、`--pwsh-bin`。未指定 allowlist 时拒绝启动。`--help` 查看参数。
+`--allow-cwd` 同时限定 Codex 工作目录和文件写入范围。`--read-root` 可重复添加额外只读目录，用于目录列举、Git 查询和直接 PowerShell cwd 校验。`filesystem_read` 可读取任务明确指定的区外普通文本，仍受下文保护规则约束；其他入口范围不随之扩大。其他本地参数：`--port`、`--runtime`（绝对路径）、`--codex-bin`、`--pwsh-bin`。未指定 allowlist 时拒绝启动。`--help` 查看参数。
 
 本地进程型 MCP 客户端也可使用 stdio，按各客户端 JSON 配置的 command/args 方式提供：
 
@@ -122,7 +122,19 @@ HTTP 只绑定 `127.0.0.1`，默认 MCP 地址 `http://127.0.0.1:7391/mcp`，健
 
 ### 专用文件与 Git 工具
 
-文件工具仅支持最大 256 KiB 的 UTF-8 普通文件；父目录必须已经存在。拒绝 junction/symlink、硬链接、UNC/device 路径、ADS 和含凭据/配置/runtime 的受保护路径。写入另外保护 Agent 自身安装目录及 `AGENTS.md` / `CLAUDE.md`。现有文件更新必须带读取时取得的 `expected_sha256`；内容冲突会拒绝。常见凭据格式会被拒绝，但模式识别不能覆盖所有秘密，应只允许可信的工作目录。
+`filesystem_read` 接受任务明确指定的绝对本地文件路径，可超出 `readRoots` 读取普通 UTF-8 文本、Markdown 和源码，不要求扩展名白名单。允许 `.agents/skills/**`、`.codex/skills/**` 下的正文与辅助文本（不限 `SKILL.md`），仅豁免对应配置目录组件；其他敏感组件（例如 Skill 内的 `.env`、`.ssh`、`credentials`）、实际 runtime 与本安装的 `.local/control-center` 配置仍拒绝。保留 junction/symlink、硬链接、UNC/device、ADS、Windows 模糊名称和 canonical/8.3 路径校验。内容的常见凭据模式仍返回 `SENSITIVE_CONTENT`，但不能识别所有秘密；调用方仍应按任务授权选择资料。
+
+读取结果保持 `path/content/bytes/sha256/encoding`：`path` 为 canonical 路径，`encoding` 为 `utf-8`，BOM、中文、LF/CRLF 原样保留；`bytes` 与 SHA-256 对应完整原始字节。空文件可读；超过 256 KiB 返回 `FILE_TOO_LARGE`，不分页、不成功截断。读取至多使用 `256 KiB + 1` 字节缓冲，并循环处理操作系统短读；文件在元数据检查后增长越界也会拒绝。该行为不承诺并发快照。非法 UTF-8 或 NUL 字节返回 `NOT_UTF8_TEXT`，目录返回 `NOT_A_FILE`，缺失文件返回 `PATH_NOT_FOUND`。
+
+创建、更新及单文件移动仍限原写入范围和 256 KiB UTF-8 普通文件；父目录必须存在。写入另外保护 Agent 自身安装目录及 `AGENTS.md` / `CLAUDE.md`。更改现有内容必须带当前 `expected_sha256`：缺失哈希返回 `FILE_EXISTS`，旧哈希或带哈希时目标已消失返回 `CONTENT_CONFLICT`，拒绝后保留当前内容。**兼容例外**：请求内容与当前完整字节相同，返回 `changed:false`，即使没有哈希或哈希已过期也不写入；这不表示旧哈希校验通过。更新含再次核对，但不是原子 CAS。
+
+Skill 读取示例（换成任务指定的真实本机位置）：
+
+```json
+{"path":"C:\\Users\\example\\.agents\\skills\\implement\\SKILL.md"}
+```
+
+以上参数交给 `filesystem_read`。读取 Skill 正文不执行 Skill，也不授予 Skill 写入权限。目录列举、Git、PowerShell cwd、写入与移动保持各自原有范围；这不是对通用 PowerShell 脚本实际访问能力的限制。PDF/Word 正文解析、图片理解及目录/二进制管理不由 YCA-002 交付。
 
 专用移动仅支持同卷且支持硬链接的文件系统，以先建立新文件名、再移除旧文件名实现不覆盖目标；中断可能留下两个名字，内容仍在，但需要本机恢复。专用文件入口尚不提供目录移动、删除、创建链接或系统配置操作。其路径检查不约束通用脚本，也不是抵御其他本机进程并发篡改路径的操作系统沙箱。
 
@@ -185,6 +197,14 @@ npm.cmd run test:live
 ```
 
 常规测试不调用模型，包含真实 MCP HTTP/stdio 客户端、PowerShell 短脚本文件闭环、退出语义、部分输出、Windows 自有进程树终止、最小故障注入、断线不重放、临时文件/Git 仓库及既有 Bridge 回归。独立 stdio 服务用无效 `--codex-bin` 验证直接能力不依赖 Codex。`test:live` 是另外的显式联网验收，会使用 CLI 当前登录和模型额度；YCA-001 不需要运行它。
+
+YCA-002 的 `test/text.test.js` 使用真实 HTTP/MCP 和临时文件，封堵并计数 model start/send/executor，验证文件调用为零模型调用。覆盖区外/Skill 文本、BOM/换行、短读/增长/大小边界、冲突/no-op、敏感路径/内容、链接及其他入口不扩围。Windows 测试报告实际可用的 8.3 别名数量。可在当前 PowerShell 进程设置 `YCA_TEST_SKILL` 为获准读取的真实 `.agents/skills/.../SKILL.md` 或 `.codex/skills/.../SKILL.md`，再运行 `node --test test/text.test.js`，只读取并核对原字节、哈希及未修改状态；未指定时该真实文件用例跳过，其他用例使用夹具。仓库没有 typecheck 脚本，使用 `node --check` 检查 JavaScript 语法。
+
+YCA-002 在代码提交 `f6495fb` 完成 Bridge 52/52、Control Center 16/16、文本/路径针对性检查 13/13，均无跳过。两个独立审查轴中，Standards 初审/复查均 0 项；Spec 发现 1 项 UNC 分隔符问题，修复后复查剩余 0 项。后续仅更新验收文档，未重跑全套测试。
+
+艾米莉亚独立审阅该提交，16 组检查及三次独立请求的交互核验通过。实际路由是 **ChatGPT → 现有 YCA 的 `powershell_execute` → 隔离候选版本公开 HTTP/MCP**：读取区外资料、真实 ticket-design Skill（6098 字节，仅只读）及样本，携带先前实际返回的哈希更新，再核对返回内容与磁盘哈希。最终样本 95 字节，SHA-256 为 `a15d6f590104e5448aad081452248cddca07136d853c562ff85c2fe0d4b6677b`；manager start/send、executor、spawn、catalog 均 0 调用。验收进程已退出，临时样本已清理。
+
+这是经过现有连接的候选版本独立读写往返；常驻 YCA 和 ChatGPT 已注册 `filesystem_*` 工具均未切换到新版本，没有部署或重启。因此不表示常驻工具加载后的验收或所有端到端验收完成；原验收框仍未勾选，详见 [YCA-002 验收记录与传输诊断](../../docs/tickets/yuki-computer-agent/002-text-and-skills.md#yca-002-本地实现与验收状态)。
 
 YCA-001 本机回归 39/39 通过；2026-09-16 用户确认 ChatGPT → Yuki Computer Agent → PowerShell 7 的真实验收通过，全程未经过 Codex。中文/引号/多行文件闭环、两流与退出语义、超时/超限部分输出及四种旧查询均通过，详见 [YCA-001 验收记录](../../docs/tickets/yuki-computer-agent/001-powershell-execution.md#本地实现与验收状态)。输出超限用例的根进程已退出，但 `tree_kill=unconfirmed`，保留这一未确认状态；超时用例则确认 `tree_kill=succeeded`。本机结果与用户提供的 ChatGPT 验收证据分别记录。
 
