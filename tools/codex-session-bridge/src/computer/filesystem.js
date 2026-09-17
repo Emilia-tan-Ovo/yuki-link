@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { lstatSync, readdirSync, openSync, closeSync, fstatSync, readFileSync, writeFileSync, renameSync, unlinkSync, linkSync } from 'node:fs';
+import { lstatSync, readdirSync, openSync, closeSync, fstatSync, readSync, writeFileSync, renameSync, unlinkSync, linkSync } from 'node:fs';
 import { BridgeError, redact } from '../errors.js';
 
 const maxBytes = 256 * 1024;
@@ -16,7 +16,17 @@ export class WorkspaceFiles {
       const info = fstatSync(descriptor);
       if (!info.isFile() || info.nlink !== 1) throw new BridgeError('LINK_NOT_ALLOWED', 'Only unlinked ordinary files are supported.');
       if (info.size > maxBytes) throw new BridgeError('FILE_TOO_LARGE', 'MVP file limit is 256 KiB.');
-      return readFileSync(descriptor);
+      // The file can grow after fstat. Read at most one byte beyond the limit
+      // to detect overflow, and keep reading after short reads until EOF.
+      const buffer = Buffer.allocUnsafe(maxBytes + 1);
+      let length = 0;
+      while (length < buffer.length) {
+        const count = readSync(descriptor, buffer, length, buffer.length - length, null);
+        if (count === 0) break;
+        length += count;
+      }
+      if (length > maxBytes) throw new BridgeError('FILE_TOO_LARGE', 'MVP file limit is 256 KiB.');
+      return buffer.subarray(0, length);
     } finally { closeSync(descriptor); }
   }
 
@@ -30,7 +40,7 @@ export class WorkspaceFiles {
   }
 
   read({ path: input }) {
-    const file = this.policy.resolve(input);
+    const file = this.policy.resolve(input, { intent: 'text-read' });
     const bytes = this.bytes(file);
     const content = this.text(bytes);
     this.audit('filesystem_read', 'completed', { bytes: bytes.length });
@@ -67,6 +77,7 @@ export class WorkspaceFiles {
       const previous = this.bytes(file);
       this.text(previous);
       const previousHash = hash(previous);
+      // Existing no-op compatibility: no mutation, not a successful hash check.
       if (previousHash === desiredHash) return { path: file, sha256: desiredHash, bytes: bytes.length, changed: false };
       if (expected_sha256 === undefined) throw new BridgeError('FILE_EXISTS', 'Pass the current file SHA-256 to replace an existing file.');
       if (previousHash !== expected_sha256) throw new BridgeError('CONTENT_CONFLICT', 'The file content no longer matches expected_sha256.');

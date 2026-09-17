@@ -38,3 +38,13 @@
 ## ticket-design 建议
 
 **建议先做。** 现有路径拒绝规则把普通文档与敏感配置位置混在一起，需定清用户可读场景和专用接口语义；读取大小的处理若涉及新外部契约也在本票解决。不引入自定义强隔离或批准平台，不重新询问已确认的文本优先范围。
+
+## YCA-002 本地实现与验收状态
+
+设计以 [Issue #2 的 Implementation Notes](https://github.com/Emilia-tan-Ovo/yuki-link/issues/2) 七项已确认决策为准。实现只为正文读取增加路径意图；Skill 配置目录按组件豁免，其他保护和各入口范围继续保留。共享文件读取采用有界读取并处理短读，不增加分页或工具；同内容 `changed:false` 保留旧 hash/no hash 的 no-op 兼容。具体格式、错误及示例见 [文件接口说明](../../../tools/codex-session-bridge/README.md#专用文件与-git-工具)。
+
+2026-09-17 本机文本与路径针对性检查 12/12 通过（含真实本机 Skill 只读用例），Windows 8.3 别名实际覆盖 2/2 场景。测试经临时 HTTP/MCP 服务，模型 start/send/executor 被封堵并核对零调用；真实 Skill 的原字节、哈希和未修改状态一致。没有读取真实凭据或修改真实 Skill。
+
+Bridge 完整 `npm test` 51/51、Control Center 回归 16/16 通过，均无跳过；后者使用隔离测试服务，不操作当前 YCA/tunnel/Control Center。JavaScript 语法与 diff 空白检查通过；仓库没有 typecheck 脚本，未运行 `test:live` 或付费模型验收。
+
+本机候选实现尚未部署到现有 YCA；ChatGPT 经既有连接读取指定区外资料、更新样本文本并核对磁盘结果的独立验收仍待执行。原验收框保留未勾选，不表示本票已交付、已通过端到端验收或可关闭 Issue。

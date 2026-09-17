@@ -57,10 +57,10 @@ export function createMcpServer(manager, computer) {
     register('filesystem_list', 'List allowed files/directories with pagination. Protected paths, credentials and links are omitted. No glob expansion.', {
       path: z.string().min(1), cursor: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(200).optional(),
     }, input => computer.filesystem.list(input), true);
-    register('filesystem_read', 'Read one allowed UTF-8 text file up to 256 KiB and return its SHA-256. Credential/runtime/config paths and links are denied.', {
+    register('filesystem_read', 'Read one explicitly addressed absolute local UTF-8 text file up to 256 KiB, including outside read roots and .agents/skills or .codex/skills documents. Preserve BOM/newlines and hash the complete raw bytes. Oversize files fail without truncation. Other protected components, runtime/control configuration, credential-like content and links remain denied. Reading a Skill does not execute it.', {
       path: z.string().min(1),
     }, input => computer.filesystem.read(input), true);
-    register('filesystem_write', 'Create a UTF-8 workspace file, or replace it only with the current expected_sha256 from filesystem_read. Parent must exist. Agent code/configuration and credentials are protected.', {
+    register('filesystem_write', 'Create a UTF-8 workspace file, or replace different content only with the current expected_sha256 from filesystem_read. Identical content returns changed:false without writing, even with a missing or stale hash; this is not hash validation. Parent must exist. Agent code/configuration and credentials are protected.', {
       path: z.string().min(1), content: z.string().max(262144), expected_sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
     }, input => computer.filesystem.write(input), false, true, true);
     register('filesystem_move', 'Move one ordinary UTF-8 workspace file to a new, nonexisting same-volume path. Requires source expected_sha256. No directories, overwrites, credential paths or links.', {
