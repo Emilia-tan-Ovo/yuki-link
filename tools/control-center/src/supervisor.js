@@ -25,6 +25,8 @@ export class Supervisor {
   }
   snapshot() {
     const at = this.clock();
+    const yca = this.observations.yca;
+    const runningTools = yca?.running && yca.owned && at - yca.at <= this.intervalMs * 3 ? yca.tools : null;
     return { at: new Date(at).toISOString(), versions: this.versions ?? {}, supervisor: this.identity ?? null, observeOnly: this.observeOnly, busy: this.busy, autoRecovery: this.state.autoRecovery,
       units: Object.fromEntries(ids.map(id => {
         const o = this.observations[id] ?? {}; const s = this.state.units[id];
@@ -34,8 +36,8 @@ export class Supervisor {
         if (s.nextAt && !stale) status = '恢复中';
         if (this.busy?.endsWith('start') && this.busy.startsWith(id)) status = '启动中';
         return [id, { ...o, status, stale, desired: s.desired, blocked: s.blocked, nextAt: s.nextAt, retries: s.attempts.length }];
-      })), codex: this.codex, chatgpt: { status: '未在此验证' }, tools: { local: this.localTools ?? null, running: this.observations.yca?.tools ?? null,
-        confirmed: this.state.confirmedTools, possibleRefresh: Boolean(this.state.confirmedTools && this.localTools && this.state.confirmedTools.sha256 !== this.localTools.sha256) }, events: this.events.items };
+      })), codex: this.codex, chatgpt: { status: '未在此验证' }, tools: { running: runningTools ?? null,
+        confirmed: this.state.confirmedTools, possibleRefresh: Boolean(this.state.confirmedTools && runningTools && this.state.confirmedTools.sha256 !== runningTools.sha256) }, events: this.events.items };
   }
   async guardImpact(confirm) {
     await this.observe();
@@ -45,17 +47,17 @@ export class Supervisor {
       if (!confirm) throw fail(o.activity ? 'ACTIVE_TASKS' : 'ACTIVITY_UNKNOWN');
     }
   }
-  async startOne(id) {
+  async startOne(id, recovery = false) {
     const s = this.state.units[id]; this.busy = `${id}:start`;
     try {
       if (id === 'tunnel' && !this.observations.yca?.healthy) throw fail('YCA_NOT_READY');
-      await this.units[id].start();
+      await this.units[id].start({ recovery });
       const deadline = this.clock() + this.startupMs;
       do {
         await this.observe();
         const o = this.observations[id];
         if (o.healthy) { s.blocked = null; return; }
-        if (o.code && permanent.has(o.code)) throw fail(o.code);
+        if (o.code && (permanent.has(o.code) || o.code.startsWith('DEPLOYMENT_'))) throw fail(o.code);
         await sleep(200);
       } while (this.clock() < deadline);
       throw fail('STARTUP_TIMEOUT');
@@ -95,8 +97,9 @@ export class Supervisor {
   }); }
   confirmTools() { return this.serial(async () => {
     // This records the user's explicit manual check, never inspects ChatGPT cache.
-    if (!this.localTools) throw fail('SCHEMA_UNAVAILABLE');
-    this.state.confirmedTools = { ...this.localTools, at: new Date(this.clock()).toISOString(), source: '用户点击人工确认' }; this.persist();
+    const tools = this.snapshot().tools.running;
+    if (!tools) throw fail('SCHEMA_UNAVAILABLE');
+    this.state.confirmedTools = { ...tools, at: new Date(this.clock()).toISOString(), source: '用户点击人工确认' }; this.persist();
   }); }
   tick() { return this.serial(async () => {
     const at = this.clock();
@@ -121,6 +124,7 @@ export class Supervisor {
       // faults, unknown observations, or tasks of unknown activity.
       if (o.running === null || o.running === undefined || (o.running && !o.owned)) continue;
       if (id === 'tunnel' && o.running) continue;
+      if (o.code?.startsWith('DEPLOYMENT_')) { s.blocked = o.code; continue; }
       if (o.running) {
         s.failures = (s.failures ?? 0) + 1;
         if (s.failures < 3) continue;
@@ -134,8 +138,8 @@ export class Supervisor {
       if (at < s.nextAt) continue;
       s.attempts.push(at); s.attempts = s.attempts.slice(-5); s.nextAt = null; this.persist();
       this.events.add(id, 'recovery-attempt', o.code ?? 'PROCESS_EXITED');
-      try { if (o.running) await this.units[id].stop(false); await this.startOne(id); }
-      catch (e) { if (permanent.has(e.code)) s.blocked = e.code; this.events.add(id, 'recovery-failed', e.code ?? 'RECOVERY_FAILED'); }
+      try { if (o.running) await this.units[id].stop(false); await this.startOne(id, true); }
+      catch (e) { if (permanent.has(e.code) || e.code?.startsWith('DEPLOYMENT_')) s.blocked = e.code; this.events.add(id, 'recovery-failed', e.code ?? 'RECOVERY_FAILED'); }
     }
     this.persist();
   }); }

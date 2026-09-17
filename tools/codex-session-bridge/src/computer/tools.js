@@ -11,9 +11,9 @@ const queryFile = fileURLToPath(new URL('./query.ps1', import.meta.url));
 const scriptFile = fileURLToPath(new URL('./execute.ps1', import.meta.url));
 
 export class ComputerTools {
-  constructor({ readRoots, writeRoots, runtime, pwsh = process.platform === 'win32' ? 'pwsh.exe' : 'pwsh', git = process.platform === 'win32' ? 'git.exe' : 'git', spawnProcess, stopProcess, appendAudit = appendFileSync }) {
+  constructor({ readRoots, writeRoots, runtime, controlRoots = [], pwsh = process.platform === 'win32' ? 'pwsh.exe' : 'pwsh', git = process.platform === 'win32' ? 'git.exe' : 'git', spawnProcess, stopProcess, appendAudit = appendFileSync }) {
     mkdirSync(runtime, { recursive: true });
-    this.paths = new PathPolicy(readRoots, writeRoots, runtime);
+    this.paths = new PathPolicy(readRoots, writeRoots, runtime, controlRoots);
     this.auditFile = path.join(runtime, 'computer-audit.jsonl');
     this.appendAudit = appendAudit;
     this.filesystem = new WorkspaceFiles(this.paths, this.audit.bind(this));

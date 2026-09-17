@@ -15,10 +15,11 @@ const inside = (root, target) => {
 const secretName = /^(?:\.env(?:\..*)?|\.git|\.codex|\.agents|\.ssh|\.aws|\.azure|\.kube|\.npmrc|\.netrc|runtime|secrets?|credentials?|select-key|tunnel-client|auth\.json|.*(?:api[-_]?key|runtime[-_]?key|private[-_]?key|access[-_]?token|refresh[-_]?token).*|.*\.(?:key|pem|pfx|p12))$/i;
 
 export class PathPolicy {
-  constructor(readRoots, writeRoots, runtime) {
+  constructor(readRoots, writeRoots, runtime, controlRoots = []) {
     this.readRoots = readRoots.map(root => canonicalPath(root));
     this.writeRoots = writeRoots.map(root => canonicalPath(root));
     this.runtime = canonicalPath(runtime);
+    this.controlRoots = controlRoots.map(root => canonicalPath(root));
   }
 
   resolve(input, { write = false, missing = false, intent } = {}) {
@@ -38,7 +39,7 @@ export class PathPolicy {
     })) throw new BridgeError('PROTECTED_PATH', 'Credential, agent configuration, Git metadata and runtime paths are protected.');
     if (process.platform === 'win32' && parts.some(part => /[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) throw new BridgeError('INVALID_PATH', 'Ambiguous Windows filename.');
     if (inside(this.runtime, target)) throw new BridgeError('PROTECTED_PATH', 'Agent runtime is private.');
-    if (inside(controlConfiguration, target)) throw new BridgeError('PROTECTED_PATH', 'Local control configuration is private.');
+    if (inside(controlConfiguration, target) || this.controlRoots.some(root => inside(root, target))) throw new BridgeError('PROTECTED_PATH', 'Local control configuration is private.');
     if (write && (inside(installation, target) || inside(controlInstallation, target) || /^(?:AGENTS|CLAUDE)\.md$/i.test(path.basename(target)))) throw new BridgeError('PROTECTED_PATH', 'The agent installation and instruction files cannot be changed through these tools.');
     const roots = write ? this.writeRoots : this.readRoots;
     if (!textRead && !roots.some(root => inside(root, target))) throw new BridgeError('PATH_NOT_ALLOWED', 'Path is outside the permitted directories.');

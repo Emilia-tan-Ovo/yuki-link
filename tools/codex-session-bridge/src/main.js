@@ -11,6 +11,7 @@ import { createHttpServer } from './http.js';
 import { publicError } from './errors.js';
 import { ComputerTools } from './computer/tools.js';
 import { createDiagnostics, toolSummary } from './diagnostics.js';
+import { sourceVersion } from './source.js';
 
 const toolRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { values } = parseArgs({ options: {
@@ -24,6 +25,7 @@ const { values } = parseArgs({ options: {
   help: { type: 'boolean', default: false },
   'control-port': { type: 'string' },
   'control-instance': { type: 'string' },
+  'control-root': { type: 'string', multiple: true },
 } });
 
 if (values.help) {
@@ -36,14 +38,14 @@ if (values.help) {
   let controlServer;
   try {
     if (!values['allow-cwd']?.length || !['stdio', 'http'].includes(values.transport)) throw new Error('Specify --allow-cwd and a supported --transport.');
-    if (!path.isAbsolute(values.runtime) || [...values['allow-cwd'], ...(values['read-root'] ?? [])].some(p => !path.isAbsolute(p))) throw new Error('Runtime and allowlist paths must be absolute.');
+    if (!path.isAbsolute(values.runtime) || [...values['allow-cwd'], ...(values['read-root'] ?? []), ...(values['control-root'] ?? [])].some(p => !path.isAbsolute(p))) throw new Error('Runtime and allowlist paths must be absolute.');
     const port = Number(values.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid port.');
     const catalog = new ModelCatalog(values['codex-bin']);
     // Codex capability discovery is lazy; unavailable Codex must not block computer tools.
     store = new RuntimeStore(values.runtime);
     manager = new SessionManager({ store, catalog, executor: new CodexExecutor(values['codex-bin']), allowedCwds: values['allow-cwd'] });
-    computer = new ComputerTools({ readRoots: [...values['allow-cwd'], ...(values['read-root'] ?? [])], writeRoots: values['allow-cwd'], runtime: values.runtime, pwsh: values['pwsh-bin'] });
+    computer = new ComputerTools({ readRoots: [...values['allow-cwd'], ...(values['read-root'] ?? [])], writeRoots: values['allow-cwd'], runtime: values.runtime, controlRoots: values['control-root'], pwsh: values['pwsh-bin'] });
     let server;
     const observation = { active: 0 };
     let shuttingDown = false;
@@ -70,7 +72,7 @@ if (values.help) {
         const controlToken = process.env.YUKI_CONTROL_TOKEN;
         delete process.env.YUKI_CONTROL_TOKEN; // Do not propagate control credentials to tools/Codex.
         controlServer = createDiagnostics({ manager, computer, instance: values['control-instance'], token: controlToken,
-          summary: await toolSummary(), requests: () => observation.active, shutdown, drain: () => { observation.draining = true; } });
+          summary: await toolSummary(), source: sourceVersion(), requests: () => observation.active, shutdown, drain: () => { observation.draining = true; } });
         await new Promise((resolve, reject) => { controlServer.once('error', reject); controlServer.listen(controlPort, '127.0.0.1', resolve); });
       }
       console.error(`Yuki Computer Agent ready at http://127.0.0.1:${port}/mcp`);

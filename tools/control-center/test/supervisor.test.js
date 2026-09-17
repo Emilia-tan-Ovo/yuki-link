@@ -34,6 +34,28 @@ test('serialized repeated starts, dependency order, stop intent and manager rest
   assert.equal(restarted.snapshot().units.yca.desired, 'stopped');
 });
 
+test('manual schema confirmation records the running service instead of adjacent supervisor source', async t => {
+  const { manager: m } = setup(t);
+  m.localTools = { count: 13, sha256: 'old-supervisor' };
+  await assert.rejects(m.confirmTools(), { code: 'SCHEMA_UNAVAILABLE' });
+  m.observations.yca = { running: true, owned: true, at: Date.now(), tools: { count: 14, sha256: 'running-yca' } };
+  await m.confirmTools();
+  assert.equal(m.snapshot().tools.confirmed.sha256, 'running-yca');
+  assert.equal(m.snapshot().tools.possibleRefresh, false);
+  m.observations.yca.tools = { count: 14, sha256: 'next-yca' };
+  assert.equal(m.snapshot().tools.possibleRefresh, true);
+});
+
+test('automatic recovery explicitly requests the previous deployment, never the prepared candidate', async t => {
+  const f = setup(t);
+  let options;
+  f.units.yca.start = async function (input) { options = input; this.running = true; this.healthy = true; };
+  await f.manager.action('yca', 'start'); assert.equal(options.recovery, false);
+  await f.manager.setRecovery(true); f.units.yca.running = false; f.units.yca.healthy = false;
+  await f.manager.tick(); f.advance(2000); await f.manager.tick();
+  assert.equal(options.recovery, true);
+});
+
 test('activity protection runs before dependent stops; unknown is not idle', async t => {
   const { manager: m, units: u } = setup(t);
   await m.action('all', 'start'); u.yca.activity.computer = 1;
