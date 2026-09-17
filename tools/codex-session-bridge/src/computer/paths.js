@@ -26,7 +26,8 @@ export class PathPolicy {
     // callers retain their existing policy, including during canonical recursion.
     const textRead = intent === 'text-read' && !write && !missing;
     if (typeof input !== 'string' || !path.isAbsolute(input) || /[\x00-\x1f]/.test(input)) throw new BridgeError('INVALID_PATH', 'Use an absolute local filesystem path.');
-    if (process.platform === 'win32' && (input.startsWith('\\\\') || input.slice(2).includes(':'))) throw new BridgeError('INVALID_PATH', 'Network/device paths and alternate data streams are not supported.');
+    // Windows accepts forward and mixed separators in UNC paths too.
+    if (process.platform === 'win32' && (input.replaceAll('/', '\\').startsWith('\\\\') || input.slice(2).includes(':'))) throw new BridgeError('INVALID_PATH', 'Network/device paths and alternate data streams are not supported.');
     const target = path.resolve(input);
     const parts = target.slice(path.parse(target).root.length).split(path.sep);
     if (parts.some((part, index) => {

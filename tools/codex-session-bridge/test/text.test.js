@@ -213,6 +213,26 @@ test('MCP retains sensitive component, content, runtime, control and link protec
   assert.equal(audit.includes(outside.replaceAll('\\', '\\\\')), false);
 });
 
+test('MCP rejects all Windows UNC separator forms before filesystem access', { skip: process.platform !== 'win32' }, async t => {
+  const { call } = await connectText(t);
+  const originalStat = fs.lstatSync;
+  let networkAccess = 0;
+  const stat = t.mock.method(fs, 'lstatSync', (file, ...args) => {
+    if (typeof file === 'string' && file.replaceAll('/', '\\').startsWith('\\\\')) {
+      networkAccess++;
+      throw Object.assign(new Error('Network access blocked by test'), { code: 'ENOENT' });
+    }
+    return originalStat(file, ...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    for (const file of ['//server/share/note.txt', '\\/server/share/note.txt', '/\\server/share/note.txt', '\\\\server\\share\\note.txt']) {
+      assert.equal((await call('filesystem_read', { path: file })).error.code, 'INVALID_PATH', file);
+    }
+    assert.equal(networkAccess, 0, 'No filesystem traversal of any network path');
+  } finally { stat.mock.restore(); syncBuiltinESMExports(); }
+});
+
 test('MCP text reads preserve Windows path validation and canonical Skill exceptions', { skip: process.platform !== 'win32' }, async t => {
   const { outside, call } = await connectText(t);
   for (const file of ['\\\\server\\share\\note.txt', '\\\\?\\C:\\note.txt', path.join(outside, 'a.txt:stream'), path.join(outside, 'note.txt.'), path.join(outside, 'CON.txt')]) {
