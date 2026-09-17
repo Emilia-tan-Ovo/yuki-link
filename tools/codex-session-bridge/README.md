@@ -159,7 +159,7 @@ start 响应丢失时，用**原 epoch、request_id、cwd、script 和相同有�
 
 事件为不可变 `{seq,stream,text}`；两流各自保序，不承诺真实跨流时间顺序，cursor 是下一事件序号。UTF-8 跨 chunk 解码，完整行统一使用既有 best-effort redact；正常 EOF 可发布尾行。无换行内容在收齐前不可见，空页不表示结束。超限/中断不发布被切断的 token 尾段；`*_truncated/incomplete/redacted` 明确说明丢弃、未收齐或改写。此规则不能识别所有秘密，不应向脚本输出凭据。审计仅写必要元数据，不写脚本或输出正文。
 
-当前候选源码共有 18 个 MCP 工具。候选测试使用独立 runtime/端口、真实 PowerShell 前台父子夹具和不可用模型/fake 接缝，详见 [YCA-005 状态](../../docs/tickets/yuki-computer-agent/005-owned-tasks.md#本地实现与验收状态)。独立验收可经当前 YCA 短脚本访问候选 HTTP/MCP；它不等于常驻 18 工具直接验收，常驻升级与插件刷新留待 PR 合并后单独处理。
+当前候选源码共有 18 个 MCP 工具。候选测试使用独立 runtime/端口、真实 PowerShell 前台父子夹具和不可用模型/fake 接缝。艾米莉亚已完成独立源码复核，并经当前 YCA 短脚本访问隔离候选 HTTP/MCP 验收：67.61 秒跨客户端观察、幂等找回、实际停止范围及结果/输出用例均通过，详见 [YCA-005 状态](../../docs/tickets/yuki-computer-agent/005-owned-tasks.md#本地实现与验收状态)。候选验收链路 0 模型调用，开发与审查使用 Codex。验收时常驻仍为 `245758d` / 14 工具；候选通过不等于常驻 18 工具直接验收，升级、插件刷新及常驻验收留待 PR 合并后单独处理。
 
 ### 专用文件与 Git 工具
 
