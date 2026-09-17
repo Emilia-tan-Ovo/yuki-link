@@ -53,8 +53,9 @@ if (values.help) {
       if (shuttingDown) return;
       shuttingDown = true;
       try {
-        if (httpServer) { httpServer.close(); httpServer.closeIdleConnections(); }
-        if (controlServer) { controlServer.close(); controlServer.closeIdleConnections(); }
+        // Raw connected sockets are not part of activity counters and can keep Node alive after an accepted stop.
+        if (httpServer) { httpServer.close(); httpServer.closeIdleConnections(); httpServer.closeAllConnections(); }
+        if (controlServer) { controlServer.close(); controlServer.closeIdleConnections(); controlServer.closeAllConnections(); }
         await manager.close();
         await computer.close();
         if (server) await server.close();

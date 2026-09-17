@@ -38,8 +38,11 @@ export function createDiagnostics({ manager, computer, instance, token, summary,
       if (Object.values(active).some(n => n > 0) && req.headers['x-confirm-impact'] !== 'yes') return reply(409, { code: 'ACTIVE_TASKS', active });
       // Close acceptance synchronously, before shutdown's first asynchronous boundary.
       drain(); manager.closing = true; computer.closing = true;
+      let scheduled = false;
+      const scheduleShutdown = () => { if (scheduled) return; scheduled = true; setImmediate(() => shutdown()); };
+      res.once('finish', scheduleShutdown); res.once('close', scheduleShutdown);
       reply(202, { stopping: true });
-      setImmediate(() => shutdown()); return;
+      return;
     }
     reply(404, { code: 'NOT_FOUND' });
   });

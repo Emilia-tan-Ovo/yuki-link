@@ -15,6 +15,11 @@ import { readLines, spawnDirect, stopProcessTree, isProcessAlive } from '../src/
 import { createHttpServer } from '../src/http.js';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
+const until = async (predicate, timeoutMs = 1000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 10)); }
+  throw new Error('Timed out waiting for test state.');
+};
 class FakeExecutor {
   calls = [];
   start(run, session, prompt, callbacks) {
@@ -101,7 +106,7 @@ test('stop, timeout, CLI failure and output limits have terminal states', async 
   assert.equal(manager.run(queued.run_id).status, 'stopped');
   const active = await manager.start(input()); await tick(); manager.stop(active.session_id);
   await tick(); assert.equal(manager.run(active.run_id).status, 'stopped');
-  const timeout = await manager.start(input()); await new Promise(resolve => setTimeout(resolve, 60));
+  const timeout = await manager.start(input()); await until(() => manager.run(timeout.run_id).status === 'timed_out');
   assert.equal(manager.run(timeout.run_id).status, 'timed_out');
   const failed = await manager.start(input()); await tick();
   executor.calls.at(-1).callbacks.onDone({ code: 7, signal: null, error: null });
