@@ -4,6 +4,8 @@
 
 **当前状态：统一核心与 provider 仍是项目骨架；独立前置工具 Yuki Computer Agent 已有可运行的 MCP / Codex Bridge。** 前置工具位于 `tools/codex-session-bridge`，提供固定 PowerShell 查询、真实短脚本、专用文件/Git 工具及 Codex 会话通信。YCA-001 的本机回归与 ChatGPT 端验收已通过，待 PR 审阅与合并；正式 yuki-link 的首张基线票尚未启动。
 
+YCA-005 当前候选源码增加 `task_start/task_status/task_output/task_stop`，用于前台非交互长任务；用法与生命周期限制见 [任务工具说明](tools/codex-session-bridge/README.md#自有前台任务yca-005)。候选本机验证、独立候选验收及合并后常驻工具验收分别记录，不表示常驻服务已升级。
+
 ## 三者的区别
 
 | 名称 | 定位 | 与本仓库的关系 |

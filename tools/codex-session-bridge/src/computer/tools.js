@@ -5,13 +5,14 @@ import { randomUUID } from 'node:crypto';
 import { PathPolicy } from './paths.js';
 import { WorkspaceFiles } from './filesystem.js';
 import { ComputerExecution } from './execution.js';
+import { OwnedTasks } from './tasks.js';
 import { BridgeError } from '../errors.js';
 
 const queryFile = fileURLToPath(new URL('./query.ps1', import.meta.url));
 const scriptFile = fileURLToPath(new URL('./execute.ps1', import.meta.url));
 
 export class ComputerTools {
-  constructor({ readRoots, writeRoots, runtime, controlRoots = [], pwsh = process.platform === 'win32' ? 'pwsh.exe' : 'pwsh', git = process.platform === 'win32' ? 'git.exe' : 'git', spawnProcess, stopProcess, appendAudit = appendFileSync }) {
+  constructor({ readRoots, writeRoots, runtime, controlRoots = [], pwsh = process.platform === 'win32' ? 'pwsh.exe' : 'pwsh', git = process.platform === 'win32' ? 'git.exe' : 'git', spawnProcess, stopProcess, appendAudit = appendFileSync, taskNow }) {
     mkdirSync(runtime, { recursive: true });
     this.paths = new PathPolicy(readRoots, writeRoots, runtime, controlRoots);
     this.auditFile = path.join(runtime, 'computer-audit.jsonl');
@@ -22,6 +23,7 @@ export class ComputerTools {
     this.processAdapters = { spawnProcess, stopProcess };
     this.executions = new Set();
     this.closing = false;
+    this.tasks = new OwnedTasks(this, scriptFile, taskNow);
   }
 
   audit(operation, status, metadata) {

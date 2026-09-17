@@ -45,6 +45,19 @@ export function createMcpServer(manager, computer) {
     session_id: z.string().uuid(),
   }, ({ session_id }) => manager.stop(session_id));
   if (computer) {
+    register('task_status', 'Read a directly owned task, or obtain the service epoch and task budgets without an ID. No model calls.', z.object({
+      task_id: z.string().max(80).optional(),
+    }).strict(), input => computer.tasks.status(input), true);
+    register('task_start', 'Start a foreground noninteractive PowerShell task without Codex. Save task_id; retry identical input with the same epoch and request_id to recover acceptance.', z.object({
+      service_epoch: z.string().uuid(), request_id: z.string().min(1).max(128), cwd: z.string().min(1),
+      script: z.string().min(1).max(131072), timeout_ms: z.number().int().min(1000).max(1800000).optional(),
+    }).strict(), input => computer.tasks.start(input), false, true, true);
+    register('task_output', 'Read immutable stdout/stderr line events after a cursor. No new events does not mean completion.', z.object({
+      task_id: z.string().max(80), cursor: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(200).optional(),
+    }).strict(), input => computer.tasks.output(input), true);
+    register('task_stop', 'Request stopping only this owned foreground task. Poll status: a request or a successful tree-kill command is not proof of termination. Retry explicitly after failure.', z.object({
+      task_id: z.string().max(80),
+    }).strict(), input => computer.tasks.stop(input), false, false, true);
     register('powershell', 'Direct PowerShell 7 read-only query, independent of Codex. query must be version, location, system or processes. Arbitrary scripts, native commands, deletion and system changes are not supported.', {
       cwd: z.string().min(1), query: z.enum(['version', 'location', 'system', 'processes']),
       timeout_ms: z.number().int().min(1000).max(30000).optional(),
