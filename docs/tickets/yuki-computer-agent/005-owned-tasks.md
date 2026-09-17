@@ -39,3 +39,15 @@
 ## ticket-design 建议
 
 **建议先做。** 任务标识、输出读取契约、状态转移、进程所有权与停止确认直接影响可用性和副作用判断。需要在现有能力上明确最小生命周期及错误恢复方式，不扩大成通用调度平台。
+
+## 本地实现与验收状态
+
+2026-09-17：依据 [Issue #5 的已确认 Implementation Notes](https://github.com/Emilia-tan-Ovo/yuki-link/issues/5)，候选源码已实现 4 个 `task_*` 工具、同服务 epoch/request_id 幂等与墓碑、有限前台生命周期、独立两流行事件/游标、共享执行名额与关闭流程。A1 执行器及 Codex stop 实现未改动。
+
+- 使用 Node v24.18.1 和既有 PowerShell/锁定依赖；Bridge 全套 79/79、Control Center 隔离全套 26/26，均 0 跳过。只读真实 ticket-design Skill 样本已运行；电脑任务测试链路没有模型调用，未跑付费模型矩阵；开发与审查使用 Codex。
+- 真实 HTTP/MCP 验证持续超过 30 秒的 Windows 前台父子任务、不同客户端重新连接、相同请求找回、实际树停止及独立控制进程仍存活；另验证自然失败、超时和输出超限。故障注入覆盖停止失败/重试、根退管道悬挂、晚到证据、审计/启动/流错误、UTF-8/token 跨块、分页和记录容量/过期。最终增加 `output.pipes_closed` 区分管道关闭与不完整输出后，仅复跑相关增量 8/8，通过；未为此重复全套。
+- 本机日志和审查报告保存在工作区外的本轮验收目录，不进入源码提交。实现提交 `8b9185b` 已由 `/root/standards_review` 与 `/root/spec_review` 两个独立代理并行审查：Standards 0 项明确违反或需行动的 smell；Spec 0 项确认的缺失、范围扩展或错误实现；文档提交 `1b1d2bc` 的增量复查同样通过。
+- 艾米莉亚独立源码复核及候选验收已通过，0 项确认问题。实际候选 HEAD 为 `1b1d2bc`（生产代码 `8b9185b`）；路径为 ChatGPT → 当前 YCA 短脚本 → 隔离 candidate main.js 的公开 HTTP/MCP，发现 18 工具。start 先返回 starting 与 ID；67.61 秒后新客户端用同 ID 仍读到 running，从 cursor 66 取得 68 个新事件、next_cursor 134。同请求仅启动一次，异输入报 `REQUEST_CONFLICT`，无效 ID 报 `TASK_NOT_FOUND`，旧 epoch 拒绝。
+- 独立 stop 先返回 stopping，再到 stopped；根退出、管道关闭及 tree_kill=succeeded 分别确认。按 PID 与创建时间核对持有父/子进程实际退出，无关 control 存活，文件副作用保留。自然 exit 0、失败 exit 7、timeout、output_limit、已有输出、UTF-8/CRLF 及候选 A1 回归均通过；终态重复 stop 不增加停止次数，审计无样本脚本/输出正文。
+- 候选 Codex CLI 路径不存在，session/run 数均为 0；这里的“0 模型”仅指电脑验收链路。候选正常退出 code 0，本轮自有父子、control 及辅助进程均已退出。原始本机证据位于工作区外同轮记录的 `emilia-review.md` 与 `emilia-acceptance/{lifecycle-proof.json,result-proof.json,closed.json}`，不提交日志、个人路径或配置。
+- 以上是独立候选验收通过，不是常驻已注册 task 工具直接验收。验收时正式 resident 仍为 `245758d` / 14 工具；常驻 YCA/Control Center 未部署或重启，tunnel/key/认证/历史及电源设置未变。常驻升级、插件刷新与常驻 18 工具直接验收留待 PR 合并后单独处理；上方验收框保持未勾选。有限前台追踪及不承诺跨服务重启保活的边界不变。

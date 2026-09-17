@@ -50,6 +50,10 @@ HTTP 只绑定 `127.0.0.1`，默认 MCP 地址 `http://127.0.0.1:7391/mcp`，健
 | `codex_stop_session` | `session_id` | 停止进度，需继续查状态 |
 | `powershell` | `cwd, query, timeout_ms?` | `operation_id, exit_code, stdout, stderr, data` |
 | `powershell_execute` | `cwd, script, timeout_ms?` | 执行结果；失败时位于 `error.details.result`，包含部分输出及终止信息 |
+| `task_start` | `service_epoch, request_id, cwd, script, timeout_ms?` | `task_id, status, deduplicated`；异步受理自有前台任务 |
+| `task_status` | `task_id?` | 无 ID 返回本次 epoch/预算；有 ID 返回任务快照 |
+| `task_output` | `task_id, cursor?, limit?` | 独立两流行事件、`next_cursor, has_more, output` |
+| `task_stop` | `task_id` | 停止进度快照；继续查询以核对终态 |
 | `filesystem_list` | `path, cursor?, limit?` | 分页普通文件/目录，隐藏受保护项 |
 | `filesystem_read` | `path` | UTF-8 内容、字节数、SHA-256 |
 | `filesystem_write` | `path, content, expected_sha256?` | 创建或按原内容哈希更新 |
@@ -121,6 +125,41 @@ HTTP 只绑定 `127.0.0.1`，默认 MCP 地址 `http://127.0.0.1:7391/mcp`，健
 后续服务关闭时，会对已返回结果但仍存活的自有根进程单独尝试一次停止，最多收尾 5 秒；仍不能确认停止则报告 `STOP_FAILED`。这不延长先前调用的预算，也不改写已返回的结果。
 
 输出沿用常见凭据格式脱敏；`redacted=true` 表示返回文本经过改写，不能把它当作逐字原始输出。审计只记录必要元数据，不写脚本文本、输出正文或环境。HTTP 断开不会自动重放脚本，operation_id 不提供去重或历史查询。未收到结果时先核对实际文件等事实，不无条件重发；工具的非幂等注解不是 exactly-once 保证。
+
+### 自有前台任务（YCA-005）
+
+先调用 `task_status({})` 取得 `service_epoch`，再用调用方生成的 `request_id` 调用 `task_start`。`cwd` 和 `script` 与 A1 相同，脚本仍由固定 `execute.ps1` 接收 UTF-8 JSON stdin；脚本应同步调用或等待目标程序。`Start-Process` 后立刻退出的后台程序不在可靠托管承诺内。A1 短调用和 Codex session/stop 契约不变。
+
+例如 start 输入（将 epoch 和 cwd 换为实际返回值及目标目录）：
+
+```json
+{"service_epoch":"返回的UUID","request_id":"my-task-001","cwd":"C:\\projects\\sample","script":"1..300 | ForEach-Object { [Console]::Out.WriteLine($_); Start-Sleep -Seconds 1 }","timeout_ms":600000}
+```
+
+保存返回的 `task_id`；用 `task_output({task_id,cursor:0,limit:100})` 读取，后续带回 `next_cursor`，用 `task_status({task_id})` 查询，用 `task_stop({task_id})` 请求停止。输入对象拒绝额外字段，不接受任意 PID。任务自身失败通过快照的状态、原因及实际退出码表达；非法输入、未知任务、过期或容量不足沿用 MCP 错误信封。
+
+start 响应丢失时，用**原 epoch、request_id、cwd、script 和相同有效 timeout**重试，返回同一任务，不重新执行；相同 request_id 配不同输入报 `REQUEST_CONFLICT`。HTTP 客户端断开不停止任务，重新连接后沿用 ID。服务重启生成新 epoch，旧 epoch 的 start 报 `TASK_EPOCH_EXPIRED`，旧 ID 查询报 `TASK_NOT_FOUND`；不要擅自更换 epoch 后重放未知副作用。stdio 关闭 stdin 会关闭服务，不属于服务存活期间的重连。
+
+| 预算 | 值与边界 |
+| --- | --- |
+| 脚本/时长 | 128 KiB UTF-8；默认 5 分钟，可选 1 秒～30 分钟（包含启动时间） |
+| 活跃名额 | 与 A1 查询、脚本及 Git 共用 4 个；不排队，查询与 stop 不占新名额 |
+| 完整记录/映射 | 64 份完整记录、1024 个 request_id 映射；满额拒绝新任务，原任务仍可观察和停止 |
+| 过期 | 只有终态且释放资源后满 30 分钟，后续访问时释放正文；本次服务保留摘要墓碑，报 `TASK_EXPIRED`，异输入仍报冲突，不将同键当新任务 |
+| 输出 | 两流合计 1 MiB 原始字节、最多 4096 事件、单行 64 KiB；超限请求停止并保留已发布事件 |
+| 分页 | limit 默认 100、范围 1～200；单页 JSON 序列化结果≤512 KiB，含编码膨胀 |
+| 停止 | 每次尝试最多 5 秒；进行中不叠加，失败后可显式重试，禁止对已退出根 PID 重试树杀伤 |
+
+快照分别报告 `root_state`、真实 `exit_code/signal`、`termination`、`tracking_scope`、`output`、`audit` 与时间戳。`output.pipes_closed` 与 `incomplete` 分开表示管道收齐与输出完整性；停止后的管道可以已关闭而输出仍不完整。`completion_reason` 区分自然退出、超时、输出超限、启动/管道/审计错误、主动停止和服务关闭；停止错误不覆盖首要原因。
+
+- `starting/running/stopping` 均非终态；`unknown` 表示根或停止结果尚未收尾，例如父退出但管道悬挂。它仍占有名额，不按终态淘汰。
+- `completed` 表示前台根成功退出且管道收齐；`failed` 表示已收尾的执行/停止等失败。失败时保留已取得的输出。
+- `stopped` 要求根退出、管道关闭及树停止操作成功；停止命令成功本身不足以宣称任务已停。树停止失败后仅观察到根退出，不能改报 stopped。
+- 晚到退出/停止证据可推进状态。停止不撤销文件等副作用；根退出和管道关闭均不能证明任意脱离后代消失。
+
+事件为不可变 `{seq,stream,text}`；两流各自保序，不承诺真实跨流时间顺序，cursor 是下一事件序号。UTF-8 跨 chunk 解码，完整行统一使用既有 best-effort redact；正常 EOF 可发布尾行。无换行内容在收齐前不可见，空页不表示结束。超限/中断不发布被切断的 token 尾段；`*_truncated/incomplete/redacted` 明确说明丢弃、未收齐或改写。此规则不能识别所有秘密，不应向脚本输出凭据。审计仅写必要元数据，不写脚本或输出正文。
+
+当前候选源码共有 18 个 MCP 工具。候选测试使用独立 runtime/端口、真实 PowerShell 前台父子夹具和不可用模型/fake 接缝。艾米莉亚已完成独立源码复核，并经当前 YCA 短脚本访问隔离候选 HTTP/MCP 验收：67.61 秒跨客户端观察、幂等找回、实际停止范围及结果/输出用例均通过，详见 [YCA-005 状态](../../docs/tickets/yuki-computer-agent/005-owned-tasks.md#本地实现与验收状态)。候选验收链路 0 模型调用，开发与审查使用 Codex。验收时常驻仍为 `245758d` / 14 工具；候选通过不等于常驻 18 工具直接验收，升级、插件刷新及常驻验收留待 PR 合并后单独处理。
 
 ### 专用文件与 Git 工具
 
@@ -220,6 +259,6 @@ YCA-001 本机回归 39/39 通过；2026-09-16 用户确认 ChatGPT → Yuki Com
 
 继续复用现有 **Yuki Computer Agent** tunnel 和 key。YCA-001 交付时，本机已暴露 14 个工具，但 ChatGPT 端插件刷新后仍只有旧 13 个；用户删除后重新安装插件，才加载到包含 `powershell_execute` 的完整清单。遇到同类情况应以实际工具清单和新对话调用为准，必要时重装 ChatGPT 端插件并选择原 tunnel，不重建 tunnel/key，不清空 runtime。
 
-加载后应发现 14 个工具，其中 `powershell` 仍为固定查询，`powershell_execute` 为新脚本入口。通过 ChatGPT 实际创建、修改、读取唯一验收目录中的文件，再核对错误、超时/超限结果；A1 全程不调用 Codex 模型。tunnel ready、本机测试及工具发现不能单独替代 ChatGPT 脚本验收。YCA-001 本次实际验收已通过，Codex 协作验收属于独立后续安排。
+YCA-001 当时加载后共 14 个工具，其中 `powershell` 为固定查询，`powershell_execute` 为新增脚本入口。其 ChatGPT 文件闭环、错误、超时/超限验收已通过，全程不调用 Codex 模型。当前 YCA-005 候选源码另增 4 个 task 工具；tunnel ready、本机测试及工具发现不能单独替代常驻新工具的 ChatGPT 验收，Codex 协作验收仍属于独立后续安排。
 
 参考：[Codex 非交互模式](https://learn.chatgpt.com/docs/non-interactive-mode)、[App Server](https://learn.chatgpt.com/docs/app-server)、[MCP SDK](https://github.com/modelcontextprotocol/typescript-sdk/tree/v1.x)、[Tunnel 接入](https://github.com/openai/tunnel-client/blob/master/docs/enterprise-customer-onboarding.md)。
