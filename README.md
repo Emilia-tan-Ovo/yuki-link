@@ -2,10 +2,11 @@
 
 面向用户与 AI 助手的统一 MCP / Bridge 项目。以统一核心连接设备与生活服务，让同一项能力可以由不同设备或服务提供。
 
-**当前状态：统一核心与 provider 仍是项目骨架；独立前置工具 Yuki Computer Agent 已有可运行的 MCP / Codex Bridge。** 前置工具位于 `tools/codex-session-bridge`，提供固定 PowerShell 查询、真实短脚本、专用文件/Git 工具及 Codex 会话通信。YCA-001 的本机回归与 ChatGPT 端验收已通过，待 PR 审阅与合并；正式 yuki-link 的首张基线票尚未启动。
+**当前状态（截至 2026-09-18）：统一核心与 provider 仍以项目骨架为主；独立前置工具 Yuki Computer Agent 已完成 A 阶段主线至 YCA-005，并已进入默认分支。常驻 YCA 本机运行版本、selected release 与远端默认分支已核对一致，后端工具摘要为 18 项。具体稳定性仍以各票据、Control Center 和真实端到端验收为准。**
 
-YCA-005 当前候选源码增加 `task_start/task_status/task_output/task_stop`，用于前台非交互长任务；用法与生命周期限制见 [任务工具说明](tools/codex-session-bridge/README.md#自有前台任务yca-005)。本机验证与艾米莉亚独立候选复核/验收已通过；合并后常驻升级、插件刷新及 18 工具直接验收仍待执行，不表示已经上线。
+YCA 当前已提供 PowerShell、文本/Skills 读取、文件/Git 操作、受管前台任务及 Codex 会话通信。**YCA → Codex 的正常开发权限尚未完成：YCA-006 仍待实施。** 2026-09-17 的真实 YCA 会话中，Codex 仓库读取命令被原生 policy 以 `blocked by policy` 拒绝；因此在 YCA-006 完成并通过真实读写/命令验收前，只能描述为“会话通信已打通”，不能描述为“希尔薇酱已能经 YCA 正常读写仓库并开发”。这不等同于用户直接打开 Codex 工作区时的独立权限状态。
 
+Control Center 已提供受管 release 的 running / selected / remote 状态、版本准备、仅重启当前版本和显式更新并重启。2026-09-17 实际使用暴露过 Codex 动态安装路径、YCA 更新生命周期及 shutdown `STOP_TIMEOUT` 等问题；根因、修复和能力声明纠正见 [运行时与能力边界事故复盘](docs/incidents/2026-09-17-yca-runtime-and-capability.md)。
 ## 三者的区别
 
 | 名称 | 定位 | 与本仓库的关系 |
