@@ -4,6 +4,25 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from 
 import path from 'node:path';
 import { fixture, ok, json } from './helpers.js';
 
+test('engineering-workflow installs its portable recovery references only through an approved fixture plan', t => {
+  const f = fixture(t);
+  const preview = ok(f.preview('engineering-workflow'));
+  const plan = json(preview.plan);
+  assert.deepEqual(plan.source.files.map(file => file.path).sort(), [
+    'engineering-workflow/SKILL.md',
+    'engineering-workflow/checkpoint-template.md',
+    'engineering-workflow/recovery.md',
+  ]);
+  assert.deepEqual(readdirSync(f.target), []);
+  assert.equal(f.call('apply', ['--plan', preview.plan]).data.error.code, 'APPROVAL_REQUIRED');
+  ok(f.call('apply', ['--plan', preview.plan, '--approve', preview.digest]));
+  assert.equal(ok(f.call('verify', ['--plan', preview.plan])).status, 'verified');
+  for (const file of plan.source.files) {
+    assert.deepEqual(readFileSync(path.join(f.target, file.path)), readFileSync(path.join(f.repo, '.workflow/skills', file.path)));
+  }
+  assert.equal(f.preview('review-change').data.error.code, 'NOT_INSTALLABLE');
+});
+
 test('preview records a complete source/target/tool-bound diff without changing installed bytes', t => {
   const f = fixture(t);
   mkdirSync(path.join(f.target, 'implement'));

@@ -73,6 +73,8 @@ Summarize:
 
 Ask the user to confirm shared understanding. After confirmation, inspect the current tracker format and how `/implement` reads tickets. If an extra Markdown section is compatible, add or update this section in the current ticket:
 
+例外：调查后 implementation frontier 为空、决定均已由 Spec/ADR/Ticket 或本轮授权解决时，直接形成 Implementation Notes 并声明 ready；不制造用户问题或重复确认。只有真正新的高杠杆提案才需要 Owner 确认。实现顺序和低风险命名细节可按既有约定决定，不能借此扩大范围。
+
 ```markdown
 ## Implementation Notes
 
@@ -81,12 +83,15 @@ Ask the user to confirm shared understanding. After confirmation, inspect the cu
 
 Keep the notes concise. Record decisions, not the conversation; include no substantial implementation code and do not repeat requirements already present in the spec. Preserve the ticket's existing structure and all unrelated content.
 
-If the tracker or ticket format cannot safely accept `## Implementation Notes`, change no tracker structure. Explain the incompatibility and keep a concise Implementation Summary in the session instead.
+真实 tracker 是当前票据时把 Notes 写入该 Issue；仓库有对应本地票据则同步同一 Notes。更新前读取最新内容，保留他人变更；如果本轮禁止外部写入，保存本地 Notes 并明确 tracker 待同步。上层 workflow 在交接时保存 checkpoint：worktree、branch、fixed point、HEAD、Notes 引用、deferred details 与 Next action。独立调用时 Notes 本身也必须足够 fresh implementation session 理解，不依赖本次聊天。
+
+如果 tracker 或票据格式不能安全承载 `## Implementation Notes`，保持其结构，将简短 Implementation Summary 持久化到仓库已有 Notes 位置；没有约定时使用 `docs/implementation-notes/<ticket>.md`。文件必须包含原 Ticket/Spec 引用、实现决定和 deferred details；交接及 checkpoint 引用实际路径。仅在文件写入并回读验证后才能宣布 ready，不能只将摘要留在聊天中。fresh session 的 Implementation Notes 步骤读取该替代文件。
 
 ## 6. Hand off
 
-After shared understanding is confirmed and the compatible notes are persisted (or the incompatibility is reported), state:
+在共享理解已确认（或 frontier 为空且决定已有确认来源），并且内嵌 Notes 或替代 Notes 已持久化且回读验证后，才声明如下 ready 状态。写入失败或本轮不允许写入时，报告具体未完成的持久化动作，不宣布 ready：
 
 > The current ticket is ready for implementation.
 
 Recommend `/implement <current-ticket>`. Invoke it only when the user explicitly asks.
+显式授权可以来自本轮 engineering-workflow 的“设计后继续实现”；此时完成本 Skill 后返回上层继续，无需再次请求同一授权。没有实现授权时仍停在设计交接。默认复用 ticket-design session；需要 fresh implementation 时先保存 Notes/checkpoint。

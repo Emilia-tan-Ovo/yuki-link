@@ -14,7 +14,7 @@ The issue tracker and triage label vocabulary should have been provided to you �
 
 ### 1. Gather context
 
-Work from whatever is already in the conversation context. If the user passes a reference (a spec path, an issue number or URL) as an argument, fetch it and read its full body and comments.
+优先读取已发布 Spec、Design Handoff、CONTEXT/ADR 和已有票据；当前聊天仅作补充。If the user passes a reference (a spec path, an issue number or URL) as an argument, fetch it and read its full body and comments. 已确认的拆票决定不重复提问，只有新的粒度/依赖取舍进入用户确认。
 
 ### 2. Explore the codebase (optional)
 
@@ -63,6 +63,10 @@ Publish the approved tickets. **How** depends on the tracker `/setup-matt-pocock
 - **A real issue tracker (GitHub, Linear, …)** → publish one issue per ticket in dependency order (blockers first) so each ticket's blocking edges can reference real identifiers. Use the platform's native blocking / sub-issue relationship where it has one; otherwise set each ticket's "Blocked by" to the blocking issues. Apply the `ready-for-agent` triage label unless instructed otherwise — the tickets are agent-grabbable by construction.
 
 Work the **frontier**: any ticket whose blockers are all done. For a purely linear chain that means top to bottom.
+
+发布前查询现有票据及 blocking edges；响应缺失时核验实际 tracker 状态，避免重发已创建票据。每张票保留 source Spec 引用，并可记录 `Risk hint: low/normal/high`；hint 不代替后续依据真实 diff 的 Review 判断。
+
+发布后保存 Tickets Handoff：Spec 引用、票据路径/URL、真实 blocking edges、已确认拆票决定与当前可开始的 frontier。使用仓库票据目录的索引；已有索引则更新，不复制所有票据正文。上层 workflow 只在 checkpoint 记录 frontier 引用及下一张票的 `ticket-design` 动作。fresh session 重查 blocker 状态后继续，不能把旧 frontier 当永久事实。
 
 Do NOT close or modify any parent issue.
 

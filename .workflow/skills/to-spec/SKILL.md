@@ -4,7 +4,7 @@ description: Turn the current conversation into a spec and publish it to the pro
 disable-model-invocation: true
 ---
 
-This skill takes the current conversation context and codebase understanding and produces a spec. Do NOT interview the user — just synthesize what you already know.
+This skill synthesizes the confirmed Design Handoff, CONTEXT/ADRs and codebase facts into a spec. Read those persisted inputs first; current conversation is supplementary, not required. Do NOT re-interview the user about already confirmed decisions. A genuine missing product decision remains unresolved; do not invent it.
 
 The issue tracker and triage label vocabulary should have been provided to you — run `/setup-matt-pocock-skills` if not.
 
@@ -14,9 +14,11 @@ The issue tracker and triage label vocabulary should have been provided to you �
 
 2. Sketch out the seams at which you're going to test the feature. Existing seams should be preferred to new ones. Use the highest seam possible. If new seams are needed, propose them at the highest point you can. The fewer seams across the codebase, the better - the ideal number is one.
 
-Check with the user that these seams match their expectations.
+Check with the user that these seams match their expectations only if they are not already confirmed in the handoff/source decisions. Preserve confirmed seams; material changes require a new decision.
 
 3. Write the spec using the template below, then publish it to the project issue tracker. Apply the `ready-for-agent` triage label - no need for additional triage.
+
+4. 保存可恢复交接：正式 Spec 的持久化路径/发布 URL、已确认测试 seam、决定来源、剩余未决项与下一步 `to-tickets`。使用仓库约定的 Spec 位置；尚未发布时明确 pending，不把本地文件说成发布成功。发布响应丢失时先查询现有 Issue，避免重复创建。上层 workflow 在实际发布/交接完成后保存 `phase: tickets` 的 checkpoint；不将运行期 session/run 写入领域文档。
 
 <spec-template>
 
