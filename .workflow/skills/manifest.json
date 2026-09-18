@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "skills": [
+    {
+      "name": "pair-with-docs",
+      "installable": true,
+      "files": [
+        "SKILL.md"
+      ]
+    },
+    {
+      "name": "to-spec",
+      "installable": true,
+      "files": [
+        "agents/openai.yaml",
+        "SKILL.md"
+      ]
+    },
+    {
+      "name": "to-tickets",
+      "installable": true,
+      "files": [
+        "agents/openai.yaml",
+        "SKILL.md"
+      ]
+    },
+    {
+      "name": "ticket-design",
+      "installable": true,
+      "files": [
+        "SKILL.md"
+      ]
+    },
+    {
+      "name": "implement",
+      "installable": true,
+      "files": [
+        "agents/openai.yaml",
+        "SKILL.md"
+      ]
+    },
+    {
+      "name": "code-review",
+      "installable": true,
+      "files": [
+        "agents/openai.yaml",
+        "SKILL.md"
+      ]
+    },
+    {
+      "name": "engineering-workflow",
+      "installable": false,
+      "files": [
+        "SKILL.md"
+      ]
+    },
+    {
+      "name": "review-change",
+      "installable": false,
+      "files": [
+        "SKILL.md"
+      ]
+    }
+  ]
+}
