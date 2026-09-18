@@ -58,6 +58,23 @@ class FakeExecutor {
     callbacks.onDone({ code: 0, signal: null, error: null });
   }
 }
+class FakeTimers {
+  nextId = 1;
+  scheduled = new Map();
+  setTimeout = (callback, delay) => {
+    const id = this.nextId++;
+    this.scheduled.set(id, { callback, delay });
+    return id;
+  };
+  clearTimeout = id => { this.scheduled.delete(id); };
+  fire(delay) {
+    const entries = [...this.scheduled.entries()].filter(([, timer]) => timer.delay === delay);
+    for (const [id, timer] of entries) {
+      this.scheduled.delete(id);
+      timer.callback();
+    }
+  }
+}
 function setup(t, options = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'bridge-test-'));
   const cwd = path.join(root, '允许 中文 空格'); mkdirSync(cwd);
@@ -99,9 +116,111 @@ test('async acceptance, concurrent dedup, session lock, inheritance and explicit
   assert.equal(manager.session(a.session_id).reasoning, 'low');
   const replay = await manager.send(nextInput); assert.equal(replay.run_id, c.run_id);
   assert.equal(manager.status({ run_id: e.run_id }).run.status, 'completed');
-  const events = manager.output({ run_id: a.run_id, cursor: 0, limit: 1 });
+  const events = await manager.output({ run_id: a.run_id, cursor: 0, limit: 1 });
   assert.equal(events.next_cursor, 1); assert.equal(events.has_more, true);
+  assert.equal(events.return_reason, 'events');
   assert.equal(events.events[0].data.text, message.prompt);
+});
+
+test('output wait wakes every observer on the next durable event without losing a same-turn append', async t => {
+  const timers = new FakeTimers();
+  const { manager, executor, input } = setup(t, { timers });
+  const started = await manager.start(input());
+  await tick();
+  const cursor = manager.run(started.run_id).event_count;
+  const first = manager.output({ run_id: started.run_id, cursor, wait_ms: 60_000 });
+  const second = manager.output({ run_id: started.run_id, cursor, wait_ms: 60_000 });
+
+  executor.calls[0].callbacks.onStderr('durable progress');
+  timers.fire(60_000);
+  for (const pending of [first, second]) {
+    const result = await pending;
+    assert.equal(result.return_reason, 'events');
+    assert.deepEqual(result.events.map(event => event.type), ['stderr']);
+    assert.equal(result.next_cursor, cursor + 1);
+  }
+  assert.equal(timers.scheduled.size, 0);
+  manager.stop(started.session_id);
+});
+
+test('aborting an output observation removes its waiter without stopping the run', async t => {
+  const timers = new FakeTimers();
+  const { manager, input } = setup(t, { timers });
+  const started = await manager.start(input());
+  await tick();
+  const controller = new AbortController();
+  const cursor = manager.run(started.run_id).event_count;
+  const pending = manager.output({ run_id: started.run_id, cursor, wait_ms: 60_000 }, { signal: controller.signal });
+
+  controller.abort();
+  timers.fire(60_000);
+  await assert.rejects(pending, { code: 'OBSERVATION_CANCELLED' });
+  assert.equal(timers.scheduled.size, 0);
+  assert.equal(manager.run(started.run_id).status, 'running');
+  manager.stop(started.session_id);
+});
+
+test('manager close wakes output observers through the stopped lifecycle event', async t => {
+  const timers = new FakeTimers();
+  const { manager, input } = setup(t, { timers });
+  const started = await manager.start(input());
+  await tick();
+  const cursor = manager.run(started.run_id).event_count;
+  const pending = manager.output({ run_id: started.run_id, cursor, wait_ms: 60_000 });
+  await manager.close();
+  const result = await pending;
+  assert.equal(result.return_reason, 'events');
+  assert.equal(result.status, 'stopped');
+  assert.equal(result.events.at(-1).type, 'run.stopped');
+  assert.equal(timers.scheduled.size, 0);
+});
+
+test('output wait separates elapsed observations from stop, completion and hard-timeout lifecycle events', async t => {
+  const timers = new FakeTimers();
+  const { manager, executor, input } = setup(t, { timers });
+
+  const stopped = await manager.start(input());
+  await tick();
+  let cursor = manager.run(stopped.run_id).event_count;
+  const elapsed = manager.output({ run_id: stopped.run_id, cursor, wait_ms: 60_000 });
+  timers.fire(60_000);
+  assert.deepEqual(await elapsed, {
+    run_id: stopped.run_id, status: 'running', events: [], next_cursor: cursor,
+    has_more: false, final_response: null, return_reason: 'wait_elapsed',
+  });
+  assert.equal(manager.run(stopped.run_id).status, 'running');
+
+  const stoppedObservation = manager.output({ run_id: stopped.run_id, cursor, wait_ms: 60_000 });
+  manager.stop(stopped.session_id);
+  const stoppedResult = await stoppedObservation;
+  assert.equal(stoppedResult.return_reason, 'events');
+  assert.equal(stoppedResult.status, 'stopped');
+  assert.equal(stoppedResult.events.at(-1).type, 'run.stopped');
+  cursor = stoppedResult.next_cursor;
+  const terminal = await manager.output({ run_id: stopped.run_id, cursor, wait_ms: 60_000 });
+  assert.equal(terminal.return_reason, 'terminal');
+  assert.equal(terminal.events.length, 0);
+
+  const completed = await manager.start(input());
+  await tick();
+  cursor = manager.run(completed.run_id).event_count;
+  const completedObservation = manager.output({ run_id: completed.run_id, cursor, wait_ms: 60_000 });
+  executor.complete(1, 'finished through observation');
+  const completedResult = await completedObservation;
+  assert.equal(completedResult.return_reason, 'events');
+  assert.equal(completedResult.status, 'completed');
+  assert.equal(completedResult.final_response, 'finished through observation');
+
+  const timedOut = await manager.start({ ...input(), timeout_ms: 1000 });
+  await tick();
+  cursor = manager.run(timedOut.run_id).event_count;
+  const timeoutObservation = manager.output({ run_id: timedOut.run_id, cursor, wait_ms: 60_000 });
+  timers.fire(1000);
+  const timeoutResult = await timeoutObservation;
+  assert.equal(timeoutResult.return_reason, 'events');
+  assert.equal(timeoutResult.status, 'timed_out');
+  assert.equal(manager.run(timedOut.run_id).error.code, 'RUN_TIMEOUT');
+  assert.equal(timers.scheduled.size, 0);
 });
 
 test('invalid configurations, path escape, conflicting idempotency keys and prototype-like keys', async t => {
@@ -207,7 +326,8 @@ test('old-format runtime fixture loads history, replays the old request hash and
   const status = manager.status({ session_id: sessionId });
   assert.equal(status.session.permissions.kind, 'legacy');
   assert.equal(status.session.permissions.sandbox_mode, 'read-only');
-  assert.equal(manager.output({ run_id: runId }).final_response, 'legacy fixture reply');
+  assert.equal(status.run.timeout_ms, 300_000);
+  assert.equal((await manager.output({ run_id: runId })).final_response, 'legacy fixture reply');
 
   const replay = await manager.start(legacyInput);
   assert.equal(replay.run_id, runId);
@@ -225,14 +345,38 @@ test('old-format runtime fixture loads history, replays the old request hash and
   assert.equal(manager.status({ run_id: continued.run_id }).run.status, 'completed');
 });
 
-test('stop, timeout, CLI failure and output limits have terminal states', async t => {
-  const { manager, executor, input } = setup(t, { defaultTimeoutMs: 30, maxOutputBytes: 1024 });
+test('omitted timeout has no hard deadline while an explicit deadline retains RUN_TIMEOUT', async t => {
+  const timers = new FakeTimers();
+  const { manager, input } = setup(t, { timers });
+  const unlimitedInput = input();
+  const unlimited = await manager.start(unlimitedInput);
+  assert.equal(unlimited.timeout_ms, null);
+  assert.equal(manager.run(unlimited.run_id).timeout_ms, null);
+  await tick();
+  assert.equal(timers.scheduled.size, 0);
+  timers.fire(180_000);
+  timers.fire(300_000);
+  assert.equal(manager.run(unlimited.run_id).status, 'running');
+  assert.equal((await manager.start(unlimitedInput)).run_id, unlimited.run_id);
+  await assert.rejects(manager.start({ ...unlimitedInput, timeout_ms: 1000 }), { code: 'REQUEST_ID_CONFLICT' });
+  manager.stop(unlimited.session_id);
+
+  const limited = await manager.start({ ...input(), timeout_ms: 1000 });
+  assert.equal(limited.timeout_ms, 1000);
+  await tick();
+  assert.deepEqual([...timers.scheduled.values()].map(timer => timer.delay), [1000]);
+  timers.fire(1000);
+  await tick();
+  assert.equal(manager.run(limited.run_id).status, 'timed_out');
+  assert.equal(manager.run(limited.run_id).error.code, 'RUN_TIMEOUT');
+});
+
+test('stop, CLI failure and output limits have terminal states', async t => {
+  const { manager, executor, input } = setup(t, { maxOutputBytes: 1024 });
   const queued = await manager.start(input()); manager.stop(queued.session_id);
   assert.equal(manager.run(queued.run_id).status, 'stopped');
   const active = await manager.start(input()); await tick(); manager.stop(active.session_id);
   await tick(); assert.equal(manager.run(active.run_id).status, 'stopped');
-  const timeout = await manager.start(input()); await until(() => manager.run(timeout.run_id).status === 'timed_out');
-  assert.equal(manager.run(timeout.run_id).status, 'timed_out');
   const failed = await manager.start(input()); await tick();
   executor.calls.at(-1).callbacks.onDone({ code: 7, signal: null, error: null });
   assert.equal(manager.run(failed.run_id).status, 'failed');
@@ -250,7 +394,7 @@ test('durable results and idempotency survive a bridge restart; incomplete runs 
   const recovered = new SessionManager({ store: nextStore, catalog, executor: new FakeExecutor(), permissionResolver: new FakePermissionResolver(), allowedCwds: [cwd] });
   t.after(() => recovered.close());
   assert.equal((await recovered.start(message)).run_id, first.run_id);
-  assert.equal(recovered.output({ run_id: first.run_id }).final_response, '持久回复');
+  assert.equal((await recovered.output({ run_id: first.run_id })).final_response, '持久回复');
   // Simulate a persisted running state with no live process and an incomplete final JSONL record.
   const run = nextStore.state.runs[first.run_id]; run.status = 'running'; run.pid = null;
   nextStore.state.sessions[first.session_id].active_run_id = first.run_id;
@@ -261,7 +405,11 @@ test('durable results and idempotency survive a bridge restart; incomplete runs 
   const third = new SessionManager({ store: thirdStore, catalog, executor: new FakeExecutor(), permissionResolver: new FakePermissionResolver(), allowedCwds: [cwd] });
   assert.equal(third.run(first.run_id).status, 'interrupted');
   assert.equal(third.session(first.session_id).active_run_id, null);
-  assert.ok(third.output({ run_id: first.run_id }).events.at(-1).type === 'run.interrupted');
+  const interrupted = await third.output({ run_id: first.run_id });
+  assert.ok(interrupted.events.at(-1).type === 'run.interrupted');
+  const recoveredTerminal = await third.output({ run_id: first.run_id, cursor: interrupted.next_cursor, wait_ms: 60_000 });
+  assert.equal(recoveredTerminal.return_reason, 'terminal');
+  assert.equal(recoveredTerminal.status, 'interrupted');
   await third.close();
   assert.equal(store.state.runs[first.run_id].status, 'completed');
 });
@@ -326,6 +474,55 @@ test('real MCP HTTP clients reconnect to durable runs; host/origin checks and ex
   const forbidden = await fetch(url, { method: 'POST', headers: { origin: 'https://attacker.invalid', 'content-type': 'application/json' }, body: '{}' });
   assert.equal(forbidden.status, 403);
   await next.close();
+});
+
+test('MCP output wait exposes its schema and HTTP disconnect cancels only the observation', async t => {
+  const timers = new FakeTimers();
+  const { manager, executor, input } = setup(t, { timers });
+  const server = createHttpServer(manager);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const url = new URL(`http://127.0.0.1:${server.address().port}/mcp`);
+  let client = new Client({ name: 'wait-test', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(url));
+  const tools = await client.listTools();
+  const outputTool = tools.tools.find(tool => tool.name === 'codex_get_output');
+  assert.equal(outputTool.inputSchema.properties.wait_ms.type, 'integer');
+  assert.equal(outputTool.inputSchema.properties.wait_ms.minimum, 0);
+  assert.equal(outputTool.inputSchema.properties.wait_ms.maximum, 60_000);
+
+  const started = await client.callTool({ name: 'codex_start_session', arguments: input() });
+  const { run_id } = started.structuredContent;
+  await tick();
+  let cursor = manager.run(run_id).event_count;
+  const elapsedCall = client.callTool({ name: 'codex_get_output', arguments: { run_id, cursor, wait_ms: 60_000 } });
+  await until(() => timers.scheduled.size === 1);
+  timers.fire(60_000);
+  const elapsed = await elapsedCall;
+  assert.equal(elapsed.structuredContent.return_reason, 'wait_elapsed');
+  assert.equal(manager.run(run_id).status, 'running');
+
+  const disconnectedCall = client.callTool({ name: 'codex_get_output', arguments: { run_id, cursor, wait_ms: 60_000 } });
+  await until(() => timers.scheduled.size === 1);
+  await client.close();
+  client = null;
+  await assert.rejects(disconnectedCall);
+  await until(() => timers.scheduled.size === 0);
+  assert.equal(manager.run(run_id).status, 'running');
+
+  const reconnected = new Client({ name: 'wait-test-reconnected', version: '1' });
+  await reconnected.connect(new StreamableHTTPClientTransport(url));
+  executor.calls[0].callbacks.onStderr('after reconnect');
+  const output = await reconnected.callTool({ name: 'codex_get_output', arguments: { run_id, cursor } });
+  assert.equal(output.structuredContent.return_reason, 'events');
+  assert.equal(output.structuredContent.events.at(-1).data.text, 'after reconnect');
+  cursor = output.structuredContent.next_cursor;
+  manager.stop(started.structuredContent.session_id);
+  const terminal = await reconnected.callTool({ name: 'codex_get_output', arguments: { run_id, cursor, wait_ms: 60_000 } });
+  assert.equal(terminal.structuredContent.return_reason, 'events');
+  const drained = await reconnected.callTool({ name: 'codex_get_output', arguments: { run_id, cursor: terminal.structuredContent.next_cursor, wait_ms: 60_000 } });
+  assert.equal(drained.structuredContent.return_reason, 'terminal');
+  await reconnected.close();
 });
 
 test('executor parses native-process JSONL and reports malformed output and spawn failure', async () => {

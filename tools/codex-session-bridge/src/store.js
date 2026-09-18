@@ -17,6 +17,7 @@ export class RuntimeStore {
         ? JSON.parse(readFileSync(this.stateFile, 'utf8'))
         : { version: 1, sessions: {}, runs: {}, requests: {} };
       if (this.state.version !== 1 || !this.state.sessions || !this.state.runs || !this.state.requests) throw new BridgeError('STATE_INVALID', 'Unsupported runtime state; preserve the runtime directory for inspection.');
+      this.eventSubscribers = new Map();
     } catch (error) { this.close(); throw error; }
   }
 
@@ -52,7 +53,21 @@ export class RuntimeStore {
     const event = { seq: run.event_count, at: new Date().toISOString(), session_id: run.session_id, run_id: run.id, type, data };
     appendFileSync(this.eventFile(run.id), JSON.stringify(event, (_key, value) => typeof value === 'string' ? redact(value) : value) + '\n', { encoding: 'utf8', flush: true });
     run.event_count++;
+    for (const subscriber of [...(this.eventSubscribers.get(run.id) ?? [])]) subscriber();
     return event;
+  }
+
+  subscribe(runId, subscriber) {
+    let subscribers = this.eventSubscribers.get(runId);
+    if (!subscribers) {
+      subscribers = new Set();
+      this.eventSubscribers.set(runId, subscribers);
+    }
+    subscribers.add(subscriber);
+    return () => {
+      subscribers.delete(subscriber);
+      if (!subscribers.size) this.eventSubscribers.delete(runId);
+    };
   }
 
   readEvents(run) {

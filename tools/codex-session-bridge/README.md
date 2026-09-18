@@ -47,10 +47,10 @@ Windows 常驻服务可以显式传入 `--codex-bin 'C:\path\to\codex.exe'`，�
 | 工具 | 主要输入 | 返回 |
 | --- | --- | --- |
 | `codex_list_models` | `refresh?` | 本机模型、各自 reasoning 档位、查询时间 |
-| `codex_start_session` | `request_id, cwd, prompt, permissions?, sender?, model?, reasoning?, timeout_ms?` | `session_id, run_id, status, model, reasoning, permissions, deduplicated` |
+| `codex_start_session` | `request_id, cwd, prompt, permissions?, sender?, model?, reasoning?, timeout_ms?` | `session_id, run_id, status, model, reasoning, permissions, timeout_ms, deduplicated` |
 | `codex_send_message` | `request_id, session_id, prompt, sender?, model?, reasoning?, timeout_ms?` | 同上；权限固定继承 session，不能在续聊中切换 |
 | `codex_get_status` | `session_id? / run_id?`，至少一个 | session、选定 run、当前 session 状态 |
-| `codex_get_output` | `run_id, cursor?, limit?` | 事件、`next_cursor`、`has_more`、最终回复 |
+| `codex_get_output` | `run_id, cursor?, limit?, wait_ms?` | 事件、`next_cursor`、`has_more`、状态、最终回复、`return_reason` |
 | `codex_stop_session` | `session_id` | 停止进度，需继续查状态 |
 | `powershell` | `cwd, query, timeout_ms?` | `operation_id, exit_code, stdout, stderr, data` |
 | `powershell_execute` | `cwd, script, timeout_ms?` | 执行结果；失败时位于 `error.details.result`，包含部分输出及终止信息 |
@@ -193,9 +193,13 @@ Git 只提供 status 和单文件 diff；仓库根也必须在允许读取目录
 
 `start/send` 校验并持久化后立即返回，不等待模型生成。能力目录过期时可能先花数秒刷新，超时则报 `CAPABILITY_UNAVAILABLE`。同一 session 最多一个 active run；并发提交不同请求返回 `SESSION_BUSY`，不会暗中排队。
 
+Codex run 默认没有 wall-clock hard execution deadline：省略 `timeout_ms` 时，run 持久化 `null`，不会因为运行超过固定时长而被 Bridge 停止。只有调用方明确传入 1,000～1,800,000 ms 时才创建 hard deadline；到期后请求停止，并在进程实际结束时进入 `timed_out`，错误为 `RUN_TIMEOUT`。该值从 run 受理结果和 status 可见。hard deadline 与下述 observation wait 相互独立；一次观察结束不会设置、刷新或触发 run deadline。
+
 客户端用相同 `request_id` 和完全相同参数重试，得到原来的 `run_id`；修改参数复用 ID 则报 `REQUEST_ID_CONFLICT`。幂等范围是整个 runtime，同一消息的默认参数“省略”与“显式传入”不视为相同请求。新一轮消息必须换 ID。HTTP 连接断开不会取消 run。
 
-`get_output` 的 cursor 从 0 开始，代表该 run 已读取的事件数。保留 `next_cursor`，`has_more=true` 时继续翻页。不要因一次空结果而判定结束，结合状态轮询。失败也可以读取已生成内容。
+`get_output` 的 cursor 从 0 开始，代表该 run 已读取的事件数。保留 `next_cursor`，`has_more=true` 时继续翻页。失败也可以读取已生成内容。
+
+省略 `wait_ms` 或传 `0` 保持原有即时读取。传入 1～60,000 ms 时，调用会等待到 cursor 后出现新的 durable event、run 已进入终态或本次 observation window 到期。`return_reason` 分别为 `events`、`terminal`、`wait_elapsed`；已有 backlog 总是立即按 limit 返回。terminal 且没有未读事件时返回空事件页及 final response。`wait_elapsed` 只表示本次没有更多内容，run 仍可继续执行；客户端取消或 HTTP 断开也只取消这次 observation，重连后继续使用同一 run ID 和 cursor。
 
 run 状态：
 
@@ -224,7 +228,7 @@ runtime/                  # 已由仓库 .gitignore 排除
 
 事件保留发送者标签（不是身份认证）、公开消息、模型配置与生命周期信息。已做常见 key/token 格式脱敏，但不能识别所有秘密：不要发送凭据或敏感配置；日志有完整会话内容，保存在本机，未加密，也不自动过期。
 
-默认单次运行超时 5 分钟，可在 1 秒到 30 分钟内指定。prompt 上限 128 KiB；单行进程输出上限 2 MiB；单次事件日志上限约 16 MiB；超限会停止运行并报错。MVP 使用文件和内存，不适合长期大量并发；请定期在服务停止后归档 runtime。
+单次运行默认没有 hard deadline；需要时可显式指定 1 秒到 30 分钟。prompt 上限 128 KiB；单行进程输出上限 2 MiB；单次事件日志上限约 16 MiB；超限会停止运行并报错。MVP 使用文件和内存，不适合长期大量并发；请定期在服务停止后归档 runtime。
 
 ## 执行与权限边界
 

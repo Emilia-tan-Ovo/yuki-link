@@ -10,15 +10,16 @@ const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).
 const now = () => new Date().toISOString();
 
 export class SessionManager {
-  constructor({ store, catalog, executor, permissionResolver, allowedCwds, defaultTimeoutMs = 300_000, maxOutputBytes = 16 * 1024 * 1024 }) {
+  constructor({ store, catalog, executor, permissionResolver, allowedCwds, timers = globalThis, maxOutputBytes = 16 * 1024 * 1024 }) {
     this.store = store;
     this.catalog = catalog;
     this.executor = executor;
     this.permissionResolver = permissionResolver;
     this.allowedCwds = allowedCwds.map(directory => realpathSync(directory));
-    this.defaultTimeoutMs = defaultTimeoutMs;
+    this.timers = timers;
     this.maxOutputBytes = maxOutputBytes;
     this.running = new Map();
+    this.observationWaiters = new Set();
     this.closing = false;
     this.recover();
   }
@@ -121,7 +122,7 @@ export class SessionManager {
       id: randomUUID(), session_id: session.id, request_id: input.request_id,
       sender: redact(input.sender ?? 'caller'), ...config, status: 'queued', created_at: now(),
       started_at: null, finished_at: null, pid: null, event_count: 0,
-      timeout_ms: input.timeout_ms ?? this.defaultTimeoutMs, error: null, exit_code: null,
+      timeout_ms: input.timeout_ms ?? null, error: null, exit_code: null,
       completed_event: false, final_response: '', config_source: Object.hasOwn(session, 'permissions') ? 'session_permission_snapshot' : 'legacy_explicit_codex_cli_arguments',
     };
     const previousSession = Object.hasOwn(this.store.state.sessions, session.id) ? structuredClone(session) : null;
@@ -150,7 +151,7 @@ export class SessionManager {
 
   accepted(run) {
     const session = this.store.state.sessions[run.session_id];
-    return { session_id: run.session_id, run_id: run.id, status: run.status, model: run.model, reasoning: run.reasoning, permissions: sessionPermissionSnapshot(session), deduplicated: false };
+    return { session_id: run.session_id, run_id: run.id, status: run.status, model: run.model, reasoning: run.reasoning, permissions: sessionPermissionSnapshot(session), timeout_ms: run.timeout_ms ?? null, deduplicated: false };
   }
 
   launch(run, session, prompt) {
@@ -186,7 +187,7 @@ export class SessionManager {
           this.store.append(run, 'stderr', { text: line });
         },
         onDone: result => {
-          clearTimeout(live.timer);
+          if (live.timer !== null) this.timers.clearTimeout(live.timer);
           this.running.delete(run.id);
           run.exit_code = result.code; run.pid = null;
           const error = result.error ? publicError(result.error) : run.error;
@@ -194,7 +195,9 @@ export class SessionManager {
           this.finish(run, live.stopReason ?? (success ? 'completed' : 'failed'), error ?? (success || live.stopReason ? null : { code: 'CODEX_EXIT_FAILED', message: 'Codex exited without a successful turn completion.' }));
         },
       });
-      live.timer = setTimeout(() => this.requestStop(run, 'timed_out', new BridgeError('RUN_TIMEOUT', 'Run exceeded its time limit.')), run.timeout_ms);
+      if (run.timeout_ms !== null && this.running.has(run.id)) {
+        live.timer = this.timers.setTimeout(() => this.requestStop(run, 'timed_out', new BridgeError('RUN_TIMEOUT', 'Run exceeded its time limit.')), run.timeout_ms);
+      }
     } catch (error) {
       this.running.delete(run.id);
       this.finish(run, 'failed', publicError(error));
@@ -245,10 +248,42 @@ export class SessionManager {
     return { session: sessionView, run: selected ? structuredClone(selected) : null, session_status: session.active_run_id ? this.run(session.active_run_id).status : 'idle' };
   }
 
-  output({ run_id, cursor = 0, limit = 100 }) {
+  async output({ run_id, cursor = 0, limit = 100, wait_ms = 0 }, { signal } = {}) {
     if (!Number.isSafeInteger(cursor) || cursor < 0 || !Number.isInteger(limit) || limit < 1 || limit > 200) throw new BridgeError('INVALID_CURSOR', 'cursor must be non-negative; limit must be 1–200.');
+    if (!Number.isInteger(wait_ms) || wait_ms < 0 || wait_ms > 60_000) throw new BridgeError('INVALID_WAIT', 'wait_ms must be 0–60000.');
+    if (signal?.aborted) throw new BridgeError('OBSERVATION_CANCELLED', 'Output observation was cancelled. The run continues independently.');
     const run = this.run(run_id);
-    return { run_id, status: run.status, ...this.store.output(run, cursor, limit), final_response: ACTIVE.has(run.status) ? null : run.final_response };
+    const snapshot = () => {
+      const output = this.store.output(run, cursor, limit);
+      const returnReason = output.events.length ? 'events' : (ACTIVE.has(run.status) ? 'wait_elapsed' : 'terminal');
+      return { run_id, status: run.status, ...output, final_response: ACTIVE.has(run.status) ? null : run.final_response, return_reason: returnReason };
+    };
+    let result = snapshot();
+    if (result.return_reason !== 'wait_elapsed' || wait_ms === 0) return result;
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      let timer = null;
+      let unsubscribe = () => {};
+      const onAbort = () => finish(new BridgeError('OBSERVATION_CANCELLED', 'Output observation was cancelled. The run continues independently.'));
+      const ready = () => run.event_count > cursor || !ACTIVE.has(run.status);
+      const waiter = { cancel: error => finish(error) };
+      const finish = (error = null) => {
+        if (settled) return;
+        settled = true;
+        unsubscribe();
+        if (timer !== null) this.timers.clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        this.observationWaiters.delete(waiter);
+        if (error) reject(error); else resolve();
+      };
+      this.observationWaiters.add(waiter);
+      unsubscribe = this.store.subscribe(run.id, finish);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      timer = this.timers.setTimeout(finish, wait_ms);
+      if (ready()) finish();
+    });
+    result = snapshot();
+    return result;
   }
 
   async close() {
@@ -256,7 +291,11 @@ export class SessionManager {
     for (const session of Object.values(this.store.state.sessions)) if (session.active_run_id) this.stop(session.id);
     const deadline = Date.now() + 10_000;
     while (this.running.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
-    if (this.running.size) throw new BridgeError('STOP_FAILED', 'Some owned runs have not stopped; retain the runtime lock.');
+    if (this.running.size) {
+      for (const waiter of [...this.observationWaiters]) waiter.cancel(new BridgeError('BRIDGE_CLOSED', 'Bridge closed while observing output.'));
+      throw new BridgeError('STOP_FAILED', 'Some owned runs have not stopped; retain the runtime lock.');
+    }
+    for (const waiter of [...this.observationWaiters]) waiter.cancel(new BridgeError('BRIDGE_CLOSED', 'Bridge closed while observing output.'));
     this.store.close();
   }
 }
