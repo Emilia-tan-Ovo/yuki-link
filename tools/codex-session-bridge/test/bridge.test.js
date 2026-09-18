@@ -176,6 +176,55 @@ test('legacy sessions keep the old read-only execution profile and never inherit
   executor.complete(executor.calls.length - 1);
 });
 
+test('old-format runtime fixture loads history, replays the old request hash and resumes without upgrading permissions', async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'bridge-legacy-fixture-'));
+  const cwd = path.join(root, '旧会话目录'); mkdirSync(cwd);
+  const runtime = path.join(root, 'runtime'); mkdirSync(path.join(runtime, 'runs'), { recursive: true });
+  const legacyInput = { cwd, request_id: 'legacy-request-001', prompt: 'legacy fixture start', sender: 'legacy caller' };
+  const oldFingerprint = createHash('sha256').update(JSON.stringify([
+    'start', legacyInput.cwd, legacyInput.prompt, legacyInput.sender, null, null, null,
+  ])).digest('hex');
+  const template = readFileSync(new URL('./fixtures/legacy-runtime/sessions.template.json', import.meta.url), 'utf8')
+    .replace('__CWD__', cwd.replaceAll('\\', '\\\\'))
+    .replace('__FINGERPRINT__', oldFingerprint);
+  writeFileSync(path.join(runtime, 'sessions.json'), template, 'utf8');
+  writeFileSync(
+    path.join(runtime, 'runs', '22222222-2222-4222-8222-222222222222.jsonl'),
+    readFileSync(new URL('./fixtures/legacy-runtime/runs/22222222-2222-4222-8222-222222222222.jsonl', import.meta.url), 'utf8'),
+    'utf8',
+  );
+
+  const catalog = new ModelCatalog();
+  catalog.snapshot = { checked_at: new Date().toISOString(), models: [{ model: 'gpt-6-astra', reasoning: ['high'] }] };
+  const executor = new FakeExecutor();
+  const permissionResolver = new FakePermissionResolver();
+  const store = new RuntimeStore(runtime);
+  const manager = new SessionManager({ store, catalog, executor, permissionResolver, allowedCwds: [cwd] });
+  t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
+
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+  const runId = '22222222-2222-4222-8222-222222222222';
+  const status = manager.status({ session_id: sessionId });
+  assert.equal(status.session.permissions.kind, 'legacy');
+  assert.equal(status.session.permissions.sandbox_mode, 'read-only');
+  assert.equal(manager.output({ run_id: runId }).final_response, 'legacy fixture reply');
+
+  const replay = await manager.start(legacyInput);
+  assert.equal(replay.run_id, runId);
+  assert.equal(replay.deduplicated, true);
+  assert.equal(permissionResolver.calls.length, 0);
+
+  const continued = await manager.send({ request_id: randomUUID(), session_id: sessionId, prompt: 'legacy fixture continue' });
+  assert.equal(continued.permissions.kind, 'legacy');
+  await tick();
+  const args = execArguments(executor.calls[0].run, executor.calls[0].session);
+  assert.ok(args.includes('--ignore-user-config'));
+  assert.ok(args.includes('features.plugins=false'));
+  assert.ok(args.includes('read-only'));
+  executor.complete(0);
+  assert.equal(manager.status({ run_id: continued.run_id }).run.status, 'completed');
+});
+
 test('stop, timeout, CLI failure and output limits have terminal states', async t => {
   const { manager, executor, input } = setup(t, { defaultTimeoutMs: 30, maxOutputBytes: 1024 });
   const queued = await manager.start(input()); manager.stop(queued.session_id);

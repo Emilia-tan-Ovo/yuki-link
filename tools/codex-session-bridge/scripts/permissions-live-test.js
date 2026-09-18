@@ -82,7 +82,7 @@ function commandEvidence(events) {
 try {
   await client.connect(new StreamableHTTPClientTransport(url));
 
-  const full = await call('codex_start_session', {
+  const defaultSession = await call('codex_start_session', {
     request_id: randomUUID(),
     cwd,
     sender: 'YCA acceptance',
@@ -98,25 +98,26 @@ try {
     ].join('\n'),
     timeout_ms: 240000,
   });
-  assert.equal(full.permissions.kind, 'native');
-  const fullResult = await wait(full);
-  assert.equal(fullResult.state.session.codex_thread_id.length, 36);
+  assert.equal(defaultSession.permissions.kind, 'native');
+  assert.equal(defaultSession.permissions.sandbox_mode, 'danger-full-access');
+  const defaultResult = await wait(defaultSession);
+  assert.equal(defaultResult.state.session.codex_thread_id.length, 36);
   const proof = readFileSync(path.join(cwd, 'proof.txt'), 'utf8').replace(/\r\n/g, '\n');
   assert.equal(proof, `${marker}\nSOURCE=${sourceText}\nCMD_OK\n`);
   const diff = git(['diff', '--', 'proof.txt']);
   assert.ok(diff.includes(marker));
   assert.ok(diff.includes('CMD_OK'));
-  assert.ok(commandEvidence(fullResult.events), 'Codex JSONL did not contain command_execution evidence.');
+  assert.ok(commandEvidence(defaultResult.events), 'Codex JSONL did not contain command_execution evidence.');
 
   const resumed = await call('codex_send_message', {
     request_id: randomUUID(),
-    session_id: full.session_id,
+    session_id: defaultSession.session_id,
     sender: 'YCA acceptance',
     prompt: 'Do not modify files. Read proof.txt and reply exactly: RESUME_OK <first-line-marker> <whether CMD_OK is present as YES or NO>.',
     timeout_ms: 180000,
   });
   const resumeResult = await wait(resumed);
-  assert.equal(resumeResult.state.session.codex_thread_id, fullResult.state.session.codex_thread_id);
+  assert.equal(resumeResult.state.session.codex_thread_id, defaultResult.state.session.codex_thread_id);
   assert.ok(resumeResult.state.run.final_response.includes(marker));
   assert.ok(resumeResult.state.run.final_response.includes('YES'));
   assert.equal(readFileSync(path.join(cwd, 'proof.txt'), 'utf8').replace(/\r\n/g, '\n'), proof);
@@ -139,9 +140,9 @@ try {
   assert.ok(commandEvidence(readOnlyResult.events), 'Read-only run did not contain command_execution evidence.');
   assert.equal(readFileSync(path.join(cwd, 'proof.txt'), 'utf8'), beforeReadOnly);
 
-  report.default_permissions = full.permissions;
+  report.default_permissions = defaultSession.permissions;
   report.explicit_permissions = readOnly.permissions;
-  report.thread_resumed = resumeResult.state.session.codex_thread_id === fullResult.state.session.codex_thread_id;
+  report.thread_resumed = resumeResult.state.session.codex_thread_id === defaultResult.state.session.codex_thread_id;
   report.external = { proof, diff, read_only_unchanged: true };
   report.passed = true;
 } catch (error) {

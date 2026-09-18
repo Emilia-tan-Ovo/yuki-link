@@ -47,6 +47,24 @@ test('workspace snapshots reject unknown config dimensions and damaged persisted
       workspace_write: null, source: 'fixture', resolved_at: new Date().toISOString(),
     },
   }), { code: 'SESSION_PERMISSION_INVALID' });
+
+  assert.throws(() => sessionPermissionSnapshot({
+    permissions: {
+      version: 1, kind: 'native', stored: true,
+      sandbox_mode: 'danger-full-access', approval_policy: 'on-request', approvals_reviewer: 'user',
+      workspace_write: null, source: 'fixture', resolved_at: new Date().toISOString(),
+      future_permission_dimension: true,
+    },
+  }), { code: 'SESSION_PERMISSION_INVALID' });
+
+  assert.throws(() => sessionPermissionSnapshot({
+    permissions: {
+      version: 1, kind: 'native', stored: true,
+      sandbox_mode: 'read-only', approval_policy: 'never', approvals_reviewer: 'user',
+      workspace_write: { writable_roots: [], network_access: false, exclude_slash_tmp: false, exclude_tmpdir_env_var: false },
+      source: 'fixture', resolved_at: new Date().toISOString(),
+    },
+  }), { code: 'SESSION_PERMISSION_INVALID' });
 });
 
 test('native executor pins a built-in permission profile as well as the legacy sandbox axis', () => {

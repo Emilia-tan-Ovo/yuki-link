@@ -87,18 +87,35 @@ export function permissionSnapshotFromConfig(config, source = 'test') {
   };
 }
 
+const SNAPSHOT_KEYS = new Set([
+  'version', 'kind', 'stored', 'sandbox_mode', 'approval_policy', 'approvals_reviewer',
+  'workspace_write', 'source', 'resolved_at',
+]);
+
 export function sessionPermissionSnapshot(session) {
   if (!Object.hasOwn(session, 'permissions')) return legacySnapshot();
   const snapshot = session.permissions;
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot) || snapshot.version !== 1 || snapshot.kind !== 'native') {
     invalid('SESSION_PERMISSION_INVALID', 'The saved session permission snapshot is missing, damaged, or from an unsupported version.');
   }
+  for (const key of Object.keys(snapshot)) {
+    if (!SNAPSHOT_KEYS.has(key)) invalid('SESSION_PERMISSION_INVALID', 'The saved session permission snapshot contains an unknown field.', { field: key });
+  }
+  if ([...SNAPSHOT_KEYS].some(key => !Object.hasOwn(snapshot, key))
+      || snapshot.stored !== true
+      || typeof snapshot.source !== 'string' || !snapshot.source
+      || typeof snapshot.resolved_at !== 'string' || !snapshot.resolved_at) {
+    invalid('SESSION_PERMISSION_INVALID', 'The saved session permission snapshot is incomplete or malformed.');
+  }
   if (!SANDBOX_MODES.has(snapshot.sandbox_mode) || !APPROVAL_POLICIES.has(snapshot.approval_policy) || !APPROVAL_REVIEWERS.has(snapshot.approvals_reviewer)) {
     invalid('SESSION_PERMISSION_INVALID', 'The saved session permission snapshot contains unsupported values.');
   }
   const normalized = structuredClone(snapshot);
   if (snapshot.sandbox_mode === 'workspace-write') normalized.workspace_write = workspaceSnapshot(snapshot.workspace_write, { stored: true });
-  else normalized.workspace_write = null;
+  else {
+    if (snapshot.workspace_write !== null) invalid('SESSION_PERMISSION_INVALID', 'A non-workspace session cannot carry workspace-write permission state.');
+    normalized.workspace_write = null;
+  }
   return normalized;
 }
 
