@@ -4,7 +4,9 @@
 
 **Blocked by:** None — 基于既有 Codex Bridge 实现，无 A 阶段技术依赖；按已确认优先级在 A2 之后推进 B。
 
-**Status:** ready-for-agent — 票据范围与验收标准已审阅；实施仍遵守技术依赖及 ticket-design 建议，未授权批量实施，验收待执行。
+**Status:** implemented-candidate — ticket-design、候选实现、自动化回归与隔离真实 Codex 权限行为验收已通过；常驻 YCA 部署及 ChatGPT → resident YCA → Codex 最终验收待 PR 合并后执行。
+
+**GitHub Issue:** [#6](https://github.com/Emilia-tan-Ovo/yuki-link/issues/6) — 已发布并复读核验，标签 `ready-for-agent`。
 
 **Spec:** [已审阅规范](../../specs/yuki-computer-agent.md)；User Stories 21～26、32～33；B 权限条款、全部相关会话/幂等兼容要求及 CLI 版本事实；B-AC1～4、AC8，别名见[索引](README.md)。
 
@@ -37,6 +39,28 @@
 ## 随交付更新的文档
 
 更新默认权限来源、显式选择、创建返回、续聊继承、旧会话处理及 CLI 实际验证结果。区分“权限可用”与“Skill/MCP 已实际验收”，继续保留已有模型和会话操作说明。
+
+
+## Implementation Notes
+
+- 新 session 的权限由 Codex 原生 `app-server config/read` 按 session `cwd` 解析；显式权限也通过同一原生配置解析路径校验，不自行实现 TOML 或权限语义解析器。
+- session 持久化版本化、可重放的权限快照。首版仅支持当前 `exec/resume` 可完整表达的 `sandbox_mode`、`approval_policy`、`approvals_reviewer` 及 `workspace-write` 相关有效细项；检测到无法可靠展开并重放的 `default_permissions` / permission profile 时明确拒绝，不静默降级。
+- 每次 `exec/resume` 显式重放 session 快照，并同时钉住与该 sandbox 对应的 Codex 内置 `default_permissions` profile，防止本机默认或后续新增自定义 profile 导致旧 session 权限漂移；其余非权限配置继续遵循本机 Codex 配置。移除新 session 上现有的 `--ignore-user-config` 与统一 feature disables。
+- 旧 session 缺少权限快照时按完整旧执行语义处理：`read-only + never + --ignore-user-config +` 原有 feature disables；未知或损坏的新快照不得回退到当前默认。
+- 权限仅在 `start` 时选择，`send` 继承 session 快照且不允许切换。新 `start` 的幂等指纹纳入调用者权限输入；历史 request 映射继续按旧指纹兼容重试，重放检查先于重新解析本机默认。
+- 自动化使用 fake resolver、临时配置与旧 runtime/request 夹具覆盖解析、冻结、并发幂等、持久化失败和恢复；最终验收必须经 ChatGPT → YCA → Codex 在同一 session 取得真实读/写/命令/diff/续聊证据。
+
+## 本地实现与验收状态
+
+2026-09-18：YCA-006 候选已在隔离 worktree/runtime 完成实现与审查，正式常驻 YCA 未替换。
+
+- 当前实际 Codex CLI 为 `0.155.0-alpha.2.6`。候选通过原生 `app-server config/read` 解析 session `cwd` 下的有效权限；本机默认实测为 `danger-full-access + on-request`。新 session 持久化版本化权限快照，`exec/resume` 同时钉住 sandbox、对应 Codex 内置 permission profile、approval/reviewer 及 workspace-write 细项；旧 session 无快照时完整保留旧 `read-only + never + --ignore-user-config + feature disables` 语义。
+- 无法完整重放的自定义 `default_permissions` / `permissions` profile、未知 workspace 权限字段及损坏快照明确拒绝，不静默压扁或读取当前默认。显式权限只允许在 start 创建新 session 时选择；send 继承已保存快照。新 start 的权限输入参与幂等一致性；旧 request fingerprint 在权限省略时保留兼容重放。
+- Bridge 完整回归：95 tests / 94 pass / 0 fail / 1 预期 skip；Control Center：35 / 35 pass。新增测试覆盖快照冻结、旧 session/request 兼容、未知/损坏 workspace 权限、built-in profile pin、PermissionResolver 超时后自有 app-server 进程树实际退出，以及原有 model/reasoning/resume/status/output/stop/HTTP reconnect/持久化失败回归。
+- 隔离真实 MCP → Bridge → Codex 行为验收使用 Sol medium 与临时 Git 仓库：默认 session 真实读取随机 source、写入 proof、以 shell 追加 `CMD_OK` 并执行 `git diff`，外部文件/diff 与 JSONL `command_execution` 证据一致；同一 thread 续聊读取前一轮结果；显式 `read-only + never` 新 session 可读取和执行只读 Git 命令，外部核对文件未改变。最终 acceptance report 为 `passed=true`、`thread_resumed=true`。
+- 修后 live 验收首次遇到一次上游 `Selected model is at capacity`，该 run 在任何 command/file 副作用前明确失败并保留失败报告；随后一次有界重试完整通过。该容量事件不作为候选成功证据，也未被静默重放。
+- 独立 Sol medium 初审发现 3 个 High（后续 profile 污染、损坏 workspace 快照、未知 workspace 权限字段）及 1 个进程回收 Medium；修复后同一 reviewer 复审确认 High 1/2/3 与回收项均已解决，未发现新 blocker/high，并撤回与当前 `codex exec --help` 不一致的 `untrusted` 建议。
+- 上述证据只能表明“候选已实现并在隔离真实 Bridge → Codex 链路验收”。常驻 YCA 仍运行上一合并 release，因此 B-AC 的最终 ChatGPT → resident YCA → Codex 读/写/命令/diff/续聊验收仍保持未勾选；不能据此宣称已在日常场景稳定使用。PR 合并后再通过 Control Center 正式切换并完成最终端到端验收。
 
 ## ticket-design 建议
 

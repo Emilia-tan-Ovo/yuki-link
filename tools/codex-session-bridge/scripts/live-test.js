@@ -8,6 +8,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { ModelCatalog } from '../src/catalog.js';
 import { RuntimeStore } from '../src/store.js';
 import { CodexExecutor } from '../src/executor.js';
+import { PermissionResolver } from '../src/permissions.js';
 import { SessionManager } from '../src/manager.js';
 import { createHttpServer } from '../src/http.js';
 import { ComputerTools } from '../src/computer/tools.js';
@@ -22,7 +23,7 @@ const capabilities = await catalog.list();
 await catalog.validate('gpt-6-astra', 'high');
 await catalog.validate('gpt-5.6-sol', 'low');
 console.log(JSON.stringify({ phase: 'catalog', models: capabilities.models.filter(m => ['gpt-6-astra', 'gpt-5.6-sol'].includes(m.model)) }));
-const manager = new SessionManager({ store: new RuntimeStore(runtime), catalog, executor: new CodexExecutor(process.env.BRIDGE_CODEX_BIN ?? 'codex'), allowedCwds: [cwd] });
+const manager = new SessionManager({ store: new RuntimeStore(runtime), catalog, executor: new CodexExecutor(process.env.BRIDGE_CODEX_BIN ?? 'codex'), permissionResolver: new PermissionResolver(process.env.BRIDGE_CODEX_BIN ?? 'codex'), allowedCwds: [cwd] });
 const computer = new ComputerTools({ readRoots: [root], writeRoots: [root], runtime });
 const httpServer = createHttpServer(manager, computer);
 await new Promise(resolve => httpServer.listen(0, '127.0.0.1', resolve));
@@ -59,7 +60,7 @@ async function wait(run) {
 try {
   await connect();
   const tools = await client.listTools();
-  assert.equal(tools.tools.length, 13);
+  assert.equal(tools.tools.length, 18);
   const query = await call('powershell', { cwd: root, query: 'version' });
   assert.ok(query.data.version.startsWith('7.'));
   const file = await call('filesystem_read', { path: path.join(root, 'README.md') });
