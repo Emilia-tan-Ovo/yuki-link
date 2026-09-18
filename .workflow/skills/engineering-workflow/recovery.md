@@ -4,6 +4,8 @@
 
 可以先用 checkpoint 文件名定位 Ticket，但正式读取与理解顺序固定为 Ticket → source Spec → CONTEXT/ADR/AGENTS → Implementation Notes → checkpoint。缺失产物先按仓库/Git/Issue 引用寻找；不能用 checkpoint 摘要替代完整要求，也不能把未知状态自动升级为成功。
 
+Ticket 没有内嵌 Notes 时，先查仓库约定的替代 Notes；无约定则读 `docs/implementation-notes/<ticket>.md`。这是 tracker 不支持扩展时的持久化实现决定，不因为票据本体没有 section 就重做 ticket-design。确认 Notes 的 Ticket/Spec 引用与当前任务一致，再读取 checkpoint。
+
 核对 schema、路径、分支和固定点。不同 worktree 的状态不得直接套用。无 checkpoint 时从实际产物推导最早未完成阶段并创建边界记录；checkpoint 损坏时保留原文件作本地诊断，只从外部事实重建，不能执行损坏的 Next action。
 
 ## 2. 重新验证易变事实

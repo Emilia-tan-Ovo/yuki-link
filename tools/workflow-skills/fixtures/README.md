@@ -11,3 +11,5 @@ Primary seam 是 fresh agent 实际读取并执行 `engineering-workflow/SKILL.m
 设计探针另建 fixture 后使用 `stage-discovery` / `stage-spec` / `stage-tickets` / `stage-ticket-design <root>` 准备持久化材料。前三者做只读阶段协调：缺需求决定 → discovery/pair-with-docs；已确认 Handoff → spec/to-spec；已确认 Spec → tickets/to-tickets；第四例实际执行设计：无 Notes 且空 frontier 时直接生成 Notes。在这些 fixture 中停在当前授权边界，不发布真实 Issue。检查产物和实际读取的领域 Skill 路径，不断言固定措辞/ID。只读探针只能证明路由，不能声称 Spec/Tickets 的完整发布流程已验收。
 
 Installer 自动回归从公共 CLI 对临时安装根验证完整文件集、批准、apply/verify 与漂移保护；其中 fixture approval 不代表真实 protected apply 授权。YCA MCP protection 回归继续运行原有测试。`review-change` 分级与 archive automation 属于 004/005，本轮只验收路由交接与恢复，不宣称它们已经实现。
+
+不兼容 tracker 回归：`create` → `stage-ticket-design <root>` → `incompatible-tracker <root>`。fresh agent 从入口完成设计，保持 tracker 镜像原样；`check-notes <root>` 核对替代 Notes 的存在、来源引用及 checkpoint 指针。再以另一个无历史 session 只读取持久化产物做恢复协调，确认无需上一轮聊天即可定位 Notes 和继续 implementation，仍守住该轮授权终点。

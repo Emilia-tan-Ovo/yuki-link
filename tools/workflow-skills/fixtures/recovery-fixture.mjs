@@ -129,6 +129,17 @@ console.log(JSON.stringify({subject,runtime:JSON.parse(fs.readFileSync('.local/r
     }
     put(root, '.local/workflow-state/FIXTURE-003.md', state(root, stage, git(root, 'rev-parse', 'HEAD'), '根据已持久化产物协调当前阶段和领域 Skill，遵循本轮授权终点。'));
     console.log(JSON.stringify({root, input: stage === 'ticket-design' ? 'docs/ticket.md' : stage === 'tickets' ? 'docs/spec.md' : 'docs/design-handoff.md'}));
+  } else if (command === 'incompatible-tracker') {
+    put(root, 'AGENTS.md', readFileSync(path.join(root, 'AGENTS.md'), 'utf8') + '\n当前 docs/ticket.md 是不可修改的 tracker 导出镜像，tracker 不接受额外 Markdown section 或扩展字段。保持 ticket 文件原样。\n');
+    put(root, '.local/ticket-original.sha256', sha(readFileSync(path.join(root, 'docs/ticket.md'))));
+  } else if (command === 'check-notes') {
+    assert.equal(sha(readFileSync(path.join(root, 'docs/ticket.md'))), readFileSync(path.join(root, '.local/ticket-original.sha256'), 'utf8'));
+    const notes = readFileSync(path.join(root, 'docs/implementation-notes/FIXTURE-003.md'), 'utf8');
+    assert.ok(notes.includes('docs/ticket.md') && notes.includes('docs/spec.md'), 'fallback notes must retain source references');
+    const checkpoint = readFileSync(path.join(root, '.local/workflow-state/FIXTURE-003.md'), 'utf8');
+    assert.ok(checkpoint.includes('docs/implementation-notes/FIXTURE-003.md'), 'fresh session must be able to locate notes');
+    assert.equal(existsSync(path.join(root, 'result.txt')), false, 'design must not implement');
+    console.log(JSON.stringify({ status: 'passed', command, root }));
   } else if (command === 'interrupt-review') {
     const report = { status: 'completed', standards: 'pass', spec: 'pass', findings: [], fixture: true,
       subject: subject(root), head: git(root, 'rev-parse', 'HEAD'), fixed_point: json(root, '.local/fixture.json').baseline,
@@ -156,5 +167,5 @@ console.log(JSON.stringify({subject,runtime:JSON.parse(fs.readFileSync('.local/r
     }
     assert.equal(git(root, 'ls-files', '.local'), '', 'checkpoint cannot enter Git');
     console.log(JSON.stringify({ status: 'passed', command, root, head: git(root, 'rev-parse', 'HEAD') }));
-  } else throw new Error('Commands: create, stage-<phase>, interrupt-review, running, check-implementation, check-acceptance, check-running');
+  } else throw new Error('Commands: create, stage-<phase>, incompatible-tracker, check-notes, interrupt-review, running, check-implementation, check-acceptance, check-running');
 }
