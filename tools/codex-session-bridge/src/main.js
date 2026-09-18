@@ -5,6 +5,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ModelCatalog } from './catalog.js';
 import { RuntimeStore } from './store.js';
 import { CodexExecutor } from './executor.js';
+import { PermissionResolver } from './permissions.js';
 import { SessionManager } from './manager.js';
 import { createMcpServer } from './mcp.js';
 import { createHttpServer } from './http.js';
@@ -44,7 +45,7 @@ if (values.help) {
     const catalog = new ModelCatalog(values['codex-bin']);
     // Codex capability discovery is lazy; unavailable Codex must not block computer tools.
     store = new RuntimeStore(values.runtime);
-    manager = new SessionManager({ store, catalog, executor: new CodexExecutor(values['codex-bin']), allowedCwds: values['allow-cwd'] });
+    manager = new SessionManager({ store, catalog, executor: new CodexExecutor(values['codex-bin']), permissionResolver: new PermissionResolver(values['codex-bin']), allowedCwds: values['allow-cwd'] });
     computer = new ComputerTools({ readRoots: [...values['allow-cwd'], ...(values['read-root'] ?? [])], writeRoots: values['allow-cwd'], runtime: values.runtime, controlRoots: values['control-root'], pwsh: values['pwsh-bin'] });
     let server;
     const observation = { active: 0 };

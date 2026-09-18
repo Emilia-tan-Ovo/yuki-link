@@ -1,16 +1,53 @@
 import { spawnDirect, readLines, stopProcessTree } from './process.js';
 import { BridgeError, redact } from './errors.js';
 import { resolveCodexExecutable } from './codex-executable.js';
+import { sessionPermissionSnapshot } from './permissions.js';
+
+const legacyArguments = (run, session) => [
+  '-a', 'never', 'exec', '--json', '--ignore-user-config',
+  '-s', 'read-only', '-C', session.cwd,
+  '-m', run.model, '-c', `model_reasoning_effort=${JSON.stringify(run.reasoning)}`,
+  '-c', 'web_search="disabled"',
+  '-c', 'features.apps=false', '-c', 'features.plugins=false', '-c', 'features.hooks=false',
+  '-c', 'features.browser_use=false', '-c', 'features.computer_use=false',
+];
+
+const BUILTIN_PERMISSION_PROFILES = {
+  'read-only': ':read-only',
+  'workspace-write': ':workspace',
+  'danger-full-access': ':danger-full-access',
+};
+
+const nativePermissionArguments = permissions => {
+  const args = [
+    '-a', permissions.approval_policy,
+    'exec', '--json',
+    '-s', permissions.sandbox_mode,
+    '-c', `default_permissions=${JSON.stringify(BUILTIN_PERMISSION_PROFILES[permissions.sandbox_mode])}`,
+    '-c', `approvals_reviewer=${JSON.stringify(permissions.approvals_reviewer)}`,
+  ];
+  if (permissions.sandbox_mode === 'workspace-write') {
+    const workspace = permissions.workspace_write;
+    args.push(
+      '-c', `sandbox_workspace_write.writable_roots=${JSON.stringify(workspace.writable_roots)}`,
+      '-c', `sandbox_workspace_write.network_access=${workspace.network_access}`,
+      '-c', `sandbox_workspace_write.exclude_slash_tmp=${workspace.exclude_slash_tmp}`,
+      '-c', `sandbox_workspace_write.exclude_tmpdir_env_var=${workspace.exclude_tmpdir_env_var}`,
+    );
+  }
+  return args;
+};
 
 export function execArguments(run, session) {
-  const args = [
-    '-a', 'never', 'exec', '--json', '--ignore-user-config',
-    '-s', 'read-only', '-C', session.cwd,
-    '-m', run.model, '-c', `model_reasoning_effort=${JSON.stringify(run.reasoning)}`,
-    '-c', 'web_search="disabled"',
-    '-c', 'features.apps=false', '-c', 'features.plugins=false', '-c', 'features.hooks=false',
-    '-c', 'features.browser_use=false', '-c', 'features.computer_use=false',
-  ];
+  const permissions = sessionPermissionSnapshot(session);
+  const args = permissions.kind === 'legacy'
+    ? legacyArguments(run, session)
+    : [
+        ...nativePermissionArguments(permissions),
+        '-C', session.cwd,
+        '-m', run.model,
+        '-c', `model_reasoning_effort=${JSON.stringify(run.reasoning)}`,
+      ];
   if (session.codex_thread_id) args.push('resume', session.codex_thread_id);
   args.push('-');
   return args;

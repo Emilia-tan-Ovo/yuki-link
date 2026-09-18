@@ -3,16 +3,18 @@ import { realpathSync, statSync } from 'node:fs';
 import { randomUUID, createHash } from 'node:crypto';
 import { BridgeError, publicError, redact } from './errors.js';
 import { isProcessAlive } from './process.js';
+import { permissionSelectionFingerprint, sessionPermissionSnapshot, validatePermissionSelection } from './permissions.js';
 
 const ACTIVE = new Set(['queued', 'running', 'stopping']);
 const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const now = () => new Date().toISOString();
 
 export class SessionManager {
-  constructor({ store, catalog, executor, allowedCwds, defaultTimeoutMs = 300_000, maxOutputBytes = 16 * 1024 * 1024 }) {
+  constructor({ store, catalog, executor, permissionResolver, allowedCwds, defaultTimeoutMs = 300_000, maxOutputBytes = 16 * 1024 * 1024 }) {
     this.store = store;
     this.catalog = catalog;
     this.executor = executor;
+    this.permissionResolver = permissionResolver;
     this.allowedCwds = allowedCwds.map(directory => realpathSync(directory));
     this.defaultTimeoutMs = defaultTimeoutMs;
     this.maxOutputBytes = maxOutputBytes;
@@ -62,36 +64,47 @@ export class SessionManager {
     if (input.timeout_ms !== undefined && (!Number.isInteger(input.timeout_ms) || input.timeout_ms < 1000 || input.timeout_ms > 1_800_000)) throw new BridgeError('INVALID_TIMEOUT', 'timeout_ms must be 1000–1800000.');
     if (input.sender !== undefined && (typeof input.sender !== 'string' || input.sender.length > 80)) throw new BridgeError('INVALID_SENDER', 'sender must be at most 80 characters.');
     for (const key of ['model', 'reasoning']) if (input[key] !== undefined && (typeof input[key] !== 'string' || input[key].length > 128 || !input[key].length)) throw new BridgeError('INVALID_MODEL_CONFIG', `${key} must be a non-empty string of at most 128 characters.`);
+    validatePermissionSelection(input.permissions);
   }
 
-  replay(requestId, hash) {
+  replay(requestId, hash, compatibleHashes = []) {
     if (!Object.hasOwn(this.store.state.requests, requestId)) return null;
     const recorded = this.store.state.requests[requestId];
     if (!recorded) return null;
-    if (recorded.fingerprint !== hash) throw new BridgeError('REQUEST_ID_CONFLICT', 'This request_id was already used with different arguments.');
+    if (recorded.fingerprint !== hash && !compatibleHashes.includes(recorded.fingerprint)) throw new BridgeError('REQUEST_ID_CONFLICT', 'This request_id was already used with different arguments.');
     return { ...this.accepted(this.store.state.runs[recorded.run_id]), deduplicated: true };
   }
 
   async start(input) {
     this.validateMessage(input);
-    const hash = fingerprint(['start', input.cwd, input.prompt, input.sender ?? 'caller', input.model ?? null, input.reasoning ?? null, input.timeout_ms ?? null]);
-    const replay = this.replay(input.request_id, hash);
+    const permissionKey = permissionSelectionFingerprint(input.permissions);
+    const legacyHash = input.permissions === undefined
+      ? fingerprint(['start', input.cwd, input.prompt, input.sender ?? 'caller', input.model ?? null, input.reasoning ?? null, input.timeout_ms ?? null])
+      : null;
+    const hash = fingerprint(['start', input.cwd, input.prompt, input.sender ?? 'caller', input.model ?? null, input.reasoning ?? null, input.timeout_ms ?? null, permissionKey]);
+    const replay = this.replay(input.request_id, hash, legacyHash ? [legacyHash] : []);
     if (replay) return replay;
     const cwd = this.cwd(input.cwd);
-    const config = await this.catalog.validate(input.model ?? 'gpt-6-astra', input.reasoning ?? 'high');
-    // Recheck after the only asynchronous boundary: two clients can retry together.
-    const concurrentReplay = this.replay(input.request_id, hash);
+    if (!this.permissionResolver) throw new BridgeError('PERMISSION_RESOLUTION_FAILED', 'No Codex permission resolver is configured.');
+    const [config, permissions] = await Promise.all([
+      this.catalog.validate(input.model ?? 'gpt-6-astra', input.reasoning ?? 'high'),
+      this.permissionResolver.resolve(cwd, input.permissions),
+    ]);
+    // Recheck after asynchronous capability/config discovery: two clients can retry together.
+    const concurrentReplay = this.replay(input.request_id, hash, legacyHash ? [legacyHash] : []);
     if (concurrentReplay) return concurrentReplay;
-    const session = { id: randomUUID(), codex_thread_id: null, cwd, model: config.model, reasoning: config.reasoning, created_at: now(), active_run_id: null, last_run_id: null };
+    const session = { id: randomUUID(), codex_thread_id: null, cwd, model: config.model, reasoning: config.reasoning, permissions, created_at: now(), active_run_id: null, last_run_id: null };
     return this.enqueue(session, input, hash, config);
   }
 
   async send(input) {
+    if (input.permissions !== undefined) throw new BridgeError('PERMISSION_CHANGE_REQUIRES_NEW_SESSION', 'Create a new session to use a different Codex permission mode.');
     this.validateMessage(input);
     const hash = fingerprint(['send', input.session_id, input.prompt, input.sender ?? 'caller', input.model ?? null, input.reasoning ?? null, input.timeout_ms ?? null]);
     const replay = this.replay(input.request_id, hash);
     if (replay) return replay;
     const session = this.session(input.session_id);
+    sessionPermissionSnapshot(session);
     if (session.active_run_id) throw new BridgeError('SESSION_BUSY', 'This session already has an active run.', { run_id: session.active_run_id });
     if (!session.codex_thread_id) throw new BridgeError('SESSION_NOT_RESUMABLE', 'No Codex thread ID was persisted for this session. Start a new session with a new request_id.');
     this.cwd(session.cwd);
@@ -109,7 +122,7 @@ export class SessionManager {
       sender: redact(input.sender ?? 'caller'), ...config, status: 'queued', created_at: now(),
       started_at: null, finished_at: null, pid: null, event_count: 0,
       timeout_ms: input.timeout_ms ?? this.defaultTimeoutMs, error: null, exit_code: null,
-      completed_event: false, final_response: '', config_source: 'explicit_codex_cli_arguments',
+      completed_event: false, final_response: '', config_source: Object.hasOwn(session, 'permissions') ? 'session_permission_snapshot' : 'legacy_explicit_codex_cli_arguments',
     };
     const previousSession = Object.hasOwn(this.store.state.sessions, session.id) ? structuredClone(session) : null;
     try {
@@ -135,7 +148,10 @@ export class SessionManager {
     return this.accepted(run);
   }
 
-  accepted(run) { return { session_id: run.session_id, run_id: run.id, status: run.status, model: run.model, reasoning: run.reasoning, deduplicated: false }; }
+  accepted(run) {
+    const session = this.store.state.sessions[run.session_id];
+    return { session_id: run.session_id, run_id: run.id, status: run.status, model: run.model, reasoning: run.reasoning, permissions: sessionPermissionSnapshot(session), deduplicated: false };
+  }
 
   launch(run, session, prompt) {
     run.status = 'running'; run.started_at = now();
@@ -224,7 +240,9 @@ export class SessionManager {
     const session = this.session(session_id ?? run.session_id);
     if (run && run.session_id !== session.id) throw new BridgeError('ID_MISMATCH', 'run_id belongs to a different session.');
     const selected = run ?? (session.last_run_id ? this.run(session.last_run_id) : null);
-    return { session: structuredClone(session), run: selected ? structuredClone(selected) : null, session_status: session.active_run_id ? this.run(session.active_run_id).status : 'idle' };
+    const sessionView = structuredClone(session);
+    sessionView.permissions = sessionPermissionSnapshot(session);
+    return { session: sessionView, run: selected ? structuredClone(selected) : null, session_status: session.active_run_id ? this.run(session.active_run_id).status : 'idle' };
   }
 
   output({ run_id, cursor = 0, limit = 100 }) {

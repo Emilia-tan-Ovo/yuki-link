@@ -8,7 +8,7 @@
 
 常驻 Control Center 部署应使用[独立部署副本与更新入口](../control-center/README.md#常驻-yca-源码部署issue-11)，避免功能分支或未提交修改与已合并版本脱节。部署源码和原 `--runtime` 数据目录分离；不迁移 session/history/tunnel/key，也不要求所有开发票据使用 worktree。受认证的本机诊断会记录启动时的源码 commit/dirty 和实际工具摘要；正式切换与 ChatGPT 验收需在合并后执行。
 
-要求 Node.js 24+；电脑查询使用 PowerShell 7、Git，真实脚本入口要求 PowerShell 7.4+ 的原生命令错误语义，已在独立服务进程验证 7.6.5。Codex 功能另外需要可执行的 CLI 及其既有登录，历史验证 CLI 为 `0.154.0-alpha.6.2`。Agent 不读取、复制或保存 Codex 凭据。
+要求 Node.js 24+；电脑查询使用 PowerShell 7、Git，真实脚本入口要求 PowerShell 7.4+ 的原生命令错误语义，已在独立服务进程验证 7.6.5。Codex 功能另外需要可执行的 CLI 及其既有登录，YCA-006 实施时实际验证 CLI 为 `0.155.0-alpha.2.6`；版本相关权限字段仍以运行中 CLI 的原生解析结果为准。Agent 不读取、复制或保存 Codex 凭据。
 
 在本目录运行（Windows 使用 PowerShell 7）：
 
@@ -47,8 +47,8 @@ Windows 常驻服务可以显式传入 `--codex-bin 'C:\path\to\codex.exe'`，�
 | 工具 | 主要输入 | 返回 |
 | --- | --- | --- |
 | `codex_list_models` | `refresh?` | 本机模型、各自 reasoning 档位、查询时间 |
-| `codex_start_session` | `request_id, cwd, prompt, sender?, model?, reasoning?, timeout_ms?` | `session_id, run_id, status, model, reasoning, deduplicated` |
-| `codex_send_message` | `request_id, session_id, prompt, sender?, model?, reasoning?, timeout_ms?` | 同上 |
+| `codex_start_session` | `request_id, cwd, prompt, permissions?, sender?, model?, reasoning?, timeout_ms?` | `session_id, run_id, status, model, reasoning, permissions, deduplicated` |
+| `codex_send_message` | `request_id, session_id, prompt, sender?, model?, reasoning?, timeout_ms?` | 同上；权限固定继承 session，不能在续聊中切换 |
 | `codex_get_status` | `session_id? / run_id?`，至少一个 | session、选定 run、当前 session 状态 |
 | `codex_get_output` | `run_id, cursor?, limit?` | 事件、`next_cursor`、`has_more`、最终回复 |
 | `codex_stop_session` | `session_id` | 停止进度，需继续查状态 |
@@ -189,7 +189,7 @@ Git 只提供 status 和单文件 diff；仓库根也必须在允许读取目录
 
 首次创建默认 `gpt-6-astra / high`。模型目录来自当前 `codex app-server model/list`，含分页，缓存五分钟，可显式刷新；目录查询失败不猜测、不静默降级。新增模型无需修改 session 逻辑。
 
-后续消息未指定的 model/reasoning 字段分别继承 session。只指定新 model 时 reasoning 仍继承原值；组合不支持就明确报错。每个 run 记录本轮传给 CLI 的配置；session 在 Codex 返回 thread ID 后更新配置。`config_source` 明确标注为 CLI 显式参数，并非通过模型自述推断的后端身份。
+后续消息未指定的 model/reasoning 字段分别继承 session。只指定新 model 时 reasoning 仍继承原值；组合不支持就明确报错。每个 run 记录本轮传给 CLI 的配置；session 在 Codex 返回 thread ID 后更新配置。`config_source` 区分新 session 的 `session_permission_snapshot` 与旧 session 的 `legacy_explicit_codex_cli_arguments`；权限值来自 Codex 原生配置解析和持久化快照，不依靠模型自述。
 
 `start/send` 校验并持久化后立即返回，不等待模型生成。能力目录过期时可能先花数秒刷新，超时则报 `CAPABILITY_UNAVAILABLE`。同一 session 最多一个 active run；并发提交不同请求返回 `SESSION_BUSY`，不会暗中排队。
 
@@ -230,18 +230,26 @@ runtime/                  # 已由仓库 .gitignore 排除
 
 所有子进程使用 `spawn(executable, args, { shell: false, windowsHide: true })`。完整 prompt 只经 UTF-8 stdin 发送，不作为命令参数拼接。stdout JSONL 和 stderr 分开解析，支持跨 chunk 的中文字符。resume 始终使用已保存的 Codex thread ID，不使用 `--last`。
 
-当前只读 MVP 固定 `read-only` sandbox 和 `never` approval；不提供远端提权开关。使用仅对本次进程生效的 `--ignore-user-config`，并关闭 apps/plugins/hooks/browser/computer 工具，避免继承现有个人 MCP/外部写入能力。CLI 仍自行使用原登录，项目说明和 Skills 的发现由 Codex 负责。Bridge 不修改全局配置。正式开发权限与交互批准转发尚未实现；当前“通信成功”不等于整套 implement 工作流已验收。
+新 session 创建时通过当前 Codex CLI 的临时 `app-server config/read` 按 `cwd` 解析有效本机权限；不传 `permissions` 时采用该时刻的有效默认。显式选择当前支持 `read-only / workspace-write / danger-full-access` sandbox，可同时指定 `on-request / never` approval 与 reviewer；未显式填写的权限字段同样先由 Codex 原生配置解析，再写入 session 快照。Bridge 不自行解析用户 TOML，也不修改全局 Codex 配置。
 
-Windows 停止只对 Bridge 持有的 ChildProcess 使用 `taskkill.exe /PID <pid> /T /F` 参数数组，不接受调用方 PID，不按进程名批量结束。其他平台使用自有进程组，尚未在本项目进行平台实测。
+权限快照为版本化的可重放执行契约：记录 sandbox、approval、reviewer，以及 workspace-write 的 writable roots、network 和 tmp 细项。每次 `exec/resume` 同时显式重放对应 sandbox 与 Codex 保留的内置 permission profile（`:read-only / :workspace / :danger-full-access`），并固定 approval/reviewer；因此本机默认后来变化或新增自定义 permission profile 不会静默改变已创建 session。无法完整展开并重放的 `default_permissions` / 自定义 permission profile、未知 workspace 权限维度或损坏快照会明确失败，不猜测或降级。
+
+新 session 不再使用 `--ignore-user-config`，也不再统一关闭 apps/plugins/hooks/browser/computer；这些非本票权限能力继续按用户现有 Codex 配置加载，实际 Skill/MCP 调用仍需 YCA-007 单独验收。Full Access 只表示 Codex 原生执行权限，不构成无关操作授权，也不让 Bridge 自建批准转发平台。
+
+旧 runtime 中没有权限快照的 session 保持旧版本完整语义：`read-only + never + --ignore-user-config`，并继续关闭旧实现原先禁用的 features；不会套用当前本机默认或静默升级。需要另一权限模式时创建新 session，`codex_send_message` 不接受会话内权限切换。旧 request_id 的历史 fingerprint 仍可按原参数重放；新 start 的权限输入参与新的幂等一致性判断。
+
+Windows 停止只对 Bridge 持有的 ChildProcess 使用 `taskkill.exe /PID <pid> /T /F` 参数数组，不接受调用方 PID，不按进程名批量结束。PermissionResolver 的临时 app-server 同样属于自有进程，正常结束有短暂收尾窗口，超时则使用既有自有树终止逻辑。其他平台使用自有进程组，尚未在本项目进行平台实测。
 
 ## 本地验证
 
 ```powershell
 npm.cmd test
 npm.cmd run test:live
+# YCA-006：显式联网/模型权限行为验收，只在受控临时 Git 仓库运行
+npm.cmd run test:permissions-live
 ```
 
-常规测试不调用模型，包含真实 MCP HTTP/stdio 客户端、PowerShell 短脚本文件闭环、退出语义、部分输出、Windows 自有进程树终止、最小故障注入、断线不重放、临时文件/Git 仓库及既有 Bridge 回归。独立 stdio 服务用无效 `--codex-bin` 验证直接能力不依赖 Codex。`test:live` 是另外的显式联网验收，会使用 CLI 当前登录和模型额度；YCA-001 不需要运行它。
+常规测试不调用模型，包含真实 MCP HTTP/stdio 客户端、PowerShell 短脚本文件闭环、退出语义、部分输出、Windows 自有进程树终止、最小故障注入、断线不重放、临时文件/Git 仓库及既有 Bridge 回归。独立 stdio 服务用无效 `--codex-bin` 验证直接能力不依赖 Codex。`test:live` 是另外的显式联网验收，会使用 CLI 当前登录和模型额度；`test:permissions-live` 专用于 YCA-006，在临时 Git 仓库外部核对默认权限读写/命令/diff、同 thread 续聊和显式 read-only 不写入。两者都不会由常规 `npm test` 自动触发。
 
 YCA-002 的 `test/text.test.js` 使用真实 HTTP/MCP 和临时文件，封堵并计数 model start/send/executor，验证文件调用为零模型调用。覆盖区外/Skill 文本、BOM/换行、短读/增长/大小边界、冲突/no-op、敏感路径/内容、链接及其他入口不扩围。Windows 测试报告实际可用的 8.3 别名数量。可在当前 PowerShell 进程设置 `YCA_TEST_SKILL` 为获准读取的真实 `.agents/skills/.../SKILL.md` 或 `.codex/skills/.../SKILL.md`，再运行 `node --test test/text.test.js`，只读取并核对原字节、哈希及未修改状态；未指定时该真实文件用例跳过，其他用例使用夹具。仓库没有 typecheck 脚本，使用 `node --check` 检查 JavaScript 语法。
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, symlinkSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { PassThrough } from 'node:stream';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
@@ -20,6 +20,28 @@ const until = async (predicate, timeoutMs = 1000) => {
   while (Date.now() < deadline) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 10)); }
   throw new Error('Timed out waiting for test state.');
 };
+class FakePermissionResolver {
+  constructor() {
+    this.calls = [];
+    this.snapshot = {
+      version: 1, kind: 'native', stored: true,
+      sandbox_mode: 'danger-full-access', approval_policy: 'on-request', approvals_reviewer: 'user',
+      workspace_write: null, source: 'fake', resolved_at: new Date().toISOString(),
+    };
+  }
+  async resolve(cwd, selection) {
+    this.calls.push({ cwd, selection: selection ? structuredClone(selection) : null });
+    const snapshot = structuredClone(this.snapshot);
+    if (selection?.sandbox_mode) snapshot.sandbox_mode = selection.sandbox_mode;
+    if (selection?.approval_policy) snapshot.approval_policy = selection.approval_policy;
+    if (selection?.approvals_reviewer) snapshot.approvals_reviewer = selection.approvals_reviewer;
+    snapshot.workspace_write = snapshot.sandbox_mode === 'workspace-write'
+      ? { writable_roots: [], network_access: false, exclude_slash_tmp: false, exclude_tmpdir_env_var: false }
+      : null;
+    snapshot.source = selection ? 'explicit_fake' : 'fake';
+    return snapshot;
+  }
+}
 class FakeExecutor {
   calls = [];
   start(run, session, prompt, callbacks) {
@@ -46,11 +68,12 @@ function setup(t, options = {}) {
     { model: 'gpt-5.6-sol', reasoning: ['low', 'high'] },
   ] };
   const executor = new FakeExecutor();
+  const permissionResolver = new FakePermissionResolver();
   const store = new RuntimeStore(runtime);
-  const manager = new SessionManager({ store, catalog, executor, allowedCwds: [cwd], ...options });
+  const manager = new SessionManager({ store, catalog, executor, permissionResolver, allowedCwds: [cwd], ...options });
   t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
   const input = () => ({ cwd, request_id: randomUUID(), prompt: '你好\r\n"引号" $HOME `tick` C:\\中文 空格\\a.txt', sender: 'AI 助手' });
-  return { root, cwd, runtime, catalog, executor, store, manager, input };
+  return { root, cwd, runtime, catalog, executor, permissionResolver, store, manager, input };
 }
 
 test('async acceptance, concurrent dedup, session lock, inheritance and explicit model changes', async t => {
@@ -100,6 +123,59 @@ test('invalid configurations, path escape, conflicting idempotency keys and prot
   assert.equal(future.model, 'future-model'); manager.stop(future.session_id);
 });
 
+test('permission snapshots freeze per session, explicit selection participates in idempotency, and old request hashes replay', async t => {
+  const { manager, executor, permissionResolver, input } = setup(t);
+  const message = input();
+  const started = await manager.start(message);
+  assert.equal(started.permissions.sandbox_mode, 'danger-full-access');
+  assert.equal(permissionResolver.calls.length, 1);
+  await tick(); executor.complete(0);
+
+  permissionResolver.snapshot.sandbox_mode = 'read-only';
+  permissionResolver.snapshot.approval_policy = 'never';
+  const continued = await manager.send({ request_id: randomUUID(), session_id: started.session_id, prompt: 'continue frozen permissions' });
+  assert.equal(continued.permissions.sandbox_mode, 'danger-full-access');
+  await tick();
+  assert.equal(executor.calls[1].session.permissions.sandbox_mode, 'danger-full-access');
+  executor.complete(1);
+
+  const explicitInput = { ...input(), permissions: { sandbox_mode: 'workspace-write', approval_policy: 'on-request' } };
+  const explicit = await manager.start(explicitInput);
+  assert.equal(explicit.permissions.sandbox_mode, 'workspace-write');
+  await assert.rejects(manager.start({ ...explicitInput, permissions: { sandbox_mode: 'read-only', approval_policy: 'never' } }), { code: 'REQUEST_ID_CONFLICT' });
+  manager.stop(explicit.session_id);
+
+  const legacyCompatible = input();
+  const oldFingerprint = createHash('sha256').update(JSON.stringify(['start', legacyCompatible.cwd, legacyCompatible.prompt, legacyCompatible.sender ?? 'caller', legacyCompatible.model ?? null, legacyCompatible.reasoning ?? null, legacyCompatible.timeout_ms ?? null])).digest('hex');
+  const accepted = await manager.start(legacyCompatible);
+  manager.store.state.requests[legacyCompatible.request_id].fingerprint = oldFingerprint;
+  manager.store.save();
+  const replay = await manager.start(legacyCompatible);
+  assert.equal(replay.run_id, accepted.run_id);
+  assert.equal(replay.deduplicated, true);
+  manager.stop(accepted.session_id);
+});
+
+test('legacy sessions keep the old read-only execution profile and never inherit current defaults', async t => {
+  const { manager, executor, input } = setup(t);
+  const started = await manager.start(input());
+  await tick(); executor.complete(0);
+  const session = manager.session(started.session_id);
+  delete session.permissions;
+  manager.store.save();
+  const continued = await manager.send({ request_id: randomUUID(), session_id: session.id, prompt: 'legacy resume' });
+  assert.equal(continued.permissions.kind, 'legacy');
+  assert.equal(continued.permissions.sandbox_mode, 'read-only');
+  assert.equal(continued.permissions.approval_policy, 'never');
+  await tick();
+  const call = executor.calls.at(-1);
+  const args = execArguments(call.run, call.session);
+  assert.ok(args.includes('--ignore-user-config'));
+  assert.ok(args.includes('features.plugins=false'));
+  assert.ok(args.includes('read-only'));
+  executor.complete(executor.calls.length - 1);
+});
+
 test('stop, timeout, CLI failure and output limits have terminal states', async t => {
   const { manager, executor, input } = setup(t, { defaultTimeoutMs: 30, maxOutputBytes: 1024 });
   const queued = await manager.start(input()); manager.stop(queued.session_id);
@@ -122,7 +198,7 @@ test('durable results and idempotency survive a bridge restart; incomplete runs 
   const message = input(); const first = await manager.start(message); await tick(); executor.complete(0, '持久回复');
   await manager.close();
   const nextStore = new RuntimeStore(runtime);
-  const recovered = new SessionManager({ store: nextStore, catalog, executor: new FakeExecutor(), allowedCwds: [cwd] });
+  const recovered = new SessionManager({ store: nextStore, catalog, executor: new FakeExecutor(), permissionResolver: new FakePermissionResolver(), allowedCwds: [cwd] });
   t.after(() => recovered.close());
   assert.equal((await recovered.start(message)).run_id, first.run_id);
   assert.equal(recovered.output({ run_id: first.run_id }).final_response, '持久回复');
@@ -133,7 +209,7 @@ test('durable results and idempotency survive a bridge restart; incomplete runs 
   const file = nextStore.eventFile(first.run_id);
   writeFileSync(file, readFileSync(file, 'utf8') + '{"partial":', 'utf8');
   const thirdStore = new RuntimeStore(runtime);
-  const third = new SessionManager({ store: thirdStore, catalog, executor: new FakeExecutor(), allowedCwds: [cwd] });
+  const third = new SessionManager({ store: thirdStore, catalog, executor: new FakeExecutor(), permissionResolver: new FakePermissionResolver(), allowedCwds: [cwd] });
   assert.equal(third.run(first.run_id).status, 'interrupted');
   assert.equal(third.session(first.session_id).active_run_id, null);
   assert.ok(third.output({ run_id: first.run_id }).events.at(-1).type === 'run.interrupted');
@@ -148,7 +224,7 @@ test('runtime lock prevents a second writer and recovery refuses live orphan PID
   const run = store.state.runs[a.run_id]; run.status = 'running'; run.pid = process.pid;
   store.save(); store.close();
   const reopened = new RuntimeStore(runtime);
-  assert.throws(() => new SessionManager({ store: reopened, catalog, executor: new FakeExecutor(), allowedCwds: [cwd] }), { code: 'ORPHAN_PROCESS' });
+  assert.throws(() => new SessionManager({ store: reopened, catalog, executor: new FakeExecutor(), permissionResolver: new FakePermissionResolver(), allowedCwds: [cwd] }), { code: 'ORPHAN_PROCESS' });
   reopened.close(); run.status = 'stopped';
 });
 
