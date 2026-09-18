@@ -33,6 +33,11 @@ for (const mutation of ['source', 'manifest', 'tool', 'target-content', 'target-
 
 test('non-installable and unknown selections never create an applyable plan', t => {
   const f = fixture(t);
+  const manifestPath = path.join(f.repo, '.workflow/skills/manifest.json');
+  const manifest = json(manifestPath);
+  manifest.skills.find(skill => skill.name === 'review-change').installable = false;
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+  f.commit();
   assert.equal(f.preview('review-change').data.error.code, 'NOT_INSTALLABLE');
   for (const name of ['', '../implement', 'unknown', 'implement,implement']) assert.equal(f.preview(name).data.error.code, 'INVALID_SELECTION');
   assert.deepEqual(fs.readdirSync(f.target), []);

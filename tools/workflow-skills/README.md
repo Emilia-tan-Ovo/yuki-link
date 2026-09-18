@@ -6,7 +6,7 @@
 
 Agent 可以编辑 repo source、生成 preview 和运行只读 verify。**真实 `~/.agents/skills` 写入必须由 Owner 审阅具体计划及完整 diff，明确批准其 digest、canonical 目标和写集。** 随后由 Owner 在本机运行已审阅的 installer，或通过原生执行器明确允许的那一次写入完成。遇到原生拒绝应停下；不能通过 YCA `powershell_execute`、owned task、普通 filesystem、别名或扩展 roots 绕过保护。
 
-`--approve` 是对具体计划的确认输入，不是身份认证、签名或权限凭证。JSON 中的字段不能授予写权限。执行器、Node、Git 和所运行的 installer 必须已经可信；工具不能证明输入摘要的人是谁，也不是防御恶意同用户进程的 OS 沙箱。运行中的 installer 自身不能可靠审查替换它的恶意代码。尚未实现的 `review-change` source 由清单拒绝安装。
+`--approve` 是对具体计划的确认输入，不是身份认证、签名或权限凭证。JSON 中的字段不能授予写权限。执行器、Node、Git 和所运行的 installer 必须已经可信；工具不能证明输入摘要的人是谁，也不是防御恶意同用户进程的 OS 沙箱。运行中的 installer 自身不能可靠审查替换它的恶意代码。manifest 的 `installable: false` 仍拒绝未交付来源；004 交付后 review-change 已可安装，负例测试在临时 source 中显式构造不可安装项。
 
 ## 三个命令
 
@@ -62,6 +62,6 @@ verify 确认磁盘内容和版本，不证明当前会话已重新加载 Skill�
 
 ## 测试与维护
 
-`npm test` 从公共 CLI 创建临时 Git 仓库及测试安装根，覆盖完整 diff、批准/漂移、版本核验、未知文件、链接、Windows 路径、无 rg、原字节保留、互斥、故障和中断。故障由测试子进程在 OS 文件操作处注入，生产入口没有测试开关。`npm run check` 对全部源文件做 Node 语法检查；本工具没有 TypeScript 或额外 lint 配置。
+`npm test` 从公共 CLI 创建临时 Git 仓库及测试安装根，覆盖完整 diff、批准/漂移、版本核验、未知文件、链接、Windows 路径、无 rg、原字节保留、互斥、故障和中断。故障由测试子进程在 OS 文件操作处注入，生产入口没有测试开关。004 增加完整 Review 包安装、受审内容采集和行为 fixture 检查器的自动回归；检查器的 synthetic 输入只测试核验器，不代表真实 Agent 按 Skill 执行。fresh-agent 路由/隔离/standalone 兼容性需按 [fixture 说明](fixtures/README.md) 另行验收。`npm run check` 检查 installer、随包 helper 和 fixture 的 Node 语法；本工具没有 TypeScript 或额外 lint 配置。
 
 YCA 回归入口是 `tools/codex-session-bridge/test/workflow-protection.test.js`、`text.test.js` 与 `control-paths.test.js`；断言普通 MCP 文件工具仍拒写安装版 Skill / AGENTS，同时 repo source 可编辑。搜索维护资料时先 `Get-Command rg -ErrorAction SilentlyContinue`；没有 rg 则使用限定目录的 `Get-ChildItem` / `Select-String`。

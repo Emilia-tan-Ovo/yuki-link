@@ -36,7 +36,8 @@
       "installable": true,
       "files": [
         "agents/openai.yaml",
-        "SKILL.md"
+        "SKILL.md",
+        "handoff-template.md"
       ]
     },
     {
@@ -44,7 +45,9 @@
       "installable": true,
       "files": [
         "agents/openai.yaml",
-        "SKILL.md"
+        "SKILL.md",
+        "review-subject.md",
+        "scripts/review-subject.mjs"
       ]
     },
     {
@@ -58,7 +61,7 @@
     },
     {
       "name": "review-change",
-      "installable": false,
+      "installable": true,
       "files": [
         "SKILL.md"
       ]
