@@ -120,6 +120,7 @@ test('sessions without a snapshot preserve the legacy bridge permission contract
 
 test('PermissionResolver uses Codex app-server config/read and passes explicit native overrides', async () => {
   let seenArgs;
+  let seenOptions;
   const fixture = `
     const readline=require('node:readline');
     const rl=readline.createInterface({input:process.stdin});
@@ -139,6 +140,7 @@ test('PermissionResolver uses Codex app-server config/read and passes explicit n
     resolveExecutable: () => ({ executable: 'fake-codex' }),
     spawnChild: (_command, args, options) => {
       seenArgs = args;
+      seenOptions = options;
       return spawnDirect(process.execPath, ['-e', fixture], options);
     },
   });
@@ -154,6 +156,7 @@ test('PermissionResolver uses Codex app-server config/read and passes explicit n
   assert.ok(seenArgs.includes('sandbox_mode="workspace-write"'));
   assert.ok(seenArgs.includes('approval_policy="never"'));
   assert.ok(seenArgs.includes('approvals_reviewer="user"'));
+  assert.equal(seenOptions.detached, process.platform !== 'win32');
 });
 
 test('PermissionResolver bounds and terminates an unresponsive owned app-server tree', async () => {

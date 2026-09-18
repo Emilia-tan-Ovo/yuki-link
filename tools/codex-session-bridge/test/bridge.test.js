@@ -307,12 +307,20 @@ test('real MCP HTTP clients reconnect to durable runs; host/origin checks and ex
   assert.equal((await client.listTools()).tools.length, 6);
   const started = await client.callTool({ name: 'codex_start_session', arguments: input() });
   assert.equal(started.isError, undefined);
-  const { run_id } = started.structuredContent;
+  const { run_id, session_id } = started.structuredContent;
   await client.close(); await tick(); executor.complete(0);
   const next = new Client({ name: 'reconnected', version: '1' });
   await next.connect(new StreamableHTTPClientTransport(url));
   const output = await next.callTool({ name: 'codex_get_output', arguments: { run_id } });
   assert.equal(output.structuredContent.final_response, '协作助手回复 🌸');
+  const runCountBeforePermissionChange = Object.keys(manager.store.state.runs).length;
+  const permissionChange = await next.callTool({ name: 'codex_send_message', arguments: {
+    session_id, request_id: randomUUID(), prompt: 'must reject permission changes',
+    permissions: { sandbox_mode: 'read-only', approval_policy: 'never' },
+  } });
+  assert.equal(permissionChange.isError, true);
+  assert.equal(permissionChange.structuredContent.error.code, 'PERMISSION_CHANGE_REQUIRES_NEW_SESSION');
+  assert.equal(Object.keys(manager.store.state.runs).length, runCountBeforePermissionChange);
   const invalid = await next.callTool({ name: 'codex_start_session', arguments: { ...input(), reasoning: 'imaginary' } });
   assert.equal(invalid.isError, true); assert.equal(invalid.structuredContent.error.code, 'UNSUPPORTED_REASONING');
   const forbidden = await fetch(url, { method: 'POST', headers: { origin: 'https://attacker.invalid', 'content-type': 'application/json' }, body: '{}' });

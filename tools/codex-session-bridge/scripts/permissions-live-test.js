@@ -21,6 +21,7 @@ const marker = 'YCA006-' + randomUUID().slice(0, 8);
 const sourceText = 'SOURCE-' + randomUUID().slice(0, 8);
 writeFileSync(path.join(cwd, 'source.txt'), sourceText + '\n', 'utf8');
 writeFileSync(path.join(cwd, 'proof.txt'), 'INITIAL\n', 'utf8');
+writeFileSync(path.join(cwd, 'read-only-proof.txt'), 'LOCKED\n', 'utf8');
 
 function git(args) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
@@ -30,7 +31,7 @@ function git(args) {
 git(['init', '-q']);
 git(['config', 'user.name', 'YCA Acceptance']);
 git(['config', 'user.email', 'yca-acceptance@example.invalid']);
-git(['add', 'source.txt', 'proof.txt']);
+git(['add', 'source.txt', 'proof.txt', 'read-only-proof.txt']);
 git(['commit', '-qm', 'acceptance baseline']);
 
 const codex = process.env.BRIDGE_CODEX_BIN ?? 'codex';
@@ -79,6 +80,17 @@ function commandEvidence(events) {
   return events.some(event => event.type === 'codex' && event.data?.item?.type === 'command_execution');
 }
 
+function blockedWriteEvidence(events) {
+  return events.some(event => {
+    const text = event.type === 'stderr'
+      ? event.data?.text ?? ''
+      : event.type === 'codex' && event.data?.item?.type === 'command_execution'
+        ? `${event.data.item.aggregated_output ?? ''} ${event.data.item.status ?? ''}`
+        : '';
+    return /blocked by policy|read[- ]only|sandbox|permission denied|access is denied/i.test(text);
+  });
+}
+
 try {
   await client.connect(new StreamableHTTPClientTransport(url));
 
@@ -123,6 +135,8 @@ try {
   assert.equal(readFileSync(path.join(cwd, 'proof.txt'), 'utf8').replace(/\r\n/g, '\n'), proof);
 
   const beforeReadOnly = readFileSync(path.join(cwd, 'proof.txt'), 'utf8');
+  const readOnlyProof = path.join(cwd, 'read-only-proof.txt');
+  const beforeBlockedWrite = readFileSync(readOnlyProof, 'utf8');
   const readOnly = await call('codex_start_session', {
     request_id: randomUUID(),
     cwd,
@@ -130,20 +144,23 @@ try {
     model: 'gpt-5.6-sol',
     reasoning: 'medium',
     permissions: { sandbox_mode: 'read-only', approval_policy: 'never' },
-    prompt: 'Read source.txt and run git status --short. Do not modify any file. Reply exactly: READ_ONLY_OK <trimmed source.txt content>.',
+    prompt: 'Controlled read-only enforcement test. First, you MUST attempt exactly one shell write that replaces read-only-proof.txt with SHOULD_NOT_WRITE; this write is expected to be denied by the read-only sandbox, so do not work around the denial. After observing the denial, read source.txt and run git status --short. Reply exactly: READ_ONLY_BLOCKED_OK <trimmed source.txt content>.',
     timeout_ms: 180000,
   });
   assert.equal(readOnly.permissions.sandbox_mode, 'read-only');
   assert.equal(readOnly.permissions.approval_policy, 'never');
   const readOnlyResult = await wait(readOnly);
+  assert.ok(readOnlyResult.state.run.final_response.includes('READ_ONLY_BLOCKED_OK'));
   assert.ok(readOnlyResult.state.run.final_response.includes(sourceText));
   assert.ok(commandEvidence(readOnlyResult.events), 'Read-only run did not contain command_execution evidence.');
+  assert.ok(blockedWriteEvidence(readOnlyResult.events), 'Read-only run did not contain observable write-denial evidence.');
   assert.equal(readFileSync(path.join(cwd, 'proof.txt'), 'utf8'), beforeReadOnly);
+  assert.equal(readFileSync(readOnlyProof, 'utf8'), beforeBlockedWrite);
 
   report.default_permissions = defaultSession.permissions;
   report.explicit_permissions = readOnly.permissions;
   report.thread_resumed = resumeResult.state.session.codex_thread_id === defaultResult.state.session.codex_thread_id;
-  report.external = { proof, diff, read_only_unchanged: true };
+  report.external = { proof, diff, read_only_unchanged: true, read_only_write_blocked: true };
   report.passed = true;
 } catch (error) {
   report.passed = false;

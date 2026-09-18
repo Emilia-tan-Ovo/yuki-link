@@ -2,9 +2,12 @@ import { spawnDirect, readLines, stopProcessTree } from './process.js';
 import { BridgeError } from './errors.js';
 import { resolveCodexExecutable } from './codex-executable.js';
 
-const SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
-const APPROVAL_POLICIES = new Set(['on-request', 'never']);
-const APPROVAL_REVIEWERS = new Set(['user', 'auto_review', 'guardian_subagent']);
+export const SANDBOX_MODE_VALUES = Object.freeze(['read-only', 'workspace-write', 'danger-full-access']);
+export const APPROVAL_POLICY_VALUES = Object.freeze(['on-request', 'never']);
+export const APPROVAL_REVIEWER_VALUES = Object.freeze(['user', 'auto_review', 'guardian_subagent']);
+const SANDBOX_MODES = new Set(SANDBOX_MODE_VALUES);
+const APPROVAL_POLICIES = new Set(APPROVAL_POLICY_VALUES);
+const APPROVAL_REVIEWERS = new Set(APPROVAL_REVIEWER_VALUES);
 const SELECTION_KEYS = new Set(['sandbox_mode', 'approval_policy', 'approvals_reviewer']);
 
 const legacySnapshot = () => ({
@@ -146,7 +149,7 @@ export class PermissionResolver {
 
     const args = ['app-server', '--stdio'];
     for (const [key, value] of overrides) args.push('-c', `${key}=${JSON.stringify(value)}`);
-    const child = this.spawnChild(executable, args, { cwd });
+    const child = this.spawnChild(executable, args, { cwd, detached: process.platform !== 'win32' });
     const pending = new Map();
     let nextId = 1;
     let finished = false;
