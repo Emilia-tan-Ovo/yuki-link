@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "imported_at": "2026-09-18T16:45:56.8288407+08:00",
+  "kind": "read-only-installed-snapshot",
+  "upstream_version": "unknown",
+  "skills": [
+    {
+      "name": "pair-with-docs",
+      "source": "~/.agents/skills/pair-with-docs",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "6deca23d9757c1806e79f20d86b8d6f15eb235465970f944d51204270c922efe"
+        }
+      ]
+    },
+    {
+      "name": "to-spec",
+      "source": "~/.agents/skills/to-spec",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "7d7fd04f7e47b8ebac52abe1497725570cbc1c15a56c673fe386950f95931cfb"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "sha256": "55037139831219743dda1f716fe69eab3366e922529f69cc988fea3b1d34c74a"
+        }
+      ]
+    },
+    {
+      "name": "to-tickets",
+      "source": "~/.agents/skills/to-tickets",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "b9478faa82b40c653bba2ea110682b5ae22a6736e4600768ae158c17db861ae2"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "sha256": "e396b8caaf6cdd95c94cf707a7ca2fa5c3a04b37ae5d4301b5b360a7ff7a34cb"
+        }
+      ]
+    },
+    {
+      "name": "ticket-design",
+      "source": "~/.agents/skills/ticket-design",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "1cae193c94522e46530262840cdceb0d50e90a1bce3411bc793d586d880324ff"
+        }
+      ]
+    },
+    {
+      "name": "implement",
+      "source": "~/.agents/skills/implement",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "30cd7bc1ebfb3891e85a1eed3b3b81aea0fa4ad4553a784de7f8e421b2d223e0"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "sha256": "8494f83602c58f8ab33d047d0516cdb90b8c29e6d564de0cef810daaca378bcb"
+        }
+      ]
+    },
+    {
+      "name": "code-review",
+      "source": "~/.agents/skills/code-review",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "e32441ce3f64628daeb6270bf56104f461b1341aa472cc3968424e90ece17bc4"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "sha256": "3f72329747a916ac8ab2b4004490c79e1be6774a8a83e5b258d6ddc7e866abfe"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+---
+name: ticket-design
+description: Pair with the user on the implementation-level design needed to make one already-scoped ticket ready for /implement.
+disable-model-invocation: true
+---
+
+# Ticket Design
+
+Prepare exactly one current ticket for implementation. Treat its accepted product behavior and scope as fixed; resolve only the high-leverage question, "How should this ticket be implemented?"
+
+This is the checkpoint in `to-tickets -> ticket-design -> implement`. Stay in design: inspect and discuss, but create no business code, start no refactor, expand no ticket scope, and never invoke `/implement` automatically.
+
+## 1. Establish the implementation context
+
+Read, in this order:
+
+1. The complete current ticket.
+2. Its source spec.
+3. `CONTEXT.md` and relevant ADRs.
+4. Every applicable `AGENTS.md` plus the project's engineering conventions.
+5. The current code, configuration, tests, Git state, and nearby implementation precedents.
+
+Resolve facts available from those sources or tools yourself. Ask the user only for information that cannot be discovered and would materially change the design. If the ticket conflicts with the spec or current code, surface the conflict rather than silently redefining scope.
+
+Completion criterion: the ticket boundary, applicable constraints, and existing implementation shape are evidenced well enough to identify the real implementation decisions.
+
+## 2. Build and work the implementation frontier
+
+List only unresolved decisions that materially affect one or more of:
+
+- data semantics, integrity, schema constraints, relationships, or important indexes;
+- an external interface contract, including URL, method, request, response, and meaningful error semantics;
+- security, consistency, or integration with an external system or existing capability;
+- module responsibilities, interface shape, seam placement, or adapter choice;
+- pre-agreed test seams and the critical behavior to verify.
+
+Not every ticket needs every category. Exclude routine DTO, method, and variable names; conventional framework mechanics; and low-risk local details the agent can follow from project precedent.
+
+Choose the highest-leverage decision whose prerequisites are settled. Discuss one decision at a time, incorporate the result, then recompute the frontier. Use the `codebase-design` vocabulary when module interfaces or seams are genuinely at issue.
+
+## 3. Pair on each decision
+
+When the user can reasonably judge the decision, first invite their intuition or rough design. Review that draft: identify strengths, risks, missing boundaries, and trade-offs, then refine it together into an agreed decision. Do not front-load an exhaustive option set that reduces the user to approving a finished design.
+
+When the user explicitly loses track of the layers, cannot connect the concepts, or says they do not understand, pause the current decision and show a brief, ticket-specific implementation map. Prefer familiar backend layers such as `HTTP / Controller -> Service -> Repository -> Database -> Integration Test`, but include only layers relevant to the ticket. Mark the layer or seam under discussion, affected layers, decisions already settled, and the approximate next layer. Use the map only for reorientation; once understanding returns, resume the same decision without reopening the frontier or adding questions.
+
+When the decision depends on unfamiliar technical knowledge, begin with a concrete example from the current ticket and, when reorientation was needed, its current layer map. Introduce the abstract term and alternatives only after that grounding:
+
+1. Explain the concept in plain language.
+2. Present the main viable approaches and important trade-offs.
+3. Give a recommendation and reasons when one approach is clearly preferable.
+4. Invite an informed decision or confirmation.
+
+If the user remains stuck or says they do not know, teach the missing concept or recommend a reasonable path directly; do not turn the exchange into a guessing exercise.
+
+Label every new agent-originated behavior rule, constraint, data design, interface design, or architecture choice as a **Proposal** until the user confirms it. A recommendation is not an agreed decision.
+
+## 4. Prune at the implementation frontier
+
+Regularly ask whether the remaining uncertainty can change the implementation direction. Stop exploring when the relevant data design, external contract, key implementation boundaries, integrations, and test seams are clear enough for `/implement` to proceed safely.
+
+Summarize low-risk unresolved details as deferred to `/implement` under project conventions. Do not exhaust edge cases or reopen product requirements already settled by the spec and ticket.
+
+Completion criterion: every frontier item is either an agreed implementation decision or an explicitly deferred low-risk detail.
+
+## 5. Confirm and persist the design
+
+Summarize:
+
+- the agreed Implementation Decisions;
+- a short implementation sequence;
+- the few deferred implementation details, if any.
+
+Ask the user to confirm shared understanding. After confirmation, inspect the current tracker format and how `/implement` reads tickets. If an extra Markdown section is compatible, add or update this section in the current ticket:
+
+```markdown
+## Implementation Notes
+
+- <only decision-rich data, interface, module/seam, integration, or test notes>
+```
+
+Keep the notes concise. Record decisions, not the conversation; include no substantial implementation code and do not repeat requirements already present in the spec. Preserve the ticket's existing structure and all unrelated content.
+
+If the tracker or ticket format cannot safely accept `## Implementation Notes`, change no tracker structure. Explain the incompatibility and keep a concise Implementation Summary in the session instead.
+
+## 6. Hand off
+
+After shared understanding is confirmed and the compatible notes are persisted (or the incompatibility is reported), state:
+
+> The current ticket is ready for implementation.
+
+Recommend `/implement <current-ticket>`. Invoke it only when the user explicitly asks.
