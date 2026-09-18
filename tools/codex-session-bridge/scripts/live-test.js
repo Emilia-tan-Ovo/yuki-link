@@ -44,16 +44,16 @@ async function wait(run) {
   let cursor = 0;
   const deadline = Date.now() + 360_000;
   while (Date.now() < deadline) {
-    const output = await call('codex_get_output', { run_id: run.run_id, cursor });
+    const waitMs = Math.min(60_000, Math.max(0, deadline - Date.now()));
+    const output = await call('codex_get_output', { run_id: run.run_id, cursor, wait_ms: waitMs });
     cursor = output.next_cursor;
-    const state = await call('codex_get_status', { run_id: run.run_id });
-    if (!['queued', 'running', 'stopping'].includes(state.run.status)) {
+    if (!['queued', 'running', 'stopping'].includes(output.status)) {
+      const state = await call('codex_get_status', { run_id: run.run_id });
       report.runs.push(state);
       console.log(JSON.stringify({ phase: 'finished', run_id: run.run_id, thread_id: state.session.codex_thread_id, model: state.run.model, reasoning: state.run.reasoning, status: state.run.status, error: state.run.error, reply: state.run.final_response }));
       assert.equal(state.run.status, 'completed', JSON.stringify(state.run.error));
       return state;
     }
-    await new Promise(resolve => setTimeout(resolve, 1500));
   }
   throw Error('Live acceptance timed out');
 }
