@@ -28,3 +28,12 @@
 ## Implementation-design boundary
 
 checkpoint 的具体字段 schema、workflow router 内部组织方式由 ticket-design 决定，但不得改变已确认的信息分层与恢复协议。
+
+## Implementation Notes
+
+- 依已确认 Spec/决策完成调查，implementation frontier 为空；本轮 Owner 已授权设计后直接实现。采用 Skill 编排与随包模板/恢复协议，不新增 YCA API、运行时服务或状态数据库。
+- checkpoint schema v1 使用 YAML Front Matter + Markdown Body，保存在当前 worktree 的 `.local/workflow-state/<ticket>.md`；机器字段记录阶段、Git 身份、session/run 引用和更新时间，正文记录决定、证据、finding、副作用与下一步。未知值显式为空，不能推断成功。
+- 阶段由持久化产物及重新验证的证据共同确定；恢复顺序保持 Ticket → Spec → CONTEXT/ADR/AGENTS → Implementation Notes → checkpoint。Review/test 证据绑定受审内容及环境；失效只重做受影响检查。未知副作用先调查，禁止盲重放。
+- 独立调用设计 Skills 保留设计边界；明确授权的上层 workflow 可连续推进。WORKFLOW-003 不改 implement/code-review/review-change 的内部语义：004 未交付时首次 review 复用现有完整双轴入口，已有充分证据的 review 不重跑；closeout 自动化留给 005。
+- 主验收在隔离 fixture 仓库通过 engineering-workflow 公共 Skill 入口运行 fresh agent，只传持久化文件引用，覆盖人为中断、过期动态状态、已完成副作用和 review/acceptance 恢复。确定性检查只核对外部产物，不断言提示词措辞。安装兼容性沿用 WORKFLOW-002 公共 CLI / MCP protection seam。
+- 实现顺序：checkpoint/路由 → 四个设计阶段 handoff → fixture 恢复与安装回归 → fresh 双轴审查及定向修复 → 本地验收。字段命名与 fixture 文件布局按上述边界在实现中决定。

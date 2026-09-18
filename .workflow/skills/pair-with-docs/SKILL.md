@@ -45,4 +45,10 @@ Follow `/domain-modeling` exactly as decisions crystallise. Keep `CONTEXT.md` as
 
 Stay in design: clarify the problem, teach necessary concepts, resolve requirements and design decisions, and maintain the domain language and necessary ADRs. Do not implement code.
 
-When the design tree is empty, summarize the resolved design and ask the user to confirm shared understanding. After confirmation, state that the design stage is complete and recommend `/to-spec`, which can synthesize the current conversation, codebase understanding, `CONTEXT.md`, and relevant ADRs. Invoke `/to-spec` only when the user explicitly asks.
+When the design tree is empty, summarize the resolved design and ask the user to confirm shared understanding. After confirmation, state that the design stage is complete and recommend `/to-spec`. Invoke it only with explicit user authorization, including an already authorized engineering-workflow continuation.
+
+## 可恢复 Design Handoff
+
+确认后在仓库约定的设计产物位置保存 Design Handoff；没有约定时使用 `docs/design/<feature>-handoff.md`。至少记录目标/范围、已确认决定及其来源、unresolved（无则明确写无）、deferred details、测试 seam 的已确认/待确认状态、CONTEXT/ADR 引用和下一步 `to-spec`。未确认提案保留 Proposal 标签，不能写成已确认。
+
+新 session 优先读取该 handoff 与领域文档，不需要完整聊天。session/run、当前 Git 身份等执行状态只进入 workflow checkpoint，不写入 CONTEXT/ADR。上层 engineering-workflow 负责阶段边界 checkpoint；独立调用本 Skill 仍只完成设计，不自动实现。

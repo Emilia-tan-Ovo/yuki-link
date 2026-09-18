@@ -49,9 +49,11 @@
     },
     {
       "name": "engineering-workflow",
-      "installable": false,
+      "installable": true,
       "files": [
-        "SKILL.md"
+        "SKILL.md",
+        "checkpoint-template.md",
+        "recovery.md"
       ]
     },
     {

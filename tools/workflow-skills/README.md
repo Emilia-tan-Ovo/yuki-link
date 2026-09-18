@@ -6,7 +6,7 @@
 
 Agent 可以编辑 repo source、生成 preview 和运行只读 verify。**真实 `~/.agents/skills` 写入必须由 Owner 审阅具体计划及完整 diff，明确批准其 digest、canonical 目标和写集。** 随后由 Owner 在本机运行已审阅的 installer，或通过原生执行器明确允许的那一次写入完成。遇到原生拒绝应停下；不能通过 YCA `powershell_execute`、owned task、普通 filesystem、别名或扩展 roots 绕过保护。
 
-`--approve` 是对具体计划的确认输入，不是身份认证、签名或权限凭证。JSON 中的字段不能授予写权限。执行器、Node、Git 和所运行的 installer 必须已经可信；工具不能证明输入摘要的人是谁，也不是防御恶意同用户进程的 OS 沙箱。运行中的 installer 自身不能可靠审查替换它的恶意代码。两项尚未实现的 source 由清单拒绝安装。
+`--approve` 是对具体计划的确认输入，不是身份认证、签名或权限凭证。JSON 中的字段不能授予写权限。执行器、Node、Git 和所运行的 installer 必须已经可信；工具不能证明输入摘要的人是谁，也不是防御恶意同用户进程的 OS 沙箱。运行中的 installer 自身不能可靠审查替换它的恶意代码。尚未实现的 `review-change` source 由清单拒绝安装。
 
 ## 三个命令
 

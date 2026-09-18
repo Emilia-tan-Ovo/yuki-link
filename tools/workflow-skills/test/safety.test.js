@@ -33,7 +33,7 @@ for (const mutation of ['source', 'manifest', 'tool', 'target-content', 'target-
 
 test('non-installable and unknown selections never create an applyable plan', t => {
   const f = fixture(t);
-  for (const name of ['engineering-workflow', 'review-change']) assert.equal(f.preview(name).data.error.code, 'NOT_INSTALLABLE');
+  assert.equal(f.preview('review-change').data.error.code, 'NOT_INSTALLABLE');
   for (const name of ['', '../implement', 'unknown', 'implement,implement']) assert.equal(f.preview(name).data.error.code, 'INVALID_SELECTION');
   assert.deepEqual(fs.readdirSync(f.target), []);
 });
