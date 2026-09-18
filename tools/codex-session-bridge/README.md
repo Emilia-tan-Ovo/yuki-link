@@ -234,7 +234,26 @@ runtime/                  # 已由仓库 .gitignore 排除
 
 权限快照为版本化的可重放执行契约：记录 sandbox、approval、reviewer，以及 workspace-write 的 writable roots、network 和 tmp 细项。每次 `exec/resume` 同时显式重放对应 sandbox 与 Codex 保留的内置 permission profile（`:read-only / :workspace / :danger-full-access`），并固定 approval/reviewer；因此本机默认后来变化或新增自定义 permission profile 不会静默改变已创建 session。无法完整展开并重放的 `default_permissions` / 自定义 permission profile、未知 workspace 权限维度或损坏快照会明确失败，不猜测或降级。
 
-新 session 不再使用 `--ignore-user-config`，也不再统一关闭 apps/plugins/hooks/browser/computer；这些非本票权限能力继续按用户现有 Codex 配置加载，实际 Skill/MCP 调用仍需 YCA-007 单独验收。Full Access 只表示 Codex 原生执行权限，不构成无关操作授权，也不让 Bridge 自建批准转发平台。
+新 session 不再使用 `--ignore-user-config`，也不再统一关闭 apps/plugins/hooks/browser/computer；这些非权限能力继续按用户现有 Codex 配置加载。YCA-007 已在常驻 Bridge 的同一真实 session/thread 中完成 `$code-review` Skill 实际使用和 Context7 `resolve-library-id` / `query-docs` MCP 调用，证明该继承路径可用。Full Access 只表示 Codex 原生执行权限，不构成无关操作授权，也不让 Bridge 自建批准转发平台。
+
+### Skill / MCP / Plugin 环境（YCA-007）
+
+环境状态必须区分“本机存在/安装”“CLI 识别”“Bridge session 加载”“实际调用”四层，不能把前一层当成后一层证据。2026-09-18 在 Codex CLI `0.155.0-alpha.9` 和常驻 YCA 上的代表性结果：
+
+| 项目 | 本机/安装 | CLI 识别 | Bridge session 加载 | 实际调用 |
+| --- | --- | --- | --- | --- |
+| 本机 `$code-review` Skill | 已存在 | session 可发现并执行其流程 | 是 | 是；同一 thread 完成固定点、Standards 与无-spec 分支 |
+| `context7` MCP | 已配置 | enabled | 是 | 是；真实调用 `resolve-library-id` 与 `query-docs` 并取得 Node.js 官方文档 |
+| `cua_repl` MCP | 当前 CLI 提供 | enabled | 未验证 | 未验证 |
+| `node_repl` MCP | 当前 CLI 提供 | enabled | 未验证 | 未验证 |
+| `codex_app` MCP | 当前 CLI 提供 | disabled | 否/未加载 | 未调用；保持用户禁用状态 |
+| 其他 Codex Plugins | `plugin list` 中当前有 16 项显示 `installed, enabled` | 已由 CLI 列出 | 未逐项验证 | 未逐项调用 |
+
+当前 Context7 配置中的 `mcp_servers.context7.type` 会被 CLI 报为 unrecognized/ignored；同一配置仍通过 `url` 被 CLI 识别为 enabled，并已在 Bridge session 中真实调用成功。因此这是非阻塞兼容提示，不要求为了验收修改用户全局配置。其他未实测 MCP/Plugins 明确保持“未验证”，不据安装清单或模型自述宣称可用。
+
+上述四层状态是点时环境证据，不是永久白名单。“本机/安装、CLI 识别”以当次真实 `codex mcp list` / `codex plugin list` 为 source of truth；“Bridge session 加载、实际调用”以常驻 YCA 对应 run 中的 durable `mcp_tool_call` / command / collaboration 事件及终态为 source of truth。CLI 版本、用户 MCP/Plugin 配置或安装/启用状态变化后应重新核对相关层：至少刷新 CLI 清单，并对受影响的必验 Skill/Context7 做代表性调用；不因无关插件变化重跑完整付费矩阵。Codex Desktop executable 的 hash 路径不写入这里，YCA 会在能力刷新与新 session 启动时按实际安装动态重发现。
+
+YCA-007 的 Skill/Context7 验收由 ChatGPT 当前对话直接调用已注册的常驻 YCA `codex_send_message / codex_get_status / codex_get_output` 完成；没有以本地候选 HTTP、直接 CLI 脚本或模型自述替代 ChatGPT → 既有 YCA 的公开边界。
 
 旧 runtime 中没有权限快照的 session 保持旧版本完整语义：`read-only + never + --ignore-user-config`，并继续关闭旧实现原先禁用的 features；不会套用当前本机默认或静默升级。需要另一权限模式时创建新 session，`codex_send_message` 不接受会话内权限切换。旧 request_id 的历史 fingerprint 仍可按原参数重放；新 start 的权限输入参与新的幂等一致性判断。
 
