@@ -37,7 +37,8 @@ v1.1 不推翻 matt skills，而是解决真实协作中出现的：
 - Agent 上下文不可见、不可预测，恢复工作依赖“模型还记得”；
 - resident 验收与模型自述没有严格分开；
 - Issue 完成后过程数据散落，长期复盘困难；
-- YCA 等待 Codex 时存在重复 status/output 轮询。
+- YCA 等待 Codex 时存在重复 status/output 轮询；
+- ChatGPT/客户端等外部平台可能在任意阶段触发审查、断连或中断，当前恢复不能依赖模型仍记得中断前状态。
 
 ## 2. 三人职责
 
@@ -171,6 +172,15 @@ fresh session 恢复一张票时：
 7. 从 `Next action` 继续。
 
 Checkpoint 是导航，不替代 Git/YCA 事实。
+
+## 4.1 外部平台中断韧性
+
+- ChatGPT 侧审查、客户端断连、网络中断或对话切换都视为 **external interruption**，不得自动归因于项目、YCA 或 Codex 失败。
+- 一旦中断会让 fresh session 无法确定当前 phase / diff / run / next action，应立即更新 checkpoint；不要求每次工具调用都写状态。
+- 恢复后先读取 checkpoint，再用 Git/YCA/runtime/tests 重新验证易变化事实，最后从 `Next action` 继续；不得仅依赖模型回忆。
+- 如果中断发生在 implementation 期间，恢复应优先复用仍可用的 implementation session；若不可复用，则以 Implementation Notes + checkpoint 启动 fresh implementation session。
+- 如果中断发生在 review/acceptance 边界，不重复已经有充分证据完成的阶段；例如已完成 fresh review 后只恢复 acceptance。
+- Workflow v1.1 的最终 fixture 必须包含至少一次人为 external interruption，证明中断前后不会重复副作用、重新做已完成阶段或丢失 finding/next action。
 
 ## 6. Closeout Archive
 

@@ -21,6 +21,7 @@
 - [ ] acceptance 使用 filesystem/Git/command/test/YCA events 等 ground truth，而不是模型自述。
 - [ ] closeout archive 正确生成且不复制大型 raw logs。
 - [ ] 新开完全 fresh session 后，仅凭持久化产物可以恢复并继续正确 next action。
+- [ ] 人为触发至少一次 external interruption（模拟 ChatGPT 审查/客户端断连/对话切换），中断前后 phase、finding、diff、next action 保持一致，且不重复已完成阶段或副作用。
 - [ ] Codex 等待期间 observation wait 不会终止仍在推进的 run，且重复轮询显著减少。
 - [ ] 单独调用 `implement` 的兼容行为仍成立。
 - [ ] 最终能力说明明确区分 implemented / accepted / stable；本票通过只证明真实链路验收，不自动宣称长期稳定。

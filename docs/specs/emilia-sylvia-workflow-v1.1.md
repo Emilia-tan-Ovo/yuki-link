@@ -21,6 +21,7 @@ GitHub Issue: [#22](https://github.com/Emilia-tan-Ovo/yuki-link/issues/22)
 - 大型日志、Git history 和 runtime JSONL 直接交给模型全量扫描时会造成超时、噪声和上下文膨胀；
 - Issue 完成后的关键过程证据分散在 GitHub、YCA runtime 与本机目录中，长期复盘成本高；
 - Emilia 等待 Codex run 时存在重复 status/output 轮询；
+- ChatGPT/客户端/网络等外部平台可能在任意阶段中断当前对话，恢复仍需要依赖显式 checkpoint，而不能假设模型上下文连续；
 - 当前多个 Skills 已能独立工作，但缺少一层统一的工作流编排来管理阶段、session、checkpoint、review 路由、acceptance 和 closeout。
 
 Workflow v1.1 需要在不推翻现有 matt Skills 主流程的前提下，把这些能力组织成可恢复、可验证、可分级、可长期追溯的三人协作工作流。
@@ -92,6 +93,7 @@ Workflow v1.1 同时纳入两个工程增强方向：
 25. 作为 closeout 执行者，Emilia 希望自动生成一致的 archive 摘要，同时保留人工核对和追溯能力。
 26. 作为 Agent，Sylvia 希望在当前票没有真正高杠杆实现决策时，ticket-design 可以直接形成 Implementation Notes，而不是制造问题要求桓宇选择。
 27. 作为项目参与者，三方希望能力说明继续区分“代码已实现”“真实链路已验收”“日常场景稳定使用”，避免把一次通过扩大成长期稳定结论。
+28. 作为 Orchestrator，Emilia 希望 ChatGPT 审查、客户端断连、网络中断或对话切换后，可以仅凭 checkpoint 和外部事实恢复正确 phase / next action，而不重复已完成阶段或副作用。
 
 ## Implementation Decisions
 
@@ -125,6 +127,7 @@ Workflow v1.1 同时纳入两个工程增强方向：
 - Workflow 不得为了便于轮询而给正常 Agent 工作统一附加短的 wall-clock execution timeout。仍在持续产生有效进展的 run 不应仅因为固定观察时长到期而被终止；真正的 hard execution deadline 必须是明确、可观察的 run policy，而不是隐藏的等待副作用。
 - Codex wait/long-poll 纳入 v1.1 首批交付目标：必须同时解决重复 status/output 轮询，以及观察等待与执行 timeout 混淆的问题；公共语义至少覆盖“新事件、run 终态、等待窗口结束”。具体工具名、参数、是否采用可续期/无默认 hard deadline 等实现细节留给 ticket-design。
 - closeout archive automation 纳入 v1.1 首批交付目标：必须减少手工摘要重复劳动并保持可追溯；具体采用 Skill、仓库脚本或其他实现留给 ticket-design。
+- external interruption 属于恢复路径的一部分：平台审查/断连本身不等同于项目失败；恢复先读 checkpoint，再验证 Git/YCA/runtime/tests，已完成且证据充分的阶段不重复执行。
 - 不修改用户全局 Codex 配置作为 Workflow v1.1 的前置或副作用。
 - 能力状态继续区分 implemented / accepted / stable。
 
@@ -135,6 +138,7 @@ Workflow v1.1 同时纳入两个工程增强方向：
 - Primary seam 只观察公共行为：是否调用正确阶段 Skill、session 是否按规则隔离、checkpoint 是否在正确阶段更新、Review 路由是否符合风险、是否生成可恢复 handoff 和 closeout archive。
 - 同一验收必须再启动一个全新 session，仅依赖持久化产物恢复任务；fresh session 必须重新验证易变化的动态状态，并从 checkpoint 的 next action 继续。
 - fixture 至少覆盖：
+  - implementation / review / acceptance 任一阶段的人为 external interruption，恢复后不重复已完成阶段或未知副作用；
   - ticket-design → implementation 连续上下文；
   - full Review 使用 fresh reviewer；
   - finding 修复后进入 fresh focused re-review；

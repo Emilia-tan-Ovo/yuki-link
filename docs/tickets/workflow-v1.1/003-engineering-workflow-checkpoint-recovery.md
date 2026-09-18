@@ -21,6 +21,9 @@
 - [ ] fresh session 会重新验证 Git/YCA/tests/runtime 等动态事实，而不是盲信 checkpoint。
 - [ ] ticket-design → implementation 默认可连续；上下文异常膨胀时可以通过 handoff/checkpoint 安全切 fresh implementation session。
 - [ ] fixture 验收证明上下文清空后仍可从 checkpoint 的 Next action 继续。
+- [ ] ChatGPT 审查、客户端断连、网络中断或对话切换等 external interruption 不会被误报成项目/YCA/Codex 失败；恢复后先验证动态事实，再继续正确 phase。
+- [ ] implementation 被人为中断后可以复用原 session 或通过 Implementation Notes + checkpoint 切 fresh session，且不会重复已完成副作用。
+- [ ] review/acceptance 边界中断后，不重复已经有充分证据完成的 full review。
 
 ## Implementation-design boundary
 
