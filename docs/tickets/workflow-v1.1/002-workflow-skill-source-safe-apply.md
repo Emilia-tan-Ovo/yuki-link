@@ -8,17 +8,17 @@
 
 **Risk hint:** normal
 
-**Status:** implemented — ready-for-fresh-focused-re-review（未做真实全局 apply）
+**Status:** accepted
 
 ## Acceptance criteria
 
-- [ ] 仓库中存在可版本化的 `engineering-workflow`、`review-change` 以及需要调整的现有 Skill source。
-- [ ] repo-managed source 与用户安装目录之间的 source of truth / apply / refresh 语义明确。
-- [ ] `AGENTS.md` 与 Agent/Skill 安装目录的现有保护边界不被普通 YCA 文件接口绕过。
-- [ ] 能以受控方式预览将应用的 diff，并在真正写入受保护位置前保留明确授权边界。
-- [ ] 安装/应用后能够重新读取已安装 Skill 并确认版本/内容来自预期 source。
-- [ ] 搜索/应用流程不得假定 `rg` 一定存在；需要能力探测或可用 fallback。
-- [ ] 不修改用户全局 Codex 配置。
+- [x] 仓库中存在可版本化的 `engineering-workflow`、`review-change` 以及需要调整的现有 Skill source。
+- [x] repo-managed source 与用户安装目录之间的 source of truth / apply / refresh 语义明确。
+- [x] `AGENTS.md` 与 Agent/Skill 安装目录的现有保护边界不被普通 YCA 文件接口绕过。
+- [x] 能以受控方式预览将应用的 diff，并在真正写入受保护位置前保留明确授权边界。
+- [x] 安装/应用后能够重新读取已安装 Skill 并确认版本/内容来自预期 source。
+- [x] 搜索/应用流程不得假定 `rg` 一定存在；需要能力探测或可用 fallback。
+- [x] 不修改用户全局 Codex 配置。
 
 ## Implementation-design boundary
 
@@ -101,3 +101,30 @@ Frontier 已收敛：source 放置与交付范围、安装 Interface、批准主
 - **绿灯与兼容性**：同一 CLI 回归证明 B 字节不能冒充 A（preview 不可 apply、apply 拒绝、verify 返回 source-unavailable、目标无写入）；replacement ref 仍存在时，A 原始字节可以安装/核验且回执记录 A；移除 replacement ref 后普通 no-op apply / verify 保持正常。
 - **验证**：targeted regression **1/1 通过**；`npm run check` 通过；完整 `tools/workflow-skills` `npm test` **35/35 通过、0 skip**；`git diff --check` 通过。日志为 `.local/workflow-validation/replacement-{red,green,check,full}.txt`。YCA 生产代码、保护测试和 Skill sources 均未修改，本轮不重跑无关保护套件或 full review；前一轮环境限制记录不扩大为已解决。
 - **交接**：修复基线为 `136f5def15e5668fb9344b71d289c9b4d06c7a0c`，修复提交 SHA 写入 repo-local checkpoint。Emilia 启动 fresh focused re-review，仅携带原 finding、修复 diff 与此回归证据；本 context 未自行做语义 Review。GitHub 因已知 integration 403 未再修改；未 push、创建 PR 或真实全局 apply。
+
+## Final Review、Acceptance 与 Closeout
+
+### Fresh Review 与 finding 修复
+
+- 实现主提交：`136f5def15e5668fb9344b71d289c9b4d06c7a0c`；fresh full review 使用独立 reviewer context。
+- Standards：**CLOSED / 0 finding**。
+- Spec：发现 1 个 important finding——Git `refs/replace` 可能让记录的 HEAD commit 与 provenance 实际核验对象错配。该问题已用真实临时 Git replacement fixture 复现红灯，并在 `ad5051726849703f49caa67b686af03bed0b4d42` 中通过统一 provenance Git wrapper 增加 `--no-replace-objects` 修复。
+- 修复后 targeted replacement regression 1/1、`npm run check`、完整 `tools/workflow-skills` **35/35 passed / 0 failed / 0 skipped**；fresh focused re-review：**CLOSED / 0 remaining finding**，无需升级回 full review。
+- YCA 保护相关回归保持 **13 passed / 0 failed / 1 opt-in skip**；`AGENTS.md`、bridge/control-center 生产源码未因本票放宽。
+
+### Merge 与 ground-truth acceptance
+
+- 实现 PR：**#32**；merge commit：`3b562a84042b105b8098637e606804403eebc178`。默认分支在 merge 后以该提交作为 HEAD。
+- 在 merge 后默认分支 source 上，对真实 `C:\Users\KQ_Sh\.agents\skills` 执行**只读 preview**：source clean，10 个受管文件全部为 `no-op`，`extras=0`；没有执行 apply。
+- 对同一真实安装目录执行独立**只读 verify**：source commit 为 `3b562a84042b105b8098637e606804403eebc178`，10/10 文件 `matched`，无 extras，plan digest 一致。
+- `engineering-workflow` 与 `review-change` 在 merge 后真实 preview 均以 `NOT_INSTALLABLE` 拒绝，二者仍未安装到全局 Skill 目录。
+- ChatGPT → resident YCA 直接写入真实 installed Skill 的探针返回 `PROTECTED_PATH`；写入项目 `AGENTS.md` 的探针同样返回 `PROTECTED_PATH`。验收后真实安装目录不存在 `.workflow-apply.lock`。
+- fixture apply / verify 已覆盖新增、更新、no-op、辅助 YAML、BOM/CRLF、source/manifest/tool/target/plan/diff 漂移、路径逃逸、链接/硬链接、Windows 特殊路径、故障/中断、跨 worktree 锁与 Git replacement refs；失败路径不自动重试或伪报成功。
+- 实际运行环境没有 `rg`；调查、实现和验收均通过 capability detection / PowerShell fallback 推进，installer 本身按 manifest 枚举，不依赖 `rg`。
+- 用户全局 Codex config 未修改；真实 protected apply **没有执行**。该动作仍是明确的 Owner 授权边界，不因本票验收或 plan digest 自动获得权限。
+
+### 能力边界
+
+WORKFLOW-002 当前状态为：**代码已实现 + 已通过 fresh full/focused review + 已合并 + source/apply/verify 机制通过 fixture 与真实只读安装边界验收**。
+
+这不表示 `engineering-workflow` / `review-change` 已经实现或全局安装：它们分别由 WORKFLOW-003 / WORKFLOW-004 交付，目前仍为不可安装 source 占位。也不表示真实 protected apply 或长期日常稳定性已经被证明；真正的全局安装需要后续具体 diff 的显式 Owner 批准，长期稳定性继续由后续真实工作负载积累证据。
