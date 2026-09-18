@@ -4,9 +4,9 @@
 
 **Blocked by:** None — 基于既有 Codex Bridge 实现，无 A 阶段技术依赖；按已确认优先级在 A2 之后推进 B。
 
-**Status:** implemented-candidate — ticket-design、候选实现、自动化回归与隔离真实 Codex 权限行为验收已通过；常驻 YCA 部署及 ChatGPT → resident YCA → Codex 最终验收待 PR 合并后执行。
+**Status:** completed — ticket-design、实现、修后双轴审查、自动化回归、隔离真实权限验收、常驻部署及 ChatGPT → resident YCA → Codex 最终端到端验收均已完成；不把一次验收扩大表述为长期稳定使用。
 
-**GitHub Issue:** [#6](https://github.com/Emilia-tan-Ovo/yuki-link/issues/6) — 已发布并复读核验，标签 `ready-for-agent`。
+**GitHub Issue:** [#6](https://github.com/Emilia-tan-Ovo/yuki-link/issues/6) — 实现与最终验收已完成，随本收尾记录关闭。
 
 **Spec:** [已审阅规范](../../specs/yuki-computer-agent.md)；User Stories 21～26、32～33；B 权限条款、全部相关会话/幂等兼容要求及 CLI 版本事实；B-AC1～4、AC8，别名见[索引](README.md)。
 
@@ -21,13 +21,13 @@
 
 ## 验收标准
 
-- [ ] B-AC1：未指定权限创建 session，记录并返回有效本机默认；在 Full Access 配置下不被降成只读。显式选择另一受支持原生模式也有输入、生效记录与行为证据。
-- [ ] B-AC2：经 ChatGPT/YCA 创建的同一个 Full Access session 完成实际文件读取、创建/修改和命令执行，随后续聊核对结果和上下文；用 CLI 配置及实际文件/命令结果证明，不依靠模型自述。
-- [ ] B-AC3：后续消息继承 session 模式；在可控测试配置中改变本机默认，已创建 session 不静默切换。无需修改用户全局配置完成测试。
-- [ ] B-AC4：使用旧版 session/run/request 夹具验证历史可读、旧会话可续用且不升级、原请求重试不新建运行；换模式可直接创建新 session，无需历史迁移。
-- [ ] 新请求的权限输入参与幂等一致性判定；并发、重试与持久化失败不误发新运行，默认字段省略等旧请求形式维持原语义。
-- [ ] B-AC8：模型/reasoning 选择、准确 thread 续聊、send/output/status/stop、HTTP 重连、持久化失败及恢复不重放副作用通过针对性回归。
-- [ ] 现有 runtime、历史、认证和连接引用保留；A 不受本票未完成或 CLI 核验失败影响，实际有效权限及未验证项在文档中明确。
+- [x] B-AC1：未指定权限创建 session，记录并返回有效本机默认；在 Full Access 配置下不被降成只读。显式选择另一受支持原生模式也有输入、生效记录与行为证据。
+- [x] B-AC2：经 ChatGPT/YCA 创建的同一个 Full Access session 完成实际文件读取、创建/修改和命令执行，随后续聊核对结果和上下文；用 CLI 配置及实际文件/命令结果证明，不依靠模型自述。
+- [x] B-AC3：后续消息继承 session 模式；在可控测试配置中改变本机默认，已创建 session 不静默切换。无需修改用户全局配置完成测试。
+- [x] B-AC4：使用旧版 session/run/request 夹具验证历史可读、旧会话可续用且不升级、原请求重试不新建运行；换模式可直接创建新 session，无需历史迁移。
+- [x] 新请求的权限输入参与幂等一致性判定；并发、重试与持久化失败不误发新运行，默认字段省略等旧请求形式维持原语义。
+- [x] B-AC8：模型/reasoning 选择、准确 thread 续聊、send/output/status/stop、HTTP 重连、持久化失败及恢复不重放副作用通过针对性回归。
+- [x] 现有 runtime、历史、认证和连接引用保留；A 不受本票未完成或 CLI 核验失败影响，实际有效权限及未验证项在文档中明确。
 
 ## 可复现验收方式
 
@@ -60,7 +60,10 @@
 - 隔离真实 MCP → Bridge → Codex 行为验收使用 Sol medium 与临时 Git 仓库：PermissionResolver 使用独立临时 `CODEX_HOME` 作为可控配置来源，先由真实 `config/read` 解析 `danger-full-access + on-request`，默认 session 真实读取随机 source、写入 proof、以 shell 追加 `CMD_OK` 并执行 `git diff`；随后把临时默认改成 `read-only + never`，真实 `config/read` 确认新默认已变化，但原 session 续聊仍按冻结快照以 shell 成功写入 `FROZEN_SESSION_OK` 且 thread 不变。另建显式 `read-only + never` session 后实际尝试写入并取得拒绝证据，外部核对受控文件保持不变。最终 acceptance report 为 `passed=true`、`thread_resumed=true`、`frozen_session_write=true`、`read_only_write_blocked=true`。
 - 修后 live 验收首次遇到一次上游 `Selected model is at capacity`，该 run 在任何 command/file 副作用前明确失败并保留失败报告；随后一次有界重试完整通过。该容量事件不作为候选成功证据，也未被静默重放。
 - 独立 Sol medium 双轴审查后补齐真实旧 runtime 夹具、未知快照字段拒绝、`codex_send_message` 权限切换显式错误、MCP/运行时共享权限枚举及 B-AC3 可控默认变化真实行为验收。关于“应直接接受任意 `default_permissions` / 自定义 profile”的审查建议未采纳：当前 CLI `config/read` 不会把 profile 编译为可由 `codex exec` 完整重放的权限对象，Codex 上游也把 profile 标识与实际 `PermissionProfile` 执行快照分离；在不迁移 app-server 执行器的本票范围内，明确拒绝比静默压扁更符合权限冻结边界。
-- 上述证据只能表明“候选已实现并在隔离真实 Bridge → Codex 链路验收”。常驻 YCA 仍运行上一合并 release，因此 B-AC 的最终 ChatGPT → resident YCA → Codex 读/写/命令/diff/续聊验收仍保持未勾选；不能据此宣称已在日常场景稳定使用。PR 合并后再通过 Control Center 正式切换并完成最终端到端验收。
+- PR #18 与修复 PR #19 合并后，Control Center 已将常驻 YCA 切换到 merge commit `4691d23bc0bfabd0460928e1790b31f6e6082088`；运行/目标/启动 commit 一致，`dirty=false`，18 工具摘要一致。
+- ChatGPT → resident YCA → Codex 最终验收使用保留的受控临时 Git 仓库与 Sol medium：新 session 直接返回冻结的原生权限快照 `danger-full-access + on-request`（`source=local_codex_config`）；Codex 实际读取 `source.txt`、修改 `proof.txt`、执行 PowerShell 追加 `COMMAND_OK` 并运行 `git diff -- proof.txt`，JSONL `command_execution` 为 exit 0。随后由 ChatGPT 侧通过 YCA 独立读取文件与 Git diff，结果与 Codex 事件一致。
+- 同一 YCA session 再次发送消息时复用了相同 Codex thread `01a0b23a-d36b-7b31-8a7d-7d63666b4c3d` 与同一权限快照；第二轮真实读取 `proof.txt` 后返回 `RESIDENT_RESUME_OK RESIDENT_CHAIN_OK SOURCE=RESIDENT_SOURCE_4691D23`，run 最终 `completed / exit_code=0 / error=null`。至此 B-AC1～4、幂等兼容项与 B-AC8 在常驻链路上闭环。
+- 最终验收 session 与临时仓库暂时保留，供 YCA-007 接续 Skill / Context7 真实加载与调用验收。YCA-006 至此可以关闭；本记录仅声明“已实现并完成常驻真实端到端验收”，不声明长期稳定使用。
 
 ## ticket-design 建议
 
