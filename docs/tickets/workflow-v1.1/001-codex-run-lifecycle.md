@@ -8,19 +8,19 @@
 
 **Risk hint:** high
 
-**Status:** ready-for-agent
+**Status:** accepted
 
 ## Acceptance criteria
 
-- [ ] YCA 对 observation wait 与 run execution deadline 使用明确、独立的语义。
-- [ ] 等待“新事件 / run terminal / observation window elapsed”任一条件满足时可以返回，不要求调用方高频 `get_status → sleep → get_output`。
-- [ ] observation window elapsed 不会停止仍在运行的 Codex run。
-- [ ] Workflow 不再为了轮询方便给正常 Agent 工作统一附加短 execution timeout。
-- [ ] 对持续产生有效进展的长 run，可在超过旧 180s/默认短墙钟阈值后继续运行；测试可以使用可控时钟/fixture，不要求真实等待数分钟。
-- [ ] 如果调用方明确配置 hard execution deadline，超时仍产生清晰、可追溯的 terminal 状态与 `RUN_TIMEOUT` 语义。
-- [ ] 主动 stop、客户端断开、observation wait elapsed、hard execution timeout 四者不会被混为同一状态。
-- [ ] 保持现有 session/run 历史、cursor output、idempotency 与 terminal-state 兼容性。
-- [ ] 通过 YCA MCP 公共边界完成真实验收。
+- [x] YCA 对 observation wait 与 run execution deadline 使用明确、独立的语义。
+- [x] 等待“新事件 / run terminal / observation window elapsed”任一条件满足时可以返回，不要求调用方高频 `get_status → sleep → get_output`。
+- [x] observation window elapsed 不会停止仍在运行的 Codex run。
+- [x] Workflow 不再为了轮询方便给正常 Agent 工作统一附加短 execution timeout。
+- [x] 对持续产生有效进展的长 run，可在超过旧 180s/默认短墙钟阈值后继续运行；测试可以使用可控时钟/fixture，不要求真实等待数分钟。
+- [x] 如果调用方明确配置 hard execution deadline，超时仍产生清晰、可追溯的 terminal 状态与 `RUN_TIMEOUT` 语义。
+- [x] 主动 stop、客户端断开、observation wait elapsed、hard execution timeout 四者不会被混为同一状态。
+- [x] 保持现有 session/run 历史、cursor output、idempotency 与 terminal-state 兼容性。
+- [x] 通过 YCA MCP 公共边界完成真实验收。
 
 ## Implementation-design boundary
 
@@ -70,13 +70,26 @@ Fixed point 为 `92bc97e`，HEAD 为 `0c688d9`，使用独立 fresh reviewer ses
 
 这证明候选版本的真实隔离 MCP + Codex 链路通过；**不等于 resident YCA 已加载新实现**。
 
-### 尚未完成
+### Resident YCA 公共边界验收
 
-- [ ] 将候选代码合入正式分支并更新 resident YCA。
-- [ ] 刷新 ChatGPT 端插件 schema，使现有 `codex_get_output` 暴露新增 `wait_ms`。
-- [ ] 通过 ChatGPT → resident YCA 公共工具真实验证：
-  - 省略 `timeout_ms` 后 run 为无 hard deadline；
-  - `events / terminal / wait_elapsed` 三种 observation 结果；
-  - 客户端 observation 结束/断连不停止 run；
-  - 显式 hard timeout 仍保留 `RUN_TIMEOUT`。
-- [ ] 完成上述证据后关闭 fresh review 的 Spec finding，并更新 Issue #23。
+2026-09-18，PR #30 已合入默认分支，merge commit 为 `1636cb695742bc93dd2c8009952da4ea9a370f88`。随后通过 Control Center 正式受管部署流程切换 resident YCA：
+
+- Control Center：`runningCommit == targetCommit == 1636cb6...`；
+- deployment state：`verified`；
+- `restartRequired: false`；
+- resident 工具数：18；
+- resident tool schema SHA-256：`13a03e00152a20e2ad38dbbe321183354a83371bee79f99f51ea71f92f09f2bd`；
+- ChatGPT 当前对话重新读取到的 `codex_get_output` schema 已包含 `wait_ms: 0..60000`，无需额外重装插件。
+
+ChatGPT → resident YCA 公共边界真实验收：
+
+- run `6c4d9c77-9ae9-405f-87f4-89228d6d7d89`：start 未传 `timeout_ms`，受理结果为 `timeout_ms: null`；真实 PowerShell `Start-Sleep -Seconds 8` 后自然 completed；`codex_get_output(wait_ms)` 实际返回 `events`，drain 后返回 `terminal`。
+- run `050d0568-a82a-4f69-a463-565bce3f0c0a`：未传 `timeout_ms`，run 为 running 时从当前 cursor 使用 1 ms observation window，真实得到 `return_reason: wait_elapsed`、空 events，run 未被停止，随后自然 completed。
+- run `8427cf23-8537-4e58-b0ab-7f9341629941`：未传 `timeout_ms`，在真实 PowerShell `Start-Sleep -Seconds 30` 运行期间，独立 MCP HTTP 客户端对 `codex_get_output(wait_ms=60000)` 发起 long-poll 后主动断开；该 observation promise rejected，但 ChatGPT 随即查询同一 run 得到 `status: running`、`timeout_ms: null`、`error: null`，之后 run 自然 completed 并返回 `RESIDENT_DISCONNECT_FINAL_OK`。
+- run `f6caf9c4-d9d8-4064-87bf-96eb0b1c4763`：显式 `timeout_ms: 1000`，最终真实状态 `timed_out`，错误 `RUN_TIMEOUT`，保留显式 hard execution deadline 语义。
+
+因此 fresh full review 中唯一的 Spec finding（缺 resident YCA 公共边界验收）已被上述 ground-truth 证据关闭。
+
+### 能力边界
+
+WORKFLOW-001 当前状态为：**代码已实现 + 已合并 + resident YCA 真实公共边界验收通过**。这不等于长期日常稳定性已经被证明；长期稳定使用仍需后续真实工作负载继续积累证据。
