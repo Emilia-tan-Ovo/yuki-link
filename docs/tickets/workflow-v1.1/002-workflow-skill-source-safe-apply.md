@@ -8,7 +8,7 @@
 
 **Risk hint:** normal
 
-**Status:** implemented — ready-for-fresh-review（未做真实全局 apply）
+**Status:** implemented — ready-for-fresh-focused-re-review（未做真实全局 apply）
 
 ## Acceptance criteria
 
@@ -91,3 +91,13 @@ Frontier 已收敛：source 放置与交付范围、安装 Interface、批准主
 - **handoff / next action**：Emilia 以 fixed point、实现 commit、Ticket/Spec/AGENTS、上述测试事实及限制启动 **fresh full review**。本 implementation context 未调用 code-review、未做语义 Review。真实 protected apply、fresh-session Skill 激活验收另行明确批准；本轮不 push、不创建 PR。
 
 本地确定性测试原始输出位于 `.local/workflow-validation/`，不进 Git。实现及使用说明见 [`tools/workflow-skills/README.md`](../../../tools/workflow-skills/README.md)。
+
+### refs/replace finding 修复 handoff
+
+2026-09-18：fresh full review 对 `136f5def15e5668fb9344b71d289c9b4d06c7a0c` 的 Standards 结论为 CLOSED / 0 finding；Spec 提出 1 个 important finding：Git replacement refs 可让记录的 commit A 与 provenance 实际读取的 B 对象错配。本轮只修该 finding，修复已验证，关闭结论等待 fresh focused re-review。
+
+- **TDD 红灯**：新增 `tools/workflow-skills/test/replacement.test.js`，在真实临时 Git 仓库创建 A、B 及 `refs/replace/A → B`，HEAD 保持 A、工作字节为 B。通过公共 CLI 观察到旧实现 `source_clean=true`，apply / verify 均 `verified`，但归属声明仍为 A；断言因此失败。真实仓库未创建 replacement refs，调查时仍为空，不是当前 compromise 的证据。
+- **最小修复**：只在 `src/source.js` 的统一 `git()` wrapper 增加 `--no-replace-objects` 及原因注释。`rev-parse`、`ls-tree`、`cat-file` 使用一致的原始对象语义，不改用户 Git 配置、refs 或权限。
+- **绿灯与兼容性**：同一 CLI 回归证明 B 字节不能冒充 A（preview 不可 apply、apply 拒绝、verify 返回 source-unavailable、目标无写入）；replacement ref 仍存在时，A 原始字节可以安装/核验且回执记录 A；移除 replacement ref 后普通 no-op apply / verify 保持正常。
+- **验证**：targeted regression **1/1 通过**；`npm run check` 通过；完整 `tools/workflow-skills` `npm test` **35/35 通过、0 skip**；`git diff --check` 通过。日志为 `.local/workflow-validation/replacement-{red,green,check,full}.txt`。YCA 生产代码、保护测试和 Skill sources 均未修改，本轮不重跑无关保护套件或 full review；前一轮环境限制记录不扩大为已解决。
+- **交接**：修复基线为 `136f5def15e5668fb9344b71d289c9b4d06c7a0c`，修复提交 SHA 写入 repo-local checkpoint。Emilia 启动 fresh focused re-review，仅携带原 finding、修复 diff 与此回归证据；本 context 未自行做语义 Review。GitHub 因已知 integration 403 未再修改；未 push、创建 PR 或真实全局 apply。

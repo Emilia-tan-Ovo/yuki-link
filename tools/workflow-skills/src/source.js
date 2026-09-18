@@ -22,7 +22,8 @@ function gitIdentity(repo) {
   throw fail('GIT_UNAVAILABLE');
 }
 function git(executable, repo, ...args) {
-  return execFileSync(executable, ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', ...args], {
+  // Provenance must read the recorded objects, not local refs/replace substitutes.
+  return execFileSync(executable, ['--no-replace-objects', '--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', ...args], {
     cwd: repo, shell: false, windowsHide: true, maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
   });
 }
