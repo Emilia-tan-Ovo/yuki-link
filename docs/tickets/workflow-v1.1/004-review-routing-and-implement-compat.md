@@ -50,3 +50,13 @@
 - **行为验收待办。** `review-fixture.mjs` 已准备 standalone、delegated、full、focused、evidence、两种升级和 Skill 行为变更共八例，入口/路径在 `prepared-fixtures.json`，操作见 `tools/workflow-skills/fixtures/README.md`。自动测试使用 synthetic observations，仅验证核验器会拒绝缺少 full、委托分支多跑 Review 或冒充 fresh；**尚未证明真实 Agent 路由/隔离/standalone 顺序**。后续独立 Acceptance 必须从实际工具 trace 核验这些行为，以及内容漂移/恢复不重复 Review。不能因结构化产物通过就勾选全部验收项或宣称 accepted/stable。
 - **Finding 与副作用。** 无待处理的实现测试失败；语义 Review pending，不能声明“零 finding 已审查通过”。GitHub #26 仍 open 且没有 Notes，本阶段继续使用已核验本地 mirror，未重试已知 403 的写入。没有 push、PR、Issue 关闭、主工作目录/其他 worktree 修改、protected/global apply；所有安装写入仅发生于测试临时 target。
 - **Next action。** 上层以实际实现 commit、上述 fixed point、Ticket/Spec/AGENTS、受测字节与日志启动无历史 fresh review-change。按真实 workflow 行为/架构契约变化评估风险，保留完整双轴要求和未提交范围核验；本 session 到 `phase: review` 交接停止。fresh Review 后才进入独立 Acceptance，未发现新的 Owner 决策门禁。
+
+## Review Finding Fix Handoff
+
+- **修复基线。** fresh full Review 报告为 `.local/workflow-validation/004/review.md`；修复前 HEAD `31fe9cfff4e9996c9d300e4c69e404f07dd3154b`，原 subject digest `d384228865bf4ad455191dc162ceac3d21c2666351d9c8563460857f784d6671`。保留原 Standards / Spec 两轴报告，不重跑 full Review。
+- **W004-STD-001 / P2 — fixed, pending fresh verification。** `review-subject.mjs` 现在只读检查 `git ls-files -v -z`，遇到 assume-unchanged / skip-worktree 等非普通状态直接 `HIDDEN_INDEX_STATE` fail closed，不清 flag、不 refresh index。三种组合先红后绿，并逐字节确认 index 未改变。
+- **W004-STD-002 / P1 + W004-SPEC-001 / P1 — fixed, pending fresh verification。** helper 不再用 cwd 解析裸 `git`；每次从绝对 PATH 逐项发现 Git，排除受审树及 canonical 后落入受审树的别名，最终以树外 canonical 绝对路径执行。Windows 仓库内 `git.exe` + PATH alias 回归先红后绿；若只剩树内候选则 `GIT_UNAVAILABLE`。
+- **W004-SPEC-002 / P2 — fixed, pending fresh verification。** helper 读取 `ls-files --stage -z` 的 index mode，仅接受 `100644` / `100755` / `120000`；mode `160000` gitlink 或其他特殊 mode 在读取工作目录前即 `UNSUPPORTED_INDEX_MODE` fail closed。未初始化、已提交后目录移除两例先红后绿，并确认 index 不变。
+- **协议同步。** `review-subject.md` 明确可信 Git 发现、隐藏 index 状态与特殊 mode 的 fail-closed 语义；installer `src/**`、origins、AGENTS、YCA 生产代码和全局配置未修改。
+- **验证。** 修后定向 `review-subject.test.js + review.test.js`：10/10 pass；`npm --prefix tools/workflow-skills run check` exit 0；完整 `npm --prefix tools/workflow-skills test`：47/47 pass、0 fail、0 skip；`control-paths.test.js`：1/1 pass；`git diff --check` 通过。原始日志/红绿证据在 `.local/workflow-validation/004/finding-fixes/`。Codex implementation turn 因 usage limit 在完整回归前终止，随后 Emilia 通过 YCA/PowerShell 完成确定性验证；未将失败 turn 当作代码失败。
+- **状态。** 四个 finding 只能标记为 `fixed`，尚未 `verified`。下一步使用无 implementation 历史的 fresh focused reviewer，仅核对这四个 ID、修复 diff、直接回归及原 full Review 未变范围；只有出现独立新高风险范围才升级。

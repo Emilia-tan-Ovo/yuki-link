@@ -14,9 +14,13 @@ node <code-review>/scripts/review-subject.mjs <repo-root> <fixed-point> [previou
 
 stdout 是 JSON，exit 0 为 captured/matched，exit 1 为 stale/error。将捕获结果原样以 UTF-8 保存到当前仓库被忽略的 `.local` 证据目录；不要覆盖原报告。helper 连续两次读取 Git 和文件，拒绝采集期间的漂移；不会锁住其他 writer，所以审查结束仍需再次核验。
 
+每次启动从调用方可信的绝对 PATH 条目重新发现 Git，排除受审树内路径及 canonical 后落入树内的别名，以 canonical 绝对路径调用。当前目录、相对 PATH 和树内 `git.exe` 不参与执行；无可用树外 Git 时返回 `GIT_UNAVAILABLE`，不退回同名命令查找。PATH/工具链变化后重新核验相关证据，不把一次发现的路径当永久配置。
+
+采集前只读检查 index：`ls-files -v -z` 中非普通 `H` 状态（含 assume-unchanged、skip-worktree 及其组合）返回 `HIDDEN_INDEX_STATE`，不清标记、不刷新调用方 index；不能因 patch 为空宣布 no-change。`ls-files --stage -z` 只接受普通文件/可执行文件/符号链接 mode，gitlink `160000` 等其余 mode 返回 `UNSUPPORTED_INDEX_MODE`，即使工作目录未初始化或已移除也拒绝。遇到这些状态应交接 incomplete 并另建完整范围证据，不自动改变调用方现场。
+
 JSON 记录 fixed point/merge-base/HEAD、index 摘要、全部 tracked 工作字节/缺失/符号链接身份、untracked 清单及 SHA-256、三层 patch 和整体 digest。patch 的 binary 内容与 untracked 原文须按实际需要查看，不能把哈希当作已读内容。符号链接摘要只绑定链接文字，不证明目标内容。冲突、submodule/特殊文件或输出超限会显式失败，另行建立该范围证据后才能继续，不能跳过。
 
-缺少 helper 运行环境时用 Git 和文件工具取得同等证据：`git diff --no-ext-diff --no-textconv <merge-base> HEAD`、`git diff --cached`、`git diff`、`git ls-files --others --exclude-standard -z`，加所有受检文件/规范/测试依据的字节摘要；说明手工采集方式及局限。文件名按 NUL 解析，不能按空白切分。
+缺少 helper 运行环境时用树外可信 Git 和文件工具取得同等证据：先核验上述 index 标记/mode，再运行 `git diff --no-ext-diff --no-textconv <merge-base> HEAD`、`git diff --cached`、`git diff`、`git ls-files --others --exclude-standard -z`，加所有受检文件/规范/测试依据的字节摘要；说明手工采集方式及局限。文件名按 NUL 解析，不能按空白切分。手工路径也不能跳过隐藏状态或执行受审树里的同名程序。
 
 两轴必须读取相同的受审对象。记录每个新增/未提交文件属于本票还是无关现场，无关内容明确排除而不删除；相关 ignored 产物（测试报告等）单独列引用与哈希，不扫描凭据/runtime 全目录。即使某层 diff 为空，也检查其他层；所有层均无变化时报告 no-change，不运行两个空 Review。
 
