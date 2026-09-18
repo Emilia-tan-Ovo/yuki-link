@@ -35,9 +35,13 @@ checkpoint 的 `phase` 表示**下一步要进行的工作**，不是已经完�
 
 领域 Skill 调用前实际读取文件。新 Owner 产品、安全、架构、数据语义或范围决定才向 Owner 提问；事实查找和已决定事项由 Agent 完成。上游产物缺失时返回最早的必要阶段，明确缺口，保留仍然有效的下游证据。
 
-### WORKFLOW-004 / 005 兼容边界
+### Review policy 与 005 边界
 
-`review-change` 已实现并可用时把 review 交给它，不在这里复制风险分类规则。尚为占位时，首次 review 使用现有 `code-review`，保留 Standards / Spec 双轴；独立 `implement` 的既有 review/commit 行为保持原样。读取 implement 返回的测试、commit 和 review 证据并补齐 checkpoint，不再次触发已经完成的 full review。finding 修复后的 fresh reviewer 只接收原 finding、修后 diff、相关规范；若需新的风险分级能力则明确 004 依赖，不伪称占位 Skill 已执行。
+本 workflow 调用 implement 时显式传递 `review_policy: delegated`、接收 handoff 的上层、Ticket/Spec、fixed point 与授权终点。先读取同根 implement 及其 handoff 约定；仅有本 Skill 文件或旧 checkpoint 不构成 policy，独立 implement 保留默认完整 code-review。
+
+implement 返回持久化 Implementation Handoff 后，核对测试、实际 commit、未提交范围和内容身份，保存 `phase: review`。当前 implementation context 不执行审查；从外部创建无历史 reviewer，显式给出 handoff、fixed point/目标内容、Ticket/Spec、规范和必要测试结果，实际读取同根 `review-change/SKILL.md`。若调用者保留 reviewer 启动权，到此交接停止。依赖缺失/不可用则保持 review 待办，不能静默改用其他安装根或宣称已通过。
+
+风险分类只由 review-change 定义。接收其报告后核对受审内容仍适用及 finding 状态：有待修 finding → implementation（保留原 finding 与修复基线）；缺轴/漂移 → 补必要审查；有效通过 → acceptance。已有充分证据时不重复 full review。finding 修复后 fresh 定向复核，出现新风险时由 review-change 升级；始终保留原 Standards / Spec 两轴结论。
 
 closeout 按当前仓库已提供的流程执行；005 archive automation 尚不可用时，保留 `phase: closeout`、已完成的验收事实和准确的 next action。不能自动关闭父 Issue、合并 PR、安装全局 Skills，或把本票验收说成整个 v1.1 已完成。
 

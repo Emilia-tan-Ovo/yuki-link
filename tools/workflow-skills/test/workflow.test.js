@@ -20,6 +20,11 @@ test('engineering-workflow installs its portable recovery references only throug
   for (const file of plan.source.files) {
     assert.deepEqual(readFileSync(path.join(f.target, file.path)), readFileSync(path.join(f.repo, '.workflow/skills', file.path)));
   }
+  const manifestPath = path.join(f.repo, '.workflow/skills/manifest.json');
+  const manifest = json(manifestPath);
+  manifest.skills.find(skill => skill.name === 'review-change').installable = false;
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+  f.commit();
   assert.equal(f.preview('review-change').data.error.code, 'NOT_INSTALLABLE');
 });
 
@@ -35,7 +40,9 @@ test('preview records a complete source/target/tool-bound diff without changing 
   assert.match(result.digest, /^[a-f0-9]{64}$/);
   assert.match(readFileSync(result.diff, 'utf8'), /-旧内容/);
   assert.match(readFileSync(result.diff, 'utf8'), /\+Implement the work/);
-  assert.equal(plan.changes.length, 2, 'includes agents/openai.yaml');
+  assert.deepEqual(plan.changes.map(change => change.path).sort(), [
+    'implement/SKILL.md', 'implement/agents/openai.yaml', 'implement/handoff-template.md',
+  ]);
   assert.equal(readFileSync(path.join(f.target, 'implement/SKILL.md'), 'utf8'), '旧内容\r\n');
   assert.deepEqual(readdirSync(path.join(f.target, 'implement')), ['SKILL.md']);
 });
@@ -92,7 +99,7 @@ test('only the approved plan installs exact bytes and independent verify detects
   assert.deepEqual(readdirSync(f.target), []);
   const installed = ok(f.call('apply', ['--plan', preview.plan, '--approve', preview.digest]));
   assert.equal(installed.status, 'verified');
-  for (const file of ['SKILL.md', 'agents/openai.yaml']) {
+  for (const file of ['SKILL.md', 'agents/openai.yaml', 'handoff-template.md']) {
     assert.deepEqual(readFileSync(path.join(f.target, 'implement', file)), readFileSync(path.join(f.repo, '.workflow/skills/implement', file)));
   }
   assert.equal(ok(f.call('verify', ['--plan', preview.plan])).source.commit, f.head);
