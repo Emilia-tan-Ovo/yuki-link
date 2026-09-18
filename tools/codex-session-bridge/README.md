@@ -249,7 +249,7 @@ npm.cmd run test:live
 npm.cmd run test:permissions-live
 ```
 
-常规测试不调用模型，包含真实 MCP HTTP/stdio 客户端、PowerShell 短脚本文件闭环、退出语义、部分输出、Windows 自有进程树终止、最小故障注入、断线不重放、临时文件/Git 仓库及既有 Bridge 回归。独立 stdio 服务用无效 `--codex-bin` 验证直接能力不依赖 Codex。`test:live` 是另外的显式联网验收，会使用 CLI 当前登录和模型额度；`test:permissions-live` 专用于 YCA-006，在临时 Git 仓库外部核对默认权限读写/命令/diff、同 thread 续聊和显式 read-only 不写入。两者都不会由常规 `npm test` 自动触发。
+常规测试不调用模型，包含真实 MCP HTTP/stdio 客户端、PowerShell 短脚本文件闭环、退出语义、部分输出、Windows 自有进程树终止、最小故障注入、断线不重放、临时文件/Git 仓库及既有 Bridge 回归。独立 stdio 服务用无效 `--codex-bin` 验证直接能力不依赖 Codex。`test:live` 是另外的显式联网验收，会使用 CLI 当前登录和模型额度；`test:permissions-live` 专用于 YCA-006：使用独立临时 `CODEX_HOME` 让真实 `config/read` 提供可控默认，在临时 Git 仓库外部核对默认 Full Access 的读写/命令/diff、默认改成 read-only 后旧 thread 仍按冻结快照写入，以及显式 read-only 的实际写入拒绝与文件不变。两者都不会由常规 `npm test` 自动触发。
 
 YCA-002 的 `test/text.test.js` 使用真实 HTTP/MCP 和临时文件，封堵并计数 model start/send/executor，验证文件调用为零模型调用。覆盖区外/Skill 文本、BOM/换行、短读/增长/大小边界、冲突/no-op、敏感路径/内容、链接及其他入口不扩围。Windows 测试报告实际可用的 8.3 别名数量。可在当前 PowerShell 进程设置 `YCA_TEST_SKILL` 为获准读取的真实 `.agents/skills/.../SKILL.md` 或 `.codex/skills/.../SKILL.md`，再运行 `node --test test/text.test.js`，只读取并核对原字节、哈希及未修改状态；未指定时该真实文件用例跳过，其他用例使用夹具。仓库没有 typecheck 脚本，使用 `node --check` 检查 JavaScript 语法。
 

@@ -47,6 +47,24 @@ test('workspace snapshots reject unknown config dimensions and damaged persisted
       workspace_write: null, source: 'fixture', resolved_at: new Date().toISOString(),
     },
   }), { code: 'SESSION_PERMISSION_INVALID' });
+
+  assert.throws(() => sessionPermissionSnapshot({
+    permissions: {
+      version: 1, kind: 'native', stored: true,
+      sandbox_mode: 'danger-full-access', approval_policy: 'on-request', approvals_reviewer: 'user',
+      workspace_write: null, source: 'fixture', resolved_at: new Date().toISOString(),
+      future_permission_dimension: true,
+    },
+  }), { code: 'SESSION_PERMISSION_INVALID' });
+
+  assert.throws(() => sessionPermissionSnapshot({
+    permissions: {
+      version: 1, kind: 'native', stored: true,
+      sandbox_mode: 'read-only', approval_policy: 'never', approvals_reviewer: 'user',
+      workspace_write: { writable_roots: [], network_access: false, exclude_slash_tmp: false, exclude_tmpdir_env_var: false },
+      source: 'fixture', resolved_at: new Date().toISOString(),
+    },
+  }), { code: 'SESSION_PERMISSION_INVALID' });
 });
 
 test('native executor pins a built-in permission profile as well as the legacy sandbox axis', () => {
@@ -102,6 +120,7 @@ test('sessions without a snapshot preserve the legacy bridge permission contract
 
 test('PermissionResolver uses Codex app-server config/read and passes explicit native overrides', async () => {
   let seenArgs;
+  let seenOptions;
   const fixture = `
     const readline=require('node:readline');
     const rl=readline.createInterface({input:process.stdin});
@@ -121,6 +140,7 @@ test('PermissionResolver uses Codex app-server config/read and passes explicit n
     resolveExecutable: () => ({ executable: 'fake-codex' }),
     spawnChild: (_command, args, options) => {
       seenArgs = args;
+      seenOptions = options;
       return spawnDirect(process.execPath, ['-e', fixture], options);
     },
   });
@@ -136,6 +156,7 @@ test('PermissionResolver uses Codex app-server config/read and passes explicit n
   assert.ok(seenArgs.includes('sandbox_mode="workspace-write"'));
   assert.ok(seenArgs.includes('approval_policy="never"'));
   assert.ok(seenArgs.includes('approvals_reviewer="user"'));
+  assert.equal(seenOptions.detached, process.platform !== 'win32');
 });
 
 test('PermissionResolver bounds and terminates an unresponsive owned app-server tree', async () => {

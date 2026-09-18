@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { spawnDirect } from '../src/process.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ModelCatalog } from '../src/catalog.js';
@@ -21,6 +22,8 @@ const marker = 'YCA006-' + randomUUID().slice(0, 8);
 const sourceText = 'SOURCE-' + randomUUID().slice(0, 8);
 writeFileSync(path.join(cwd, 'source.txt'), sourceText + '\n', 'utf8');
 writeFileSync(path.join(cwd, 'proof.txt'), 'INITIAL\n', 'utf8');
+writeFileSync(path.join(cwd, 'read-only-proof.txt'), 'LOCKED\n', 'utf8');
+writeFileSync(path.join(cwd, 'freeze-proof.txt'), 'BEFORE\n', 'utf8');
 
 function git(args) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
@@ -30,17 +33,37 @@ function git(args) {
 git(['init', '-q']);
 git(['config', 'user.name', 'YCA Acceptance']);
 git(['config', 'user.email', 'yca-acceptance@example.invalid']);
-git(['add', 'source.txt', 'proof.txt']);
+git(['add', 'source.txt', 'proof.txt', 'read-only-proof.txt', 'freeze-proof.txt']);
 git(['commit', '-qm', 'acceptance baseline']);
 
 const codex = process.env.BRIDGE_CODEX_BIN ?? 'codex';
 const catalog = new ModelCatalog(codex);
 await catalog.validate('gpt-5.6-sol', 'medium');
+
+const resolverHome = path.join(runtime, 'resolver-home');
+mkdirSync(resolverHome, { recursive: true });
+const resolverConfig = path.join(resolverHome, 'config.toml');
+const writeResolverDefault = (sandboxMode, approvalPolicy) => writeFileSync(
+  resolverConfig,
+  `sandbox_mode = ${JSON.stringify(sandboxMode)}\napproval_policy = ${JSON.stringify(approvalPolicy)}\n`,
+  'utf8',
+);
+writeResolverDefault('danger-full-access', 'on-request');
+const permissionResolver = new PermissionResolver(codex, {
+  spawnChild: (command, args, options) => spawnDirect(command, args, {
+    ...options,
+    env: { ...process.env, ...(options?.env ?? {}), CODEX_HOME: resolverHome },
+  }),
+});
+const initialDefault = await permissionResolver.resolve(cwd);
+assert.equal(initialDefault.sandbox_mode, 'danger-full-access');
+assert.equal(initialDefault.approval_policy, 'on-request');
+
 const manager = new SessionManager({
   store: new RuntimeStore(runtime),
   catalog,
   executor: new CodexExecutor(codex),
-  permissionResolver: new PermissionResolver(codex),
+  permissionResolver,
   allowedCwds: [cwd],
 });
 const httpServer = createHttpServer(manager);
@@ -79,10 +102,23 @@ function commandEvidence(events) {
   return events.some(event => event.type === 'codex' && event.data?.item?.type === 'command_execution');
 }
 
+function blockedWriteEvidence(events) {
+  return events.some(event => {
+    if (event.type !== 'codex' || event.data?.item?.type !== 'command_execution') return false;
+    const item = event.data.item;
+    const command = item.command ?? '';
+    const output = item.aggregated_output ?? '';
+    return /read-only-proof\.txt/i.test(command)
+      && item.status === 'failed'
+      && item.exit_code !== 0
+      && /blocked by policy|read[- ]only|permission denied|access to the path .* is denied/i.test(output);
+  });
+}
+
 try {
   await client.connect(new StreamableHTTPClientTransport(url));
 
-  const full = await call('codex_start_session', {
+  const defaultSession = await call('codex_start_session', {
     request_id: randomUUID(),
     cwd,
     sender: 'YCA acceptance',
@@ -98,30 +134,46 @@ try {
     ].join('\n'),
     timeout_ms: 240000,
   });
-  assert.equal(full.permissions.kind, 'native');
-  const fullResult = await wait(full);
-  assert.equal(fullResult.state.session.codex_thread_id.length, 36);
+  assert.equal(defaultSession.permissions.kind, 'native');
+  assert.equal(defaultSession.permissions.sandbox_mode, initialDefault.sandbox_mode);
+  assert.equal(defaultSession.permissions.approval_policy, initialDefault.approval_policy);
+  const defaultResult = await wait(defaultSession);
+  assert.equal(defaultResult.state.session.codex_thread_id.length, 36);
   const proof = readFileSync(path.join(cwd, 'proof.txt'), 'utf8').replace(/\r\n/g, '\n');
   assert.equal(proof, `${marker}\nSOURCE=${sourceText}\nCMD_OK\n`);
   const diff = git(['diff', '--', 'proof.txt']);
   assert.ok(diff.includes(marker));
   assert.ok(diff.includes('CMD_OK'));
-  assert.ok(commandEvidence(fullResult.events), 'Codex JSONL did not contain command_execution evidence.');
+  assert.ok(commandEvidence(defaultResult.events), 'Codex JSONL did not contain command_execution evidence.');
 
+  // Change the controlled native default after the session exists. This must
+  // affect future resolution while the existing session keeps its frozen snapshot.
+  writeResolverDefault('read-only', 'never');
+  const changedDefault = await permissionResolver.resolve(cwd);
+  assert.equal(changedDefault.sandbox_mode, 'read-only');
+  assert.equal(changedDefault.approval_policy, 'never');
+
+  const freezeProof = path.join(cwd, 'freeze-proof.txt');
   const resumed = await call('codex_send_message', {
     request_id: randomUUID(),
-    session_id: full.session_id,
+    session_id: defaultSession.session_id,
     sender: 'YCA acceptance',
-    prompt: 'Do not modify files. Read proof.txt and reply exactly: RESUME_OK <first-line-marker> <whether CMD_OK is present as YES or NO>.',
+    prompt: 'The configured default changed after this session was created. Preserve this session permission snapshot. Use a shell command to append exactly FROZEN_SESSION_OK to freeze-proof.txt, then read proof.txt. Reply exactly: RESUME_FROZEN_OK <first-line-marker> <whether CMD_OK is present as YES or NO>.',
     timeout_ms: 180000,
   });
+  assert.equal(resumed.permissions.sandbox_mode, initialDefault.sandbox_mode);
+  assert.equal(resumed.permissions.approval_policy, initialDefault.approval_policy);
   const resumeResult = await wait(resumed);
-  assert.equal(resumeResult.state.session.codex_thread_id, fullResult.state.session.codex_thread_id);
+  assert.equal(resumeResult.state.session.codex_thread_id, defaultResult.state.session.codex_thread_id);
+  assert.ok(resumeResult.state.run.final_response.includes('RESUME_FROZEN_OK'));
   assert.ok(resumeResult.state.run.final_response.includes(marker));
   assert.ok(resumeResult.state.run.final_response.includes('YES'));
   assert.equal(readFileSync(path.join(cwd, 'proof.txt'), 'utf8').replace(/\r\n/g, '\n'), proof);
+  assert.equal(readFileSync(freezeProof, 'utf8').replace(/\r\n/g, '\n'), 'BEFORE\nFROZEN_SESSION_OK\n');
 
   const beforeReadOnly = readFileSync(path.join(cwd, 'proof.txt'), 'utf8');
+  const readOnlyProof = path.join(cwd, 'read-only-proof.txt');
+  const beforeBlockedWrite = readFileSync(readOnlyProof, 'utf8');
   const readOnly = await call('codex_start_session', {
     request_id: randomUUID(),
     cwd,
@@ -129,20 +181,25 @@ try {
     model: 'gpt-5.6-sol',
     reasoning: 'medium',
     permissions: { sandbox_mode: 'read-only', approval_policy: 'never' },
-    prompt: 'Read source.txt and run git status --short. Do not modify any file. Reply exactly: READ_ONLY_OK <trimmed source.txt content>.',
+    prompt: 'Controlled read-only enforcement test. First, you MUST attempt exactly one shell write that replaces read-only-proof.txt with SHOULD_NOT_WRITE; this write is expected to be denied by the read-only sandbox, so do not work around the denial. After observing the denial, read source.txt and run git status --short. Reply exactly: READ_ONLY_BLOCKED_OK <trimmed source.txt content>.',
     timeout_ms: 180000,
   });
   assert.equal(readOnly.permissions.sandbox_mode, 'read-only');
   assert.equal(readOnly.permissions.approval_policy, 'never');
   const readOnlyResult = await wait(readOnly);
+  assert.ok(readOnlyResult.state.run.final_response.includes('READ_ONLY_BLOCKED_OK'));
   assert.ok(readOnlyResult.state.run.final_response.includes(sourceText));
   assert.ok(commandEvidence(readOnlyResult.events), 'Read-only run did not contain command_execution evidence.');
+  assert.ok(blockedWriteEvidence(readOnlyResult.events), 'Read-only run did not contain observable write-denial evidence.');
   assert.equal(readFileSync(path.join(cwd, 'proof.txt'), 'utf8'), beforeReadOnly);
+  assert.equal(readFileSync(readOnlyProof, 'utf8'), beforeBlockedWrite);
 
-  report.default_permissions = full.permissions;
+  report.default_permissions = defaultSession.permissions;
+  report.controlled_default_before = initialDefault;
+  report.controlled_default_after = changedDefault;
   report.explicit_permissions = readOnly.permissions;
-  report.thread_resumed = resumeResult.state.session.codex_thread_id === fullResult.state.session.codex_thread_id;
-  report.external = { proof, diff, read_only_unchanged: true };
+  report.thread_resumed = resumeResult.state.session.codex_thread_id === defaultResult.state.session.codex_thread_id;
+  report.external = { proof, diff, frozen_session_write: true, read_only_unchanged: true, read_only_write_blocked: true };
   report.passed = true;
 } catch (error) {
   report.passed = false;

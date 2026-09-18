@@ -176,6 +176,55 @@ test('legacy sessions keep the old read-only execution profile and never inherit
   executor.complete(executor.calls.length - 1);
 });
 
+test('old-format runtime fixture loads history, replays the old request hash and resumes without upgrading permissions', async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'bridge-legacy-fixture-'));
+  const cwd = path.join(root, '旧会话目录'); mkdirSync(cwd);
+  const runtime = path.join(root, 'runtime'); mkdirSync(path.join(runtime, 'runs'), { recursive: true });
+  const legacyInput = { cwd, request_id: 'legacy-request-001', prompt: 'legacy fixture start', sender: 'legacy caller' };
+  const oldFingerprint = createHash('sha256').update(JSON.stringify([
+    'start', legacyInput.cwd, legacyInput.prompt, legacyInput.sender, null, null, null,
+  ])).digest('hex');
+  const template = readFileSync(new URL('./fixtures/legacy-runtime/sessions.template.json', import.meta.url), 'utf8')
+    .replace('__CWD__', cwd.replaceAll('\\', '\\\\'))
+    .replace('__FINGERPRINT__', oldFingerprint);
+  writeFileSync(path.join(runtime, 'sessions.json'), template, 'utf8');
+  writeFileSync(
+    path.join(runtime, 'runs', '22222222-2222-4222-8222-222222222222.jsonl'),
+    readFileSync(new URL('./fixtures/legacy-runtime/runs/22222222-2222-4222-8222-222222222222.jsonl', import.meta.url), 'utf8'),
+    'utf8',
+  );
+
+  const catalog = new ModelCatalog();
+  catalog.snapshot = { checked_at: new Date().toISOString(), models: [{ model: 'gpt-6-astra', reasoning: ['high'] }] };
+  const executor = new FakeExecutor();
+  const permissionResolver = new FakePermissionResolver();
+  const store = new RuntimeStore(runtime);
+  const manager = new SessionManager({ store, catalog, executor, permissionResolver, allowedCwds: [cwd] });
+  t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
+
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+  const runId = '22222222-2222-4222-8222-222222222222';
+  const status = manager.status({ session_id: sessionId });
+  assert.equal(status.session.permissions.kind, 'legacy');
+  assert.equal(status.session.permissions.sandbox_mode, 'read-only');
+  assert.equal(manager.output({ run_id: runId }).final_response, 'legacy fixture reply');
+
+  const replay = await manager.start(legacyInput);
+  assert.equal(replay.run_id, runId);
+  assert.equal(replay.deduplicated, true);
+  assert.equal(permissionResolver.calls.length, 0);
+
+  const continued = await manager.send({ request_id: randomUUID(), session_id: sessionId, prompt: 'legacy fixture continue' });
+  assert.equal(continued.permissions.kind, 'legacy');
+  await tick();
+  const args = execArguments(executor.calls[0].run, executor.calls[0].session);
+  assert.ok(args.includes('--ignore-user-config'));
+  assert.ok(args.includes('features.plugins=false'));
+  assert.ok(args.includes('read-only'));
+  executor.complete(0);
+  assert.equal(manager.status({ run_id: continued.run_id }).run.status, 'completed');
+});
+
 test('stop, timeout, CLI failure and output limits have terminal states', async t => {
   const { manager, executor, input } = setup(t, { defaultTimeoutMs: 30, maxOutputBytes: 1024 });
   const queued = await manager.start(input()); manager.stop(queued.session_id);
@@ -258,12 +307,20 @@ test('real MCP HTTP clients reconnect to durable runs; host/origin checks and ex
   assert.equal((await client.listTools()).tools.length, 6);
   const started = await client.callTool({ name: 'codex_start_session', arguments: input() });
   assert.equal(started.isError, undefined);
-  const { run_id } = started.structuredContent;
+  const { run_id, session_id } = started.structuredContent;
   await client.close(); await tick(); executor.complete(0);
   const next = new Client({ name: 'reconnected', version: '1' });
   await next.connect(new StreamableHTTPClientTransport(url));
   const output = await next.callTool({ name: 'codex_get_output', arguments: { run_id } });
   assert.equal(output.structuredContent.final_response, '协作助手回复 🌸');
+  const runCountBeforePermissionChange = Object.keys(manager.store.state.runs).length;
+  const permissionChange = await next.callTool({ name: 'codex_send_message', arguments: {
+    session_id, request_id: randomUUID(), prompt: 'must reject permission changes',
+    permissions: { sandbox_mode: 'read-only', approval_policy: 'never' },
+  } });
+  assert.equal(permissionChange.isError, true);
+  assert.equal(permissionChange.structuredContent.error.code, 'PERMISSION_CHANGE_REQUIRES_NEW_SESSION');
+  assert.equal(Object.keys(manager.store.state.runs).length, runCountBeforePermissionChange);
   const invalid = await next.callTool({ name: 'codex_start_session', arguments: { ...input(), reasoning: 'imaginary' } });
   assert.equal(invalid.isError, true); assert.equal(invalid.structuredContent.error.code, 'UNSUPPORTED_REASONING');
   const forbidden = await fetch(url, { method: 'POST', headers: { origin: 'https://attacker.invalid', 'content-type': 'application/json' }, body: '{}' });

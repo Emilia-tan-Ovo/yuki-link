@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { publicError } from './errors.js';
+import { SANDBOX_MODE_VALUES, APPROVAL_POLICY_VALUES, APPROVAL_REVIEWER_VALUES } from './permissions.js';
 
 export function createMcpServer(manager, computer) {
   const server = new McpServer({ name: 'yuki-computer-agent', version: '0.2.0' });
@@ -13,9 +14,9 @@ export function createMcpServer(manager, computer) {
     timeout_ms: z.number().int().min(1000).max(1800000).optional(),
   };
   const permissions = z.object({
-    sandbox_mode: z.enum(['read-only', 'workspace-write', 'danger-full-access']).describe('Codex native sandbox mode to freeze for this new session.'),
-    approval_policy: z.enum(['on-request', 'never']).optional().describe('Codex native approval policy. Omit to inherit the effective local default at session creation.'),
-    approvals_reviewer: z.enum(['user', 'auto_review', 'guardian_subagent']).optional().describe('Approval reviewer. Omit to inherit and freeze the effective local default.'),
+    sandbox_mode: z.enum(SANDBOX_MODE_VALUES).describe('Codex native sandbox mode to freeze for this new session.'),
+    approval_policy: z.enum(APPROVAL_POLICY_VALUES).optional().describe('Codex native approval policy. Omit to inherit the effective local default at session creation.'),
+    approvals_reviewer: z.enum(APPROVAL_REVIEWER_VALUES).optional().describe('Approval reviewer. Omit to inherit and freeze the effective local default.'),
   }).strict().optional();
   const register = (name, description, inputSchema, action, readOnly = false, idempotent = true, destructive = false) => {
     server.registerTool(name, {
@@ -37,8 +38,8 @@ export function createMcpServer(manager, computer) {
   register('codex_start_session', 'Start a new managed Codex conversation, freeze its effective native Codex permissions, and asynchronously submit the first message. Omit permissions to use the effective local default at creation. Returns run_id without waiting for model completion.', {
     cwd: z.string().min(1).describe('Absolute existing working directory inside the administrator allowlist.'), permissions, ...message,
   }, input => manager.start(input));
-  register('codex_send_message', 'Submit a new turn to the specified bridge session using its exact saved Codex thread ID. One active run per session. Model/reasoning change only when explicitly provided.', {
-    session_id: z.string().uuid(), ...message,
+  register('codex_send_message', 'Submit a new turn to the specified bridge session using its exact saved Codex thread ID. One active run per session. Model/reasoning change only when explicitly provided. Permissions are frozen at session creation; supplying permissions here is rejected.', {
+    session_id: z.string().uuid(), permissions: z.unknown().optional(), ...message,
   }, input => manager.send(input));
   register('codex_get_status', 'Read current session configuration, selected run state, timestamps, completion/error and final reply. completed/failed/stopped/timed_out/interrupted are terminal run states.', {
     session_id: z.string().uuid().optional(), run_id: z.string().uuid().optional(),
