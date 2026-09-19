@@ -124,6 +124,8 @@ implement 返回持久化 Implementation Handoff 后，核对测试、实际 com
 
 每次交接检查：已确认决定可定位；证据指向具体文件/命令结果和内容身份；finding 有状态；未知/已完成副作用区分；`Next action` 是可直接执行的一步。Ticket-design → implementation **默认 fresh**：先保存并回读 Notes/checkpoint，再由 fresh implementation session 从持久化事实继续。Review finding → fix 同样默认 fresh。checkpoint 同时保存最新 `model_usage` 与 anomaly 状态。
 
+若当前 YCA 已登记 Harness Ticket 且公开提供 `harness_record_workflow`，在阶段交接、finding 状态变化、Acceptance 转换或恢复异常完成本地产物与外部事实核对后，由 Emilia 提交一次完整结构化快照，并保存成功回执中的 revision/event_id/cursor；首次 expected_revision 为 null，后续使用最近成功 revision。冲突时先读取最新记录协调，不覆盖；记录失败不把阶段误报为已保存，也不重放工程动作。未启用 Harness 的独立 Workflow 保持原 checkpoint 约定，不把该入口当成新的执行、Review 或 Acceptance Agent。
+
 Review、focused re-review 默认 fresh sub-agent/session，输入只含 fixed point、目标 diff/内容身份、Ticket/Spec、标准及必要测试证据，不能继承 implementation 聊天。Acceptance 默认由 Emilia 使用外部事实直接核验；只有验收 criteria 本身要求 Agent 路由、session/thread continuity 或其他模型行为时才启动 fresh acceptance agent，且不为普通 Ticket 额外构造验收矩阵。
 
 ## 4. 中断与交接

@@ -43,9 +43,29 @@ export function createHarnessServer(harness: Harness) {
       if (url.pathname === '/api/projects') return send(200, summary);
       if (url.pathname === '/') {
         const groups = summary.projects.map(p => '<section><h2>' + escape(p.name) + '</h2><ul>' +
-          p.tickets.map(t => '<li><a href="/tickets/' + t.id + '">' + escape(t.key + ' · ' + t.title) + '</a></li>').join('') + '</ul></section>').join('');
+          p.tickets.map(t => {
+            const workflow = t.workflow as { phase?: string; assessment?: { state: string }; reviews?: Array<{ status: string }>;
+              findings?: Array<{ status: string }>; acceptance?: { status: string; accepted: boolean };
+              closeout?: { status: string } };
+            const findings = workflow.findings?.filter(value => value.status !== 'verified').length ?? 0;
+            const reviews = workflow.reviews?.map(value => value.status).join('/') || 'none';
+            const anomaly: string[] = [];
+            if (['stale', 'mismatch'].includes(workflow.assessment?.state ?? '')) anomaly.push('applicability ' + workflow.assessment!.state);
+            if (['failed', 'incomplete'].includes(workflow.acceptance?.status ?? '')) anomaly.push('Acceptance ' + workflow.acceptance!.status);
+            for (const status of ['open', 'fixed', 'fixed-unverified']) {
+              const count = workflow.findings?.filter(value => value.status === status).length ?? 0;
+              if (count) anomaly.push('finding ' + status + ' ' + count);
+            }
+            return '<li' + (anomaly.length ? ' class="warning"' : '') + '><a href="/tickets/' + t.id + '">' + escape(t.key + ' · ' + t.title) + '</a>'
+              + (anomaly.length ? ' · <strong>异常待处理：' + escape(anomaly.join(' · ')) + '</strong>' : '')
+              + (workflow.acceptance ? ' · Workflow ' + escape(workflow.phase) + ' · Acceptance ' + escape(workflow.acceptance.status)
+                + (workflow.acceptance.accepted ? '（当前 accepted）' : '（未确认 accepted）')
+                + ' · Review ' + escape(reviews) + ' · 待处理/复核 finding ' + findings
+                + ' · closeout ' + escape(workflow.closeout?.status ?? 'unknown')
+                + ' · applicability ' + escape(workflow.assessment?.state ?? 'unknown') : ' · Workflow 尚未记录') + '</li>';
+          }).join('') + '</ul></section>').join('');
         return send(200, page('工程协作历史', '<p>只读观察 · <a href="/">刷新</a></p><aside>Recording: ' + escape(summary.recording.state)
-          + '<br>Workflow / Changes / Acceptance / 服务状态：unavailable（尚未接入）</aside>'
+          + '<br>Changes / 服务状态：unavailable（尚未接入）</aside>'
           + (groups || '<p>尚未登记 Project / Ticket。由 Emilia 通过 YCA 显式登记。</p>')), true, true);
       }
       const route = /^\/(api\/)?tickets\/([0-9a-f-]+)$/.exec(url.pathname);
@@ -69,6 +89,16 @@ export function createHarnessServer(harness: Harness) {
           text = JSON.stringify({ task_id: d.task.binding.task_id, payload: d.task.payload,
             snapshot: d.task.snapshot, integrity: d.task.integrity }, null, 2);
         }
+        if (d.kind === 'workflow_snapshot') {
+          label = 'Workflow 快照 · revision ' + d.workflow.workflow_revision + ' · ' + d.workflow.snapshot.phase;
+          text = JSON.stringify({ subject: d.workflow.snapshot.subject, reviews: d.workflow.snapshot.reviews,
+            findings: d.workflow.snapshot.findings, acceptance: d.workflow.snapshot.acceptance,
+            closeout: d.workflow.snapshot.closeout, assessment: d.workflow.assessment }, null, 2);
+        }
+        if (d.kind === 'workflow_observation') {
+          label = 'Workflow 事实刷新 · revision ' + d.workflow.workflow_revision;
+          text = JSON.stringify(d.workflow.assessment, null, 2);
+        }
         if (d.kind === 'event' && d.event.payload && typeof d.event.payload === 'object') {
           const payload = d.event.payload as Record<string, unknown>;
           if (d.event.kind === 'message.sent') { label = '任务 · ' + String(payload.sender ?? 'caller'); text = String(payload.text ?? 'unknown'); }
@@ -91,10 +121,16 @@ export function createHarnessServer(harness: Harness) {
           + '</small>' + (text ? '<pre>' + escape(text) + '</pre>' : '')
           + '<details><summary>来源记录与完整性</summary><pre>' + escape(JSON.stringify(d, null, 2)) + '</pre></details></article>';
       }).join('');
+      const workflow = detail.workflow.current;
+      const workflowPanel = workflow ? '<aside><strong>Workflow · ' + escape(workflow.phase) + '</strong><br>revision '
+        + escape(workflow.revision) + ' · applicability ' + escape(workflow.assessment.state)
+        + '<br>Acceptance: ' + escape(workflow.acceptance.status) + ' · ' + escape(workflow.acceptance.reason ?? '未提供说明')
+        + '<details><summary>Workflow 证据</summary><pre>' + escape(JSON.stringify(workflow, null, 2)) + '</pre></details></aside>'
+        : '<aside>Workflow：尚未记录；run completed 不代表验收通过。</aside>';
       return send(200, page(detail.ticket.title, '<p>Conversation: ' + escape(detail.ticket.main_conversation_id)
         + '</p><p><a href="/tickets/' + detail.ticket.id + '">刷新历史</a></p><aside class="warning">Recording: '
-        + escape(detail.recording.state) + '<br>Workflow / Changes / Acceptance：unavailable；run completed 不代表验收通过。<br>'
-        + detail.source_gaps.map(escape).join('<br>') + '</aside>'
+        + escape(detail.recording.state) + '<br>Changes：unavailable；Workflow 记录不自动执行或验收。<br>'
+        + detail.source_gaps.map(escape).join('<br>') + '</aside>' + workflowPanel
         + (detail.computer_calls.length ? '<aside>同步调用状态（历史观察，不代表当前进程状态；stdout/stderr 无跨流顺序保证）<pre>'
           + escape(JSON.stringify(detail.computer_calls, null, 2)) + '</pre></aside>' : '')
         + (detail.owned_tasks.length ? '<aside>受管任务：stdout/stderr 的 seq 表示已公开行发布顺序，非两管道实际写入全局顺序；本地 cursor 仅为保存顺序。脚本正文：source-not-provided。历史终态不代表当前进程状态。<pre>'

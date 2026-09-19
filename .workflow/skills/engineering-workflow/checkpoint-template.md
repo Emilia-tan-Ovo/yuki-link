@@ -54,3 +54,5 @@ updated_at: "<UTC ISO-8601>"
 ```
 
 执行状态只供导航。测试、Review 和副作用回执必须仍能从原始来源验证；`completed` 字样本身不是证据。记录最少必要身份/引用，不复制凭据、原始会话或大型日志。迁移工作树时保留原记录作为历史，在新树重新建立身份和证据，不改写旧 worktree 来冒充当前执行。
+
+当前 Ticket 已登记 Harness 且阶段边界通过 `harness_record_workflow` 成功保存时，在 `Current evidence` 记录最近的 `workflow_revision`、`event_id`、`cursor` 与观察时间，下一次提交以该 revision 作为 `expected_revision`。这些是记录回执，不替代 checkpoint、Git、Review 或 Acceptance 原始证据；记录失败或冲突时保存真实错误与待协调状态，不预填成功 revision。

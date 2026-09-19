@@ -131,7 +131,7 @@ test('root exit 早于 pipes close 时保存 unknown 与晚到输出，关闭后
     [['stdout', '退出前\n'], ['stdout', '晚到 stdout\n'], ['stderr', '晚到 stderr\n']]);
 });
 
-test('同 request 的 Ticket 身份不可改变，省略归属兼容旧行为且无新增工具', async t => {
+test('同 request 的 Ticket 身份不可改变，省略归属兼容旧行为且工具 schema 同步', async t => {
   const f = await fixture(t), a = await f.register(), b = await f.register('OTHER');
   const { service_epoch } = await f.call('task_status');
   const args: Wire = { service_epoch, request_id: 'bound', cwd: f.workspace, script: 'unused', ticket_id: a.ticket_id };
@@ -146,7 +146,7 @@ test('同 request 的 Ticket 身份不可改变，省略归属兼容旧行为且
   assert.equal((await f.call('task_start', { ...args, request_id: 'invalid', ticket_id: randomUUID() })).error.code, 'TICKET_NOT_FOUND');
   assert.equal(f.children.length, 2);
   const tools = (await f.tools()).tools;
-  assert.equal(tools.length, 20);
+  assert.equal(tools.length, 21);
   assert.ok(tools.find(tool => tool.name === 'task_start')!.inputSchema.properties?.ticket_id);
   await f.openUI();
   assert.equal(taskRecords(await f.detail(b.ticket_id)).length, 0);

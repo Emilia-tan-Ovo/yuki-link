@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { publicError } from './errors.js';
 import { SANDBOX_MODE_VALUES, APPROVAL_POLICY_VALUES, APPROVAL_REVIEWER_VALUES } from './permissions.js';
 import { registrationSchema, attachSchema, HarnessError } from './harness/model.ts';
+import { workflowRecordInputSchema } from './harness/workflow-model.ts';
 
 export function createMcpServer(manager, computer) {
   const server = new McpServer({ name: 'yuki-computer-agent', version: '0.2.0' });
@@ -56,6 +57,11 @@ export function createMcpServer(manager, computer) {
     attachSchema, input => {
       if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
       return manager.harness.attach(input);
+    });
+  register('harness_record_workflow', 'Record a complete structured Workflow snapshot for an explicitly registered Ticket. This only records and checks cited evidence; it does not run Review, Acceptance, tests, Git writes or model work.',
+    workflowRecordInputSchema, input => {
+      if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
+      return manager.harness.recordWorkflow(input);
     });
   register('codex_list_models', 'Read the current local Codex model and reasoning catalog. No model inference is started.', {
     refresh: z.boolean().optional(),
