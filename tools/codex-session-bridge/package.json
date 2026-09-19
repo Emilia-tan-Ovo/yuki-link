@@ -3,15 +3,22 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "start": "node src/main.js",
-    "test": "node --test test/*.test.js",
+    "test": "node --test test/*.test.js test/*.test.ts",
+    "typecheck": "tsc --noEmit",
     "test:live": "node scripts/live-test.js",
     "test:permissions-live": "node scripts/permissions-live-test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
     "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.6",
+    "typescript": "5.9.3"
   }
 }

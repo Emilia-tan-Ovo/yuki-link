@@ -1,0 +1,94 @@
+import http from 'node:http';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
+import type { Harness } from './harness.ts';
+import { HarnessError } from './model.ts';
+
+const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[c]!));
+const css = 'body{font:16px system-ui;margin:0;background:#f5f3fa;color:#262034}main{max-width:1040px;margin:3rem auto;padding:0 1.5rem}a{color:#6240a0}section,article,aside{background:white;border:1px solid #ded7ec;border-radius:12px;padding:1rem;margin:1rem 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}small{color:#645c70}.warning{border-left:4px solid #ad6b21}h1{font-size:28px}';
+const page = (title: string, body: string) => '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+  + '<title>' + escape(title) + '</title><link rel="stylesheet" href="/style.css"></head><body><main>'
+  + '<nav><a href="/">Yuki Harness · Projects</a></nav><h1>' + escape(title) + '</h1>' + body + '</main></body></html>';
+const equal = (value: string | undefined, secret: string) => {
+  const bytes = Buffer.from(value ?? ''), expected = Buffer.from(secret);
+  return bytes.length === expected.length && timingSafeEqual(bytes, expected);
+};
+export function createHarnessServer(harness: Harness) {
+  const session = randomBytes(32).toString('hex');
+  return http.createServer((req, res) => {
+    const origin = 'http://127.0.0.1:' + req.socket.localPort;
+    const headers = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
+      'content-security-policy': "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" };
+    const send = (status: number, value: unknown, html = false, cookie = false) =>
+      res.writeHead(status, { ...headers, 'content-type': html ? 'text/html; charset=utf-8' : 'application/json; charset=utf-8',
+        ...(cookie ? { 'set-cookie': 'yuki_harness=' + session + '; HttpOnly; SameSite=Strict; Path=/' } : {}) })
+        .end(html ? String(value) : JSON.stringify(value));
+    if (req.headers.host !== new URL(origin).host || (req.headers.origin && req.headers.origin !== origin)
+      || ['cross-site', 'same-site'].includes(req.headers['sec-fetch-site'] ?? '')) return send(403, { code: 'FORBIDDEN' });
+    if (req.method !== 'GET') return send(405, { code: 'READ_ONLY' });
+    let url: URL;
+    try { url = new URL(req.url ?? '/', origin); }
+    catch { return send(400, { code: 'INVALID_URL' }); }
+    if (url.pathname === '/style.css') {
+      res.writeHead(200, { ...headers, 'content-type': 'text/css; charset=utf-8' }); return res.end(css);
+    }
+    const cookie = /(?:^|;\s*)yuki_harness=([^;]*)/.exec(req.headers.cookie ?? '')?.[1];
+    if (url.pathname !== '/' && !equal(cookie, session)) return send(403, { code: 'SESSION_REQUIRED' });
+    try {
+      // Explicit UI refresh asks for current facts. The independent background
+      // collector is still responsible for capture while no browser is present.
+      harness.scan(true);
+      const summary = harness.overview();
+      if (url.pathname === '/api/projects') return send(200, summary);
+      if (url.pathname === '/') {
+        const groups = summary.projects.map(p => '<section><h2>' + escape(p.name) + '</h2><ul>' +
+          p.tickets.map(t => '<li><a href="/tickets/' + t.id + '">' + escape(t.key + ' · ' + t.title) + '</a></li>').join('') + '</ul></section>').join('');
+        return send(200, page('工程协作历史', '<p>只读观察 · <a href="/">刷新</a></p><aside>Recording: ' + escape(summary.recording.state)
+          + '<br>Workflow / Changes / Acceptance / 服务状态：unavailable（尚未接入）</aside>'
+          + (groups || '<p>尚未登记 Project / Ticket。由 Emilia 通过 YCA 显式登记。</p>')), true, true);
+      }
+      const route = /^\/(api\/)?tickets\/([0-9a-f-]+)$/.exec(url.pathname);
+      if (!route) return send(404, { code: 'NOT_FOUND' });
+      const afterText = url.searchParams.get('after') ?? '0';
+      if (!/^\d+$/.test(afterText)) throw new HarnessError('INVALID_CURSOR');
+      const detail = harness.detail(route[2], Number(afterText));
+      if (route[1]) return send(200, detail);
+      const records = detail.records.map(r => {
+        const d = r.data;
+        let label = d.kind === 'attached' ? (d.previous_session_id && d.previous_session_id !== d.binding.session_id ? 'session 切换边界' : 'session/run 显式关联')
+          : d.kind === 'event' ? d.event.kind : 'Ticket 登记';
+        let text = '';
+        if (d.kind === 'event' && d.event.payload && typeof d.event.payload === 'object') {
+          const payload = d.event.payload as Record<string, unknown>;
+          if (d.event.kind === 'message.sent') { label = '任务 · ' + String(payload.sender ?? 'caller'); text = String(payload.text ?? 'unknown'); }
+          else if (d.event.kind === 'stderr') { label = 'stderr'; text = String(payload.text ?? 'unknown'); }
+          else if (d.event.kind === 'source.snapshot') {
+            const attribution = payload.attribution as { state?: string } | undefined;
+            const run = payload.run as { status?: string; model?: string; reasoning?: string } | undefined;
+            label = '配置与归属 · ' + (attribution?.state ?? 'unknown');
+            text = 'run: ' + (run?.status ?? 'unknown') + ' · model: ' + (run?.model ?? 'unknown') + ' · reasoning: ' + (run?.reasoning ?? 'unknown');
+          } else if (d.event.kind === 'codex') {
+            const item = payload.item as Record<string, unknown> | undefined;
+            if (item?.type === 'agent_message') { label = 'Agent 回复'; text = String(item.text ?? 'unknown'); }
+            else if (item?.type === 'command_execution') {
+              label = '工具 · command_execution';
+              text = String(item.command ?? 'unknown') + '\n' + String(item.aggregated_output ?? 'unavailable / source-not-provided');
+            } else { label = String(payload.type ?? 'Codex 事件'); text = String(payload.message ?? ''); }
+          }
+        }
+        return '<article><strong>' + escape(label) + '</strong><small> · ' + escape(r.observed_at) + ' · cursor ' + r.cursor
+          + '</small>' + (text ? '<pre>' + escape(text) + '</pre>' : '')
+          + '<details><summary>来源记录与完整性</summary><pre>' + escape(JSON.stringify(d, null, 2)) + '</pre></details></article>';
+      }).join('');
+      return send(200, page(detail.ticket.title, '<p>Conversation: ' + escape(detail.ticket.main_conversation_id)
+        + '</p><p><a href="/tickets/' + detail.ticket.id + '">刷新历史</a></p><aside class="warning">Recording: '
+        + escape(detail.recording.state) + '<br>Workflow / Changes / Acceptance：unavailable；run completed 不代表验收通过。<br>'
+        + detail.source_gaps.map(escape).join('<br>') + '</aside>' + records
+        + (detail.has_more ? '<a href="?after=' + detail.next_cursor + '">后续记录</a>' : '')), true);
+    } catch (e) {
+      const code = e instanceof HarnessError ? e.code : 'READ_FAILED';
+      return send(code === 'TICKET_NOT_FOUND' ? 404 : code === 'INVALID_CURSOR' ? 400 : 503, { code });
+    }
+  });
+}

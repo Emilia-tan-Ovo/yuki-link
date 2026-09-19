@@ -7,6 +7,8 @@ import { spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 async function port() {
   const server = net.createServer();
@@ -32,11 +34,12 @@ test('service shutdown closes raw idle HTTP sockets that are not counted as acti
   const root = mkdtempSync(path.join(os.tmpdir(), 'yca-shutdown-'));
   const runtime = path.join(root, 'runtime'), workspace = path.join(root, 'workspace');
   mkdirSync(runtime); mkdirSync(workspace);
-  const mcpPort = await port(), controlPort = await port();
+  const mcpPort = await port(), controlPort = await port(), harnessPort = await port();
   const token = randomBytes(32).toString('hex'), instance = randomUUID();
   const entry = fileURLToPath(new URL('../src/main.js', import.meta.url));
   const child = spawn(process.execPath, [entry, '--transport', 'http', '--port', String(mcpPort), '--allow-cwd', workspace,
-    '--runtime', runtime, '--pwsh-bin', process.execPath, '--control-port', String(controlPort), '--control-instance', instance], {
+    '--runtime', runtime, '--pwsh-bin', process.execPath, '--control-port', String(controlPort), '--control-instance', instance,
+    '--harness-port', String(harnessPort)], {
     env: { ...process.env, YUKI_CONTROL_TOKEN: token }, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'],
   });
   child.stderr.resume();
@@ -51,6 +54,17 @@ test('service shutdown closes raw idle HTTP sockets that are not counted as acti
   });
 
   await ready(`http://127.0.0.1:${mcpPort}/healthz`);
+  await ready(`http://127.0.0.1:${harnessPort}/`);
+  const client = new Client({ name: 'harness-startup', version: '1' });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${mcpPort}/mcp`)));
+    const registered = await client.callTool({ name: 'harness_register_ticket', arguments: {
+      project_key: 'startup', project_name: '生产入口隔离样本', ticket_key: 'one', title: '登记', reference: 'fixture:one',
+    } });
+    assert.notEqual(registered.isError, true);
+    assert.match(await (await fetch(`http://127.0.0.1:${harnessPort}/`)).text(), /生产入口隔离样本/);
+    assert.equal((await fetch(`http://127.0.0.1:${mcpPort}/api/projects`)).status, 404);
+  } finally { await client.close(); }
   mcpSocket = net.connect({ host: '127.0.0.1', port: mcpPort });
   controlSocket = net.connect({ host: '127.0.0.1', port: controlPort });
   await Promise.all([mcpSocket, controlSocket].map(socket => new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('error', reject); })));
