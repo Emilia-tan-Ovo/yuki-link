@@ -88,7 +88,7 @@ export class SessionManager {
     const cwd = this.cwd(input.cwd);
     if (!this.permissionResolver) throw new BridgeError('PERMISSION_RESOLUTION_FAILED', 'No Codex permission resolver is configured.');
     const [config, permissions] = await Promise.all([
-      this.catalog.validate(input.model ?? 'gpt-6-astra', input.reasoning ?? 'high'),
+      this.catalog.validate(input.model ?? 'gpt-5.6-sol', input.reasoning ?? 'medium'),
       this.permissionResolver.resolve(cwd, input.permissions),
     ]);
     // Recheck after asynchronous capability/config discovery: two clients can retry together.

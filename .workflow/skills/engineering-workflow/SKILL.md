@@ -56,6 +56,19 @@ checkpoint 的 `phase` 表示**下一步要进行的工作**，不是已经完�
 - `xhigh/max/ultra` 默认禁止；任何模型使用这些档位前都必须取得 Owner 明确批准。
 - 不因“这张票重要”自动使用高成本模型；模型选择按**当前阶段当前问题**的难度决定。
 
+#### 0-token 环境 preflight
+
+任何 fresh worktree 或 fresh model session 在启动模型前，Emilia 先用 YCA 确定性核对：
+
+1. Git fixed point / branch / worktree 身份；
+2. 项目依赖是否就绪（例如 package lock 对应的 `node_modules` / 构建依赖）；新 worktree 不假设自动继承依赖，缺失时先准备或复用项目既有依赖缓存；
+3. 当前任务真正需要的宿主工具是否存在；不存在的可选工具直接选择已知 fallback，不让模型先撞一次错误；
+4. GitHub/外部系统动作的认证 source of truth；默认由 Emilia + YCA direct 执行机械写入，不让模型用额度试认证；
+5. 预计超过短同步窗口的命令改走 owned task；测试/日志仍由 YCA 保存原始输出，模型只收摘要/失败切片；
+6. 下一 model session 的模型/reasoning、权限默认与 `model_usage` anomaly 状态。
+
+Preflight 失败时先修环境或记录 blocker，**不得启动模型来诊断一个确定性工具已经能发现的问题**。
+
 #### 权限与 Agent Adapter
 
 - Workflow 不自行收紧 Owner 已选择的原生 Agent 权限。当前 Codex/YCA 已支持在 session 创建时解析并冻结本机默认权限；普通仓库工程 session **默认省略显式 `permissions`**，让 YCA 继承 Owner 的有效本机默认（当前为 `danger-full-access + on-request`）。

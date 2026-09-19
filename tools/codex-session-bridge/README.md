@@ -235,7 +235,7 @@ Git 只提供 status 和单文件 diff；仓库根也必须在允许读取目录
 
 电脑操作记录到 `computer-audit.jsonl`，只保存操作、时间、结果和字节数等元数据，不记录文件内容、子进程输出、环境变量或凭据。固定查询与短脚本同步返回，Codex 仍使用异步 run。
 
-首次创建默认 `gpt-6-astra / high`。模型目录来自当前 `codex app-server model/list`，含分页，缓存五分钟，可显式刷新；目录查询失败不猜测、不静默降级。新增模型无需修改 session 逻辑。
+首次创建默认 `gpt-5.6-sol / medium`。模型目录来自当前 `codex app-server model/list`，含分页，缓存五分钟，可显式刷新；目录查询失败不猜测、不静默降级。新增模型无需修改 session 逻辑。
 
 后续消息未指定的 model/reasoning 字段分别继承 session。只指定新 model 时 reasoning 仍继承原值；组合不支持就明确报错。每个 run 记录本轮传给 CLI 的配置；session 在 Codex 返回 thread ID 后更新配置。`config_source` 区分新 session 的 `session_permission_snapshot` 与旧 session 的 `legacy_explicit_codex_cli_arguments`；权限值来自 Codex 原生配置解析和持久化快照，不依靠模型自述。
 

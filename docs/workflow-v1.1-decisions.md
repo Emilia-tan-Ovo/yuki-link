@@ -248,6 +248,12 @@ ticket-design
 
 Review finding 修复也使用 fresh fix session，只携带 finding、修复基线、直接受影响文件/规范与最小回归；不返回原 implementation session。
 
+### Fresh Session 环境 Preflight
+
+- 新 worktree / fresh model session 启动前由 Emilia + YCA 做 0-token preflight：Git 身份、依赖就绪、必要宿主工具、GitHub/外部认证路径、长任务执行方式、模型/reasoning、Owner 权限默认和当前 cost anomaly。
+- 环境缺失先由确定性工具处理，不让模型进入后才发现。例如 worktree 没有依赖先准备依赖；宿主没有 `rg` 就直接用 PowerShell/Git fallback；GitHub 机械写入默认走已认证的 YCA direct。
+- 复杂工具编排优先拆成专用、短小、可回读步骤，减少 JS/PowerShell/Markdown/regex 多层转义导致的输入格式错误。
+
 ### Agent 权限与环境一致性
 
 - YCA-006 已完成原生权限解析/冻结；当前 Owner 本机默认为 `danger-full-access + on-request`。Workflow 创建普通 Codex 仓库工程 session 时默认省略显式 `permissions`，继承并冻结这个本机默认，不再由 Emilia 手工降成 `workspace-write`。
