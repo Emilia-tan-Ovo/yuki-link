@@ -128,8 +128,14 @@ export class WorkflowSource {
         if (status.status !== 0) add('unknown', 'GIT_STATUS_UNAVAILABLE', 'git status', status.stderr.trim() || null);
         else {
           const actual = { staged: new Set<string>(), unstaged: new Set<string>(), untracked: new Set<string>() };
-          for (const entry of status.stdout.split('\0').filter(Boolean)) {
+          const entries = status.stdout.split('\0');
+          for (let index = 0; index < entries.length; index++) {
+            const entry = entries[index];
+            if (!entry) continue;
             const code = entry.slice(0, 2), name = entry.slice(3).replaceAll('\\', '/');
+            // In porcelain v1 -z, rename/copy records are `XY destination\0source\0`.
+            // The source path is metadata for the same record, not a new status entry.
+            if (code.includes('R') || code.includes('C')) index++;
             if (artifactPaths.has(name)) continue;
             if (code === '??') actual.untracked.add(name);
             else { if (code[0] !== ' ') actual.staged.add(name); if (code[1] !== ' ') actual.unstaged.add(name); }

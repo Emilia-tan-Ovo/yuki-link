@@ -54,8 +54,7 @@ export class WorkflowHistory {
         && record.data.workflow.ticket_id === prior.ticket_id && record.data.workflow.workflow_revision === prior.workflow_revision)!;
       return this.receipt(prior, entry, true);
     }
-    if (parsed.snapshot.checkpoint.ticket_key.split(/\s+\/\s+/)[0] !== ticket.key
-      || parsed.snapshot.subject.ticket_ref !== ticket.reference) throw new HarnessError('ATTRIBUTION_MISMATCH');
+    if (parsed.snapshot.subject.ticket_ref !== ticket.reference) throw new HarnessError('ATTRIBUTION_MISMATCH');
     try { this.source.validate(ticket, parsed.snapshot); }
     catch { throw new HarnessError('INVALID_WORKFLOW_RECORD'); }
     const previous = this.current.get(parsed.ticket_id);
@@ -88,12 +87,25 @@ export class WorkflowHistory {
     const record = this.current.get(ticketId);
     if (!record) return { state: 'unavailable', reason: 'not-yet-observed' };
     const snapshot = record.snapshot, assessment = this.assessments.get(ticketId) ?? record.assessment;
-    const reviewGate = snapshot.reviews.some(review => review.mode === 'full')
-      && snapshot.reviews.every(review => !['pending', 'incomplete'].includes(review.status)
-        && review.applicability === 'verified' && [review.standards, review.spec].every(axis => !['pending', 'incomplete'].includes(axis.status)))
-      && snapshot.findings.every(finding => finding.status === 'verified' && finding.applicability === 'verified');
+    const currentSubject = snapshot.subject.subject_id;
+    const subjectFiles = [...snapshot.subject.staged, ...snapshot.subject.unstaged, ...snapshot.subject.untracked];
+    const contentIdentity = snapshot.subject.head !== null && subjectFiles.every(file => file.sha256 !== null);
+    const terminalReview = (review: typeof snapshot.reviews[number]) => !['pending', 'incomplete'].includes(review.status)
+      && review.applicability === 'verified'
+      && [review.standards, review.spec].every(axis => !['pending', 'incomplete'].includes(axis.status));
+    const fullReviews = snapshot.reviews.filter(review => review.mode === 'full' && terminalReview(review));
+    const reviewGate = contentIdentity && (snapshot.findings.length === 0
+      ? fullReviews.some(review => review.status === 'passed' && review.subject_ref === currentSubject)
+      : fullReviews.length > 0 && snapshot.findings.every(finding => {
+        const origin = fullReviews.find(review => review.review_id === finding.origin_review_id);
+        const verification = snapshot.reviews.find(review => review.review_id === finding.verification_review_id);
+        return finding.status === 'verified' && finding.applicability === 'verified' && finding.subject_ref === currentSubject
+          && Boolean(origin) && Boolean(verification) && verification!.mode === 'focused'
+          && verification!.original_review_id === finding.origin_review_id && verification!.status === 'passed'
+          && verification!.subject_ref === currentSubject && terminalReview(verification!);
+      }));
     const accepted = snapshot.acceptance.status === 'passed' && snapshot.acceptance.applicability === 'verified'
-      && assessment.state === 'verified' && snapshot.acceptance.subject_ref === snapshot.subject.subject_id
+      && assessment.state === 'verified' && snapshot.acceptance.subject_ref === currentSubject
       && snapshot.acceptance.criteria.length > 0 && snapshot.acceptance.criteria.every(value => value.status === 'pass' && value.evidence.length)
       && reviewGate;
     return { revision: record.workflow_revision, phase: snapshot.phase, assessment,

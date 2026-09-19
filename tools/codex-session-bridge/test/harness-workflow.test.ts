@@ -69,7 +69,8 @@ function snapshot(f: Awaited<ReturnType<typeof fixture>>, phase = 'review'): Wir
       observed_at: at, integrity: 'observed' }],
     reviews: [], findings: [],
     acceptance: { acceptance_id: null, status: 'not-recorded', actor: { name: 'Emilia', method: 'deterministic' },
-      subject_ref: null, criteria: [], evidence: [], execution_refs: [], applicability: 'not-applicable', reason: '尚未验收' },
+      subject_ref: null, criteria: [], evidence: [], evidence_refs: [], execution_refs: [],
+      applicability: 'not-applicable', reason: '尚未验收' },
     closeout: { status: 'pending', artifact_refs: [], evidence: [], applicability: 'not-applicable', reason: '尚未收尾' },
     runtime_refs: [],
   };
@@ -198,7 +199,7 @@ test('公开 MCP 记录 Workflow 后，首页与 Ticket 可追溯真实阶段且
   accepted.subject.subject_id = 'fix-1'; accepted.reviews = verified.reviews; accepted.findings = verified.findings;
   accepted.acceptance = { acceptance_id: 'acceptance-1', status: 'passed', actor: { name: 'Emilia', method: 'deterministic' },
     subject_ref: 'fix-1', criteria: [{ criteria_ref: '#45-AC1', status: 'pass', evidence: ['fixture-public-seam'], notes: null }],
-    evidence: ['fixture-public-seam'], execution_refs: [], applicability: 'verified', reason: '逐项核对通过' };
+    evidence: ['fixture-public-seam'], evidence_refs: [], execution_refs: [], applicability: 'verified', reason: '逐项核对通过' };
   assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
     ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 4, schema_version: 1, snapshot: accepted,
   } })).workflow_revision, 5);
@@ -263,4 +264,178 @@ test('Workflow 副本先脱敏，保存失败不发布新 revision 或未保存�
   assert.equal(payload(rejected).error.code, 'RECORDING_FAILED');
   assert.equal((f.harness.workflowHistory.summary(ticket.ticket_id) as Wire).revision, 1);
   assert.equal(f.harness.health().state, 'recording-failed');
+});
+
+test('staged rename 按 porcelain v1 -z 双路径记录核对当前目标路径', async t => {
+  const f = await fixture(); t.after(f.close);
+  const ticket = payload(await f.client.callTool({ name: 'harness_register_ticket', arguments: {
+    project_key: 'rename', project_name: 'rename', ticket_key: 'HARNESS-005', title: 'rename subject',
+    reference: 'issue:45', expected_worktree: f.worktree,
+  } }));
+  git(f.worktree, 'mv', 'tracked.txt', 'renamed.txt');
+  const value = snapshot(f);
+  value.subject.scope = ['renamed.txt'];
+  value.subject.staged = [{ path: 'renamed.txt', sha256: sha256(path.join(f.worktree, 'renamed.txt')) }];
+  const recorded = payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot: value,
+  } }));
+  assert.equal(recorded.workflow_revision, 1);
+  assert.equal(recorded.applicability.state, 'verified', JSON.stringify(recorded.applicability));
+  assert.ok(!recorded.applicability.reasons.some((reason: Wire) => reason.code === 'SUBJECT_CONTENT_CHANGED'));
+});
+
+test('当前 Ticket 的 checkpoint ticket_key 冲突保存为 mismatch，跨票 subject 仍拒绝', async t => {
+  const f = await fixture(); t.after(f.close);
+  const ticket = payload(await f.client.callTool({ name: 'harness_register_ticket', arguments: {
+    project_key: 'mismatch', project_name: 'mismatch', ticket_key: 'HARNESS-005', title: 'checkpoint mismatch',
+    reference: 'issue:45', expected_worktree: f.worktree,
+  } }));
+  const value = snapshot(f);
+  value.checkpoint.ticket_key = 'HARNESS-999 / local drift';
+  const recorded = payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot: value,
+  } }));
+  assert.equal(recorded.workflow_revision, 1);
+  assert.equal(recorded.applicability.state, 'mismatch');
+  assert.ok(recorded.applicability.reasons.some((reason: Wire) => reason.code === 'CHECKPOINT_TICKET_MISMATCH'));
+  const detail = await (await fetch(f.base + '/api/tickets/' + ticket.ticket_id, { headers: { cookie: f.cookie } })).json() as Wire;
+  assert.equal(detail.workflow.current.assessment.state, 'mismatch');
+
+  const other = payload(await f.client.callTool({ name: 'harness_register_ticket', arguments: {
+    project_key: 'mismatch', project_name: 'mismatch', ticket_key: 'HARNESS-006', title: 'other ticket',
+    reference: 'issue:46', expected_worktree: f.worktree,
+  } }));
+  const crossed = await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: other.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot: value,
+  } });
+  assert.equal(payload(crossed).error.code, 'ATTRIBUTION_MISMATCH');
+});
+
+test('deterministic Acceptance 可绑定工程 evidence，Agent 身份只接受真实 Codex run 引用', async t => {
+  const f = await fixture(); t.after(f.close);
+  const ticket = payload(await f.client.callTool({ name: 'harness_register_ticket', arguments: {
+    project_key: 'acceptance-evidence', project_name: 'acceptance-evidence', ticket_key: 'HARNESS-005', title: 'Acceptance evidence',
+    reference: 'issue:45', expected_worktree: f.worktree,
+  } }));
+  const value = snapshot(f);
+  value.runtime_refs = [
+    { runtime_ref_id: 'owned-task-1', kind: 'owned-task', session_id: null, run_id: null,
+      task_id: 'task-1', call_id: null, expected_state: null, source: 'harness-owned-task' },
+    { runtime_ref_id: 'sync-call-1', kind: 'sync-call', session_id: null, run_id: null,
+      task_id: null, call_id: randomUUID(), expected_state: null, source: 'harness-sync-call' },
+  ];
+  value.acceptance = { acceptance_id: 'acceptance-1', status: 'incomplete',
+    actor: { name: 'Emilia', method: 'deterministic' }, subject_ref: 'implementation-1', criteria: [], evidence: ['定向测试'],
+    evidence_refs: ['owned-task-1', 'sync-call-1'], execution_refs: [], applicability: 'verified', reason: '尚未逐项完成' };
+  const recorded = payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot: value,
+  } }));
+  assert.equal(recorded.workflow_revision, 1);
+
+  const forged = snapshot(f);
+  forged.runtime_refs = value.runtime_refs;
+  forged.acceptance = { ...value.acceptance, actor: { name: 'Acceptance Agent', method: 'agent' },
+    evidence_refs: [], execution_refs: ['owned-task-1'] };
+  const rejected = await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 1, schema_version: 1, snapshot: forged,
+  } });
+  assert.equal(rejected.isError, true);
+
+  const sessionId = randomUUID(), runId = randomUUID();
+  (f.source as Wire).runs = () => [{ id: runId, status: 'completed' }];
+  const agent = snapshot(f);
+  agent.runtime_refs = [{ runtime_ref_id: 'codex-run-1', kind: 'codex-run', session_id: sessionId, run_id: runId,
+    task_id: null, call_id: null, expected_state: 'completed', source: 'codex-session-bridge' }];
+  agent.acceptance = { ...value.acceptance, actor: { name: 'Acceptance Agent', method: 'agent' },
+    evidence_refs: [], execution_refs: ['codex-run-1'] };
+  const agentRecorded = payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 1, schema_version: 1, snapshot: agent,
+  } }));
+  assert.equal(agentRecorded.workflow_revision, 2);
+  assert.equal(agentRecorded.applicability.state, 'verified');
+});
+
+test('accepted 要求当前 subject 的内容身份及覆盖它的终态 Review 链', async t => {
+  const f = await fixture(); t.after(f.close);
+  const ticket = payload(await f.client.callTool({ name: 'harness_register_ticket', arguments: {
+    project_key: 'accepted-gate', project_name: 'accepted-gate', ticket_key: 'HARNESS-005', title: 'accepted gate',
+    reference: 'issue:45', expected_worktree: f.worktree,
+  } }));
+  checkpointPhase(f, 'acceptance');
+  const oldReview = snapshot(f, 'acceptance');
+  oldReview.subject.subject_id = 'implementation-2';
+  oldReview.reviews = [{ review_id: 'review-full', original_review_id: null, mode: 'full', status: 'passed',
+    subject_ref: 'implementation-1', artifact_refs: [],
+    standards: { status: 'passed', evidence: ['standards-report'], reason: null },
+    spec: { status: 'passed', evidence: ['spec-report'], reason: null }, finding_refs: [], isolated: true,
+    applicability: 'verified', reason: null }];
+  oldReview.acceptance = { acceptance_id: 'acceptance-1', status: 'passed', actor: { name: 'Emilia', method: 'deterministic' },
+    subject_ref: 'implementation-2', criteria: [{ criteria_ref: '#45-AC1', status: 'pass', evidence: ['test'], notes: null }],
+    evidence: ['test'], evidence_refs: [], execution_refs: [], applicability: 'verified', reason: '逐项核对通过' };
+  assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot: oldReview,
+  } })).workflow_revision, 1);
+  assert.equal((f.harness.workflowHistory.summary(ticket.ticket_id) as Wire).acceptance.accepted, false);
+
+  const checkpointText = readFileSync(f.checkpoint, 'utf8').replace(/^head: .*$/m, 'head: ');
+  writeFileSync(f.checkpoint, checkpointText, 'utf8');
+  const missingIdentity = snapshot(f, 'acceptance');
+  missingIdentity.subject.subject_id = 'implementation-2';
+  missingIdentity.subject.head = null;
+  missingIdentity.checkpoint.head = null;
+  missingIdentity.reviews = [{ ...oldReview.reviews[0], subject_ref: 'implementation-2' }];
+  missingIdentity.acceptance = oldReview.acceptance;
+  assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 1, schema_version: 1, snapshot: missingIdentity,
+  } })).workflow_revision, 2);
+  const summary = f.harness.workflowHistory.summary(ticket.ticket_id) as Wire;
+  assert.equal(summary.assessment.state, 'verified', JSON.stringify(summary.assessment));
+  assert.equal(summary.acceptance.accepted, false);
+});
+
+test('首页突出 Workflow 异常且不误标正常 Ticket', async t => {
+  const f = await fixture(); t.after(f.close);
+  const ticket = payload(await f.client.callTool({ name: 'harness_register_ticket', arguments: {
+    project_key: 'home', project_name: 'home', ticket_key: 'HARNESS-005', title: 'home status',
+    reference: 'issue:45', expected_worktree: f.worktree,
+  } }));
+  assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot: snapshot(f),
+  } })).workflow_revision, 1);
+  let home = await (await fetch(f.base + '/', { headers: { cookie: f.cookie } })).text();
+  assert.match(home, new RegExp('<li><a href="/tickets/' + ticket.ticket_id));
+  assert.doesNotMatch(home, new RegExp('<li class="warning"><a href="/tickets/' + ticket.ticket_id));
+
+  writeFileSync(path.join(f.worktree, 'tracked.txt'), 'changed\n', 'utf8');
+  home = await (await fetch(f.base + '/', { headers: { cookie: f.cookie } })).text();
+  assert.match(home, /异常待处理：applicability stale/);
+  writeFileSync(path.join(f.worktree, 'tracked.txt'), 'baseline\n', 'utf8');
+
+  const open = snapshot(f);
+  open.reviews = [{ review_id: 'review-full', original_review_id: null, mode: 'full', status: 'findings',
+    subject_ref: 'implementation-1', artifact_refs: [],
+    standards: { status: 'passed', evidence: ['standards-report'], reason: null },
+    spec: { status: 'findings', evidence: ['SPEC-1'], reason: 'finding' },
+    finding_refs: [{ origin_review_id: 'review-full', finding_id: 'SPEC-1' }], isolated: true,
+    applicability: 'verified', reason: null }];
+  open.findings = [{ origin_review_id: 'review-full', finding_id: 'SPEC-1', status: 'open', severity: 'P2',
+    summary: '需要修复', subject_ref: 'implementation-1', verification_review_id: null, artifact_refs: [],
+    evidence: ['review-report'], applicability: 'verified', reason: null }];
+  open.acceptance = { ...open.acceptance, status: 'incomplete', applicability: 'verified', reason: '未完成' };
+  assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 1, schema_version: 1, snapshot: open,
+  } })).workflow_revision, 2);
+  home = await (await fetch(f.base + '/', { headers: { cookie: f.cookie } })).text();
+  assert.match(home, /异常待处理：Acceptance incomplete · finding open 1/);
+  assert.match(home, new RegExp('<li class="warning"><a href="/tickets/' + ticket.ticket_id));
+
+  const fixed = snapshot(f);
+  fixed.reviews = open.reviews;
+  fixed.findings = [{ ...open.findings[0], status: 'fixed' }];
+  fixed.acceptance = { ...fixed.acceptance, status: 'failed', applicability: 'verified', reason: '验收失败' };
+  assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 2, schema_version: 1, snapshot: fixed,
+  } })).workflow_revision, 3);
+  home = await (await fetch(f.base + '/', { headers: { cookie: f.cookie } })).text();
+  assert.match(home, /异常待处理：Acceptance failed · finding fixed 1/);
 });

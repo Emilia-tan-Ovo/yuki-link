@@ -1,8 +1,8 @@
 # HARNESS-005 · Implementation Handoff
 
-- 来源：HARNESS-005 / GitHub #45、`docs/specs/yuki-harness-v0.md`、最终 Implementation Notes，以及已合并的 #42/#43 接口与 handoff。
+- 来源：HARNESS-005 / GitHub #45、`docs/specs/yuki-harness-v0.md`、最终 Implementation Notes、`.local/workflow-state/HARNESS-005-review.md`，以及已合并的 #42/#43 接口与 handoff。
 - 身份：worktree `.local/yuki-harness-v0-005`；分支 `codex/yuki-harness-v0-005`；fixed point / 实现前 HEAD `caca7902b9a4ddddbe1e7b35983346a6302f6c6e`。
-- 授权：仅 #45 实现、必要定向测试/typecheck、本地 commit 与本 handoff。`review_policy: delegated`，接收方 Emilia / engineering-workflow；本 implementation session 不启动 Review。
+- 授权：仅 #45 实现及 primary Review 的 STD-001、SPEC-001～004 finding 修复、必要定向测试/typecheck、本地 commit 与本 handoff。`review_policy: delegated`，接收方 Emilia / engineering-workflow；本 fix session 不启动 Review。
 
 ## 实际交付
 
@@ -23,6 +23,18 @@ Workflow 记录加入 #42/#43 已有 journal union、cursor、单 writer 与分�
 - 修改 `test/computer.test.js`、`test/tasks.test.js`、`test/harness-tasks.test.ts` 的 21 工具 schema 断言与名称；实现后 full suite 又发现 `test/bridge.test.js` 仍保留旧 8 工具断言，Emilia 机械改为 9 并定向复验通过。
 - 修改 `tools/codex-session-bridge/README.md`、`.workflow/skills/engineering-workflow/SKILL.md`、`checkpoint-template.md`。
 
+## Fresh finding fix
+
+修复基线为 `ca3d01ecd4565e6f3ff2e957ab4e557408f209e6`，本次只处理 primary Review 的五项 finding：
+
+- STD-001：按 porcelain v1 `-z` 协议消费 rename/copy 的第二个来源路径，subject 只比较当前目标路径；新增 staged rename 定向回归。
+- SPEC-001：入口仅拒绝真正跨票的 `subject.ticket_ref`；当前 Ticket 的 checkpoint `ticket_key` 冲突进入 assessment、Journal 与 API 投影并保持 `mismatch`。
+- SPEC-002：Acceptance 新增向后兼容的 `evidence_refs`，deterministic actor 可引用 `owned-task`、`sync-call` 等工程 runtime evidence；`execution_refs` 继续专用于 Agent，并要求指向带 session/run 身份的 `codex-run`。
+- SPEC-003：`accepted` 要求当前 subject 具备 HEAD 与全部 dirty 文件哈希身份；无 finding 时 full Review 必须覆盖当前 subject，有 finding 时 origin full Review 与覆盖当前 subject 的 focused verification/finding 链必须完整且 verified。
+- SPEC-004：首页集中标记 stale/mismatch、failed/incomplete 以及 open/fixed/fixed-unverified finding，异常行使用 warning 样式和“异常待处理”标签，正常行不添加 warning class。
+
+本次修复写集仅为 `workflow-source.ts`、`workflow.ts`、`workflow-model.ts`、`server.ts`、`harness-workflow.test.ts` 与本 handoff；未修改 #44/#46+、未运行 full suite、未做 GitHub 写入。
+
 ## 测试与证据
 
 环境：Node `v24.18.1`、npm `11.16.0`。本 worktree 初始没有 `node_modules`，首次 `npm run typecheck` 因 `tsc` 不存在 exit 1；随后按 lockfile 执行 `npm ci --offline --ignore-scripts`，exit 0，无依赖或 lockfile 变更。
@@ -37,13 +49,18 @@ Workflow 记录加入 #42/#43 已有 journal union、cursor、单 writer 与分�
 | 最终 `npm run typecheck` | exit 0。 |
 | `git diff --check` | exit 0；仅有 Git 的 CRLF 提示，无 whitespace error。 |
 | Emilia 外层 full suite | 125 tests / 120 pass / 4 fail / 1 skip。其中 1 个失败是 `bridge.test.js` 旧工具数断言（8→9），随后定向复验 1/1 pass；其余 3 个为既有 executable discovery（2）/ task timing（1）脆弱测试，未在本票扩修。 |
+| finding fix 红灯 `node --test test/harness-workflow.test.ts` | exit 1；新增结构字段尚未实现，8/8 被 schema 拒绝；实现结构后剩余伪造 Agent 引用断言暴露 MCP schema 层拒绝形态，收紧为公开 API `isError` 断言。 |
+| finding fix 定向 `node --test test/harness-workflow.test.ts` | 8/8 passed，exit 0；逐项覆盖 staged rename、checkpoint mismatch/跨票拒绝、deterministic evidence/Agent 身份、accepted 当前内容与 Review 链、首页异常/正常显示。 |
+| finding fix 受影响回归 `node --test test/harness-workflow.test.ts test/harness.test.ts` | 12/12 passed，exit 0。 |
+| finding fix `npm run typecheck` | exit 0。 |
+| finding fix `git diff --check` | exit 0；仅有 Git 的 LF→CRLF 提示，无 whitespace error。 |
 
 full suite 已由 Emilia 在实现提交后通过 YCA 外层执行一次，并如实保留上述 3 个既有非本票失败；未执行真实浏览器可视交互、ChatGPT→resident YCA、部署或 V0 全链验收。测试使用真实 MCP/HTTP/Journal/Git/文件系统及隔离仓库，只有 Codex source 使用无 session fixture；这些结果证明源码与定向 fixture 通过，不表示真实链路 accepted 或日常 stable。
 
 ## 交接状态
 
-- Review：**pending fresh primary Review**。本 implementation session 未自行 Review，不能声明零 finding 或两轴通过。
+- Review：primary Review 的 5 项 finding 已实现修复并处于 **fixed-unverified**；**pending fresh focused re-review**。本 fix session 未自行 Review，不能声明 finding 已 verified 或两轴通过。
 - Acceptance：未执行；测试中的结构化 Acceptance 只是产品行为 fixture，不是 #45 的正式验收。
 - 已知边界：外部 reference 不自动抓取；不可取得或未声明依赖的来源保持 unknown/not-applicable。best-effort 脱敏不保证识别任意秘密。assessment 只核对可安全读取的明确来源，不替 Emilia 判断报告语义。
-- 提交主题：`feat: 记录 Workflow 进度与验收证据`。精确 commit SHA 由提交后 `.local/workflow-state/HARNESS-005.md` 记录，避免本文件自引用。
-- 下一步：Emilia 核对 fixed point→实现 commit 的写集和本 handoff 后，使用 fresh context 启动 delegated primary Review；输入 #45 Notes/Spec、规范、目标 commit 与上述必要测试证据，不携带 implementation 聊天。无 push、PR、部署或 GitHub 写入。
+- 提交主题：`fix: 修复 Workflow Review findings`。精确 commit SHA 由提交后 `.local/workflow-state/HARNESS-005.md` 记录，避免本文件自引用。
+- 下一步：Emilia 核对 `ca3d01ecd4565e6f3ff2e957ab4e557408f209e6`→finding-fix commit 的写集和本 handoff 后，使用 fresh context 启动一次 delegated focused re-review；只复核 STD-001、SPEC-001～004 及其回归，不携带 implementation/fix 聊天。无 push、PR、部署或 GitHub 写入。

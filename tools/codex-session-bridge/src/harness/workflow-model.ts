@@ -49,7 +49,7 @@ const acceptanceCriteriaSchema = z.object({
 export const workflowAcceptanceSchema = z.object({
   acceptance_id: nullableText, status: z.enum(['not-recorded', 'pending', 'incomplete', 'failed', 'passed']),
   actor: actorSchema, subject_ref: nullableText, criteria: z.array(acceptanceCriteriaSchema).max(128),
-  evidence: z.array(text).max(128), execution_refs: z.array(text).max(32),
+  evidence: z.array(text).max(128), evidence_refs: z.array(text).max(64).default([]), execution_refs: z.array(text).max(32),
   applicability: applicabilitySchema, reason: nullableText,
 }).strict();
 export const workflowCloseoutSchema = z.object({
@@ -82,6 +82,7 @@ export const workflowSnapshotSchema = z.object({
   unique(snapshot.findings.map(value => `${value.origin_review_id}:${value.finding_id}`), 'finding identity');
   const artifactSet = new Set(artifactIds), reviewSet = new Set(snapshot.reviews.map(value => value.review_id));
   const runtimeSet = new Set(snapshot.runtime_refs.map(value => value.runtime_ref_id));
+  const runtimeById = new Map(snapshot.runtime_refs.map(value => [value.runtime_ref_id, value]));
   const checkpoint = snapshot.artifacts.find(value => value.artifact_id === snapshot.checkpoint.artifact_id);
   if (!checkpoint || checkpoint.role !== 'checkpoint') ctx.addIssue({ code: 'custom', message: 'checkpoint artifact missing' });
   if (snapshot.phase !== snapshot.checkpoint.phase) ctx.addIssue({ code: 'custom', message: 'phase conflicts with checkpoint' });
@@ -115,7 +116,12 @@ export const workflowSnapshotSchema = z.object({
   if (snapshot.acceptance.actor.method === 'agent' && !snapshot.acceptance.execution_refs.length) {
     ctx.addIssue({ code: 'custom', message: 'agent acceptance requires actual execution references' });
   }
+  if (snapshot.acceptance.evidence_refs.some(value => !runtimeSet.has(value))) ctx.addIssue({ code: 'custom', message: 'acceptance evidence reference missing' });
   if (snapshot.acceptance.execution_refs.some(value => !runtimeSet.has(value))) ctx.addIssue({ code: 'custom', message: 'acceptance execution reference missing' });
+  if (snapshot.acceptance.actor.method === 'agent' && snapshot.acceptance.execution_refs.some(value => {
+    const reference = runtimeById.get(value);
+    return !reference || reference.kind !== 'codex-run' || !reference.session_id || !reference.run_id;
+  })) ctx.addIssue({ code: 'custom', message: 'agent acceptance requires Codex session/run references' });
   if (snapshot.acceptance.status === 'passed' && (!snapshot.acceptance.criteria.length
     || snapshot.acceptance.criteria.some(value => value.status !== 'pass' || !value.evidence.length))) {
     ctx.addIssue({ code: 'custom', message: 'passed acceptance requires evidence for every criterion' });

@@ -49,7 +49,15 @@ export function createHarnessServer(harness: Harness) {
               closeout?: { status: string } };
             const findings = workflow.findings?.filter(value => value.status !== 'verified').length ?? 0;
             const reviews = workflow.reviews?.map(value => value.status).join('/') || 'none';
-            return '<li><a href="/tickets/' + t.id + '">' + escape(t.key + ' · ' + t.title) + '</a>'
+            const anomaly: string[] = [];
+            if (['stale', 'mismatch'].includes(workflow.assessment?.state ?? '')) anomaly.push('applicability ' + workflow.assessment!.state);
+            if (['failed', 'incomplete'].includes(workflow.acceptance?.status ?? '')) anomaly.push('Acceptance ' + workflow.acceptance!.status);
+            for (const status of ['open', 'fixed', 'fixed-unverified']) {
+              const count = workflow.findings?.filter(value => value.status === status).length ?? 0;
+              if (count) anomaly.push('finding ' + status + ' ' + count);
+            }
+            return '<li' + (anomaly.length ? ' class="warning"' : '') + '><a href="/tickets/' + t.id + '">' + escape(t.key + ' · ' + t.title) + '</a>'
+              + (anomaly.length ? ' · <strong>异常待处理：' + escape(anomaly.join(' · ')) + '</strong>' : '')
               + (workflow.acceptance ? ' · Workflow ' + escape(workflow.phase) + ' · Acceptance ' + escape(workflow.acceptance.status)
                 + (workflow.acceptance.accepted ? '（当前 accepted）' : '（未确认 accepted）')
                 + ' · Review ' + escape(reviews) + ' · 待处理/复核 finding ' + findings
