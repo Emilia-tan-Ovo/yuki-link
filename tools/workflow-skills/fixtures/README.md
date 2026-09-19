@@ -1,3 +1,7 @@
+# Workflow fixture 入口
+
+WORKFLOW-006 的单一主链与复用的 standalone 支线见 [最小端到端操作说明](end-to-end.md)。以下保留 003/004 的单点先例，不要求 006 重跑场景矩阵。
+
 # WORKFLOW-003 公共入口验收
 
 Primary seam 是 fresh agent 实际读取并执行 `engineering-workflow/SKILL.md`，不是按提示词字符串断言行为。`recovery-fixture.mjs` 只准备可控外部状态/人为中断，并核对产物；不会代替 Agent 选择 phase。原始 run/工具输出留 `.local`，验收摘要进入仓库。
