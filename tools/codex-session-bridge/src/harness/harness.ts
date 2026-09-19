@@ -3,6 +3,9 @@ import { redact } from '../errors.js';
 import { Journal } from './journal.ts';
 import { ComputerCalls } from './computer-calls.ts';
 import { TaskCollector } from './task-collector.ts';
+import { WorkflowHistory } from './workflow.ts';
+import { WorkflowSource } from './workflow-source.ts';
+import type { WorkflowSourceOptions } from './workflow-source.ts';
 import type { TaskSource } from './task-source.ts';
 import { HarnessError, registrationSchema, attachSchema } from './model.ts';
 import type { Source, Project, Ticket, Binding, Event, Operation, RecordEntry } from './model.ts';
@@ -17,6 +20,7 @@ export class Harness {
   source: Source;
   computerCalls: ComputerCalls;
   taskHistory: TaskCollector;
+  workflowHistory: WorkflowHistory;
   projects = new Map<string, Project>();
   tickets = new Map<string, Ticket>();
   bindings = new Map<string, Binding>();
@@ -27,12 +31,13 @@ export class Harness {
   sourceFailure: string | null = null;
   checkedAt: string | null = null;
   timer: ReturnType<typeof setInterval> | null = null;
-  constructor(runtime: string, source: Source, tasks?: TaskSource) {
+  constructor(runtime: string, source: Source, tasks?: TaskSource, workflowOptions: WorkflowSourceOptions = {}) {
     this.source = source;
     this.journal = new Journal(runtime);
     for (const record of this.journal.records) this.apply(record);
     this.computerCalls = new ComputerCalls(this.journal, id => this.ticket(id));
     this.taskHistory = new TaskCollector(this.journal, id => this.ticket(id), tasks);
+    this.workflowHistory = new WorkflowHistory(this.journal, id => this.ticket(id), new WorkflowSource(source, workflowOptions));
   }
   private apply(record: RecordEntry) {
     const data = record.data;
@@ -62,6 +67,7 @@ export class Harness {
     if (!old) this.write({ kind: 'registered', project, ticket });
     return { project_id: project.id, ticket_id: ticket.id, conversation_id: ticket.main_conversation_id, deduplicated: !!old };
   }
+  recordWorkflow(input: unknown) { return this.workflowHistory.record(input); }
   attach(input: unknown) {
     const parsed = attachSchema.safeParse(input);
     if (!parsed.success) throw new HarnessError('INVALID_ATTACHMENT');
@@ -92,6 +98,7 @@ export class Harness {
   scan(refresh = false) {
     if (this.journal.failure) return;
     this.taskHistory.scan();
+    this.workflowHistory.scan();
     let failure = false;
     for (const binding of this.bindings.values()) {
       try {
@@ -126,12 +133,15 @@ export class Harness {
   health() {
     const computer = this.computerCalls.health();
     const tasks = this.taskHistory.health();
+    const workflow = { state: this.journal.failure ? 'recording-failed' : 'recording',
+      reason: this.journal.failure, source: 'structured-workflow-evidence' };
     return { state: this.journal.failure ? 'recording-failed' : this.sourceFailure || this.computerCalls.collectionFailure || this.taskHistory.collectionFailure ? 'collection-failed' : 'recording',
       reason: this.journal.failure ?? this.sourceFailure ?? computer.reason ?? tasks.reason, source_id: this.journal.sourceId,
-      observed_at: this.checkedAt, sources: { computer, tasks } };
+      observed_at: this.checkedAt, sources: { computer, tasks, workflow } };
   }
   overview() {
-    return { projects: [...this.projects.values()].map(p => ({ ...p, tickets: [...this.tickets.values()].filter(t => t.project_id === p.id) })),
+    return { projects: [...this.projects.values()].map(p => ({ ...p, tickets: [...this.tickets.values()].filter(t => t.project_id === p.id)
+      .map(ticket => ({ ...ticket, workflow: this.workflowHistory.summary(ticket.id) })) })),
       recording: this.health(), workflow: unavailable, changes: unavailable, acceptance: unavailable, services: unavailable };
   }
   detail(id: string, after = 0) {
@@ -142,13 +152,14 @@ export class Harness {
       r.data.kind === 'attached' && r.data.binding.ticket_id === id ||
       r.data.kind === 'event' && r.data.event.ticket_id === id ||
       r.data.kind === 'computer_call' && r.data.call.ticket_id === id ||
-      r.data.kind === 'owned_task' && r.data.task.binding.ticket_id === id));
+      r.data.kind === 'owned_task' && r.data.task.binding.ticket_id === id ||
+      (r.data.kind === 'workflow_snapshot' || r.data.kind === 'workflow_observation') && r.data.workflow.ticket_id === id));
     const records = all.slice(0, 100);
     return { ticket, records, next_cursor: records.at(-1)?.cursor ?? after, has_more: all.length > records.length,
       recording: this.health(), computer_calls: this.computerCalls.status(id),
       owned_tasks: this.taskHistory.status(id),
       current: { state: this.health().state !== 'recording' || !this.checkedAt ? 'unknown' : 'observed', observed_at: this.checkedAt },
-      workflow: unavailable, changes: unavailable, acceptance: unavailable, source_gaps: [
+      workflow: this.workflowHistory.detail(id), changes: unavailable, source_gaps: [
         '未提供的工具正文/重试细节及接入前缺失日志：unavailable / source-not-provided',
         '尚未出现的 thread、消息或结果：unknown / not-yet-observed',
         '旧源逐事件脱敏标志：unknown；记录不是未经处理的完整原文',

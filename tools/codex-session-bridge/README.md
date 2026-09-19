@@ -16,9 +16,9 @@ HTTP YCA 后台启动后独立采集显式关联的 Codex 历史，浏览器关�
 
 持久化失败返回 RECORDING_FAILED，页面标记 recording-failed，导入不越过未保存记录。损坏/部分尾记录保留现场和已验证前缀，不自动丢弃或修复；修复存储并核验现场后由既有管理流程重启。source 读取失败单独显示 collection-failed；恢复观察不会重放工程任务。**本票未实现 #44 的全入口 recording gate**，因此不能把“记录健康”当成已经具备系统级副作用门禁的证明。
 
-事件沿用 bridge 的 best-effort 脱敏，新写入注明本次是否改写；旧源逐条脱敏情况为 unknown。OUTPUT_LIMIT 明确提示来源截断。未产生 run 的历史拒绝请求、来源未暴露的工具细节/重试、缺失旧日志均 unavailable；尚未收到的 thread/结果为 unknown。不获取隐藏推理，Provider 已公开文字也不是执行或验收证据。Workflow、Changes、Acceptance、服务状态明确 unavailable；控制按钮、自启、Review 子 Conversation 均属后续票。Owned Task 采集见下方 #43。
+事件沿用 bridge 的 best-effort 脱敏，新写入注明本次是否改写；旧源逐条脱敏情况为 unknown。OUTPUT_LIMIT 明确提示来源截断。未产生 run 的历史拒绝请求、来源未暴露的工具细节/重试、缺失旧日志均 unavailable；尚未收到的 thread/结果为 unknown。不获取隐藏推理，Provider 已公开文字也不是执行或验收证据。Workflow 记录见下方 #45；Changes 与服务状态仍 unavailable，控制按钮、自启、Review 子 Conversation 均属后续票。Owned Task 采集见下方 #43。
 
-现有部署仍执行 `npm ci --ignore-scripts` 并运行 src/main.js；MCP 工具摘要包含新增两个工具（完整 YCA 为 20 个）。这里说明候选源码能力，不表示常驻部署、ChatGPT 真实链路验收或日常稳定使用已经完成。
+现有部署仍执行 `npm ci --ignore-scripts` 并运行 src/main.js；MCP 工具摘要包含三个 Harness 工具（完整 YCA 为 21 个）。这里说明候选源码能力，不表示常驻部署、ChatGPT 真实链路验收或日常稳定使用已经完成。
 
 ### 同步电脑调用回看（HARNESS-002 / #42）
 
@@ -47,6 +47,16 @@ HTTP YCA 后台启动后独立采集显式关联的 Codex 历史，浏览器关�
 - GET Ticket 视图的 owned_tasks 分开提供历史 snapshot、source_state 和带时间的 current。当前事实来自 live OwnedTasks；重连/重建重新核对 epoch，源失效后当前状态 unknown。历史不是进程保活承诺；服务关闭复用 #42 多来源收尾，真实终态采集结束前不释放 shared writer。
 
 源码与确定性测试交付不等于 ChatGPT→resident YCA 验收或日常 stable；本票未增加控制按钮、服务管理、自启或 recording gate。
+
+### Workflow 进度与验收证据（HARNESS-005 / #45）
+
+`harness_record_workflow({ticket_id, request_id, expected_revision, schema_version: 1, snapshot})` 为已登记 Ticket 保存完整结构化 Workflow 快照。Project 与主 Conversation 始终从 `ticket_id` 推导；快照只记录/核对 checkpoint、subject、artifact、Review/finding、Acceptance、closeout 与已声明 runtime 引用，不执行下一步、不启动模型、不跑测试，也不写 Git。
+
+- 首次 `expected_revision` 为 `null`；后续必须等于当前 revision。同一 Ticket/request_id 和相同受保护 payload 返回原 cursor/revision，不同 payload 返回 `REQUEST_CONFLICT`；新请求携带旧 revision 返回 `WORKFLOW_REVISION_CONFLICT`。只有 journal flush 成功才发布 revision。
+- 文件与 Git 核对仅限 Ticket 登记的 worktree 及快照明确引用的普通文件；不读取 URL、凭据目录、Git 元数据或其他 worktree。产物上限 64 KiB。当前文件、HEAD、branch 或 worktree 身份变化会追加 stale/mismatch/unknown 观察，但不会替提交者改 verdict 或推进 revision。
+- 首页与 Ticket 页面展示 phase、两轴 Review/finding、逐 AC Acceptance、closeout 与 applicability。`run completed`、文件存在、Review 报告文字或 Acceptance Agent completed 都不会自动推出 accepted；只有明确 passed、逐 AC 证据、适用 subject 和 Review/finding 门槛同时成立才显示当前 accepted。
+- Workflow 使用原 `harness/history.jsonl` 的 source_id/event_id/cursor 与单 writer/flush 语义，重启重建 revision、request 幂等和最近事实观察；旧记录原样可读。页面仍为 GET-only，浏览器没有 Workflow 写入口。
+- 本票不创建 Review/Acceptance 子 Conversation（留 #46），不实现 Changes、recording gate、自动恢复/执行或服务管理。源码与 fixture 通过不表示 resident、真实浏览器链路、正式 Acceptance 或日常 stable 已完成。
 
 独立的前置开发工具，不属于 yuki-link 正式 ticket，也不依赖 `core/` 或 `providers/`。
 
@@ -94,6 +104,9 @@ Windows 常驻服务可以显式传入 `--codex-bin 'C:\path\to\codex.exe'`，�
 
 | 工具 | 主要输入 | 返回 |
 | --- | --- | --- |
+| `harness_register_ticket` | `project_key, project_name, ticket_key, title, reference, expected_worktree?` | 稳定 `project_id, ticket_id, conversation_id` |
+| `harness_attach` | `ticket_id, session_id, run_id?` | 显式 Codex 归属与 recording 状态 |
+| `harness_record_workflow` | `ticket_id, request_id, expected_revision, schema_version: 1, snapshot` | `workflow_revision, event_id, cursor, deduplicated, applicability, recording` |
 | `codex_list_models` | `refresh?` | 本机模型、各自 reasoning 档位、查询时间 |
 | `codex_start_session` | `request_id, cwd, prompt, permissions?, sender?, model?, reasoning?, timeout_ms?` | `session_id, run_id, status, model, reasoning, permissions, timeout_ms, deduplicated` |
 | `codex_send_message` | `request_id, session_id, prompt, sender?, model?, reasoning?, timeout_ms?` | 同上；权限固定继承 session，不能在续聊中切换 |
