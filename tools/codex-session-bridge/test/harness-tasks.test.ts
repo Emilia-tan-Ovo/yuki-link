@@ -235,7 +235,7 @@ test('一次来源读取失败保留独立采集缺口，重复刷新不重复�
   assert.equal((await f.detail(ticket.ticket_id)).recording.sources.tasks.state, 'collection-failed');
 });
 
-test('保存失败不拒绝新任务、不伪造未执行；恢复只补可用输出和快照', async t => {
+test('保存失败拒绝新任务且不伪造执行；恢复只补已有任务的可用输出和快照', async t => {
   const f = await fixture(t), ticket = await f.register();
   const { service_epoch } = await f.call('task_status');
   const args = { service_epoch, request_id: 'saved-prefix', ticket_id: ticket.ticket_id, cwd: f.workspace, script: '绝不能长期保存的脚本正文' };
@@ -246,11 +246,20 @@ test('保存失败不拒绝新任务、不伪造未执行；恢复只补可用�
   const journal = path.join(f.runtime, 'harness/history.jsonl');
   renameSync(journal, journal + '.saved'); mkdirSync(journal);
   f.children[0].stdout.write('故障期间仍在源内\n');
-  const accepted = await f.call('task_start', { ...args, request_id: 'recording-failed' });
-  assert.equal(accepted.isError, false);
-  assert.equal(accepted.harness_recording.state, 'recording-failed');
-  assert.equal(accepted.harness_recording.accepted, 'recording-failed');
-  assert.equal(f.children.length, 2);
+  const rejected = await f.call('task_start', { ...args, request_id: 'recording-failed' });
+  assert.equal(rejected.isError, true);
+  assert.equal(rejected.error.code, 'RECORDING_FAILED');
+  assert.equal(f.children.length, 1);
+  const status = await f.call('task_status', { task_id: start.task_id });
+  assert.equal(status.status, 'running', 'health 降级不得自动停止已有 task');
+  assert.equal(status.harness_recording.state, 'recording-failed');
+  assert.equal(status.evidence_gap.state, 'recording-failed');
+  const output = await f.call('task_output', { task_id: start.task_id });
+  assert.deepEqual(output.events.map((event: Wire) => event.text), ['已保存前缀\n', '故障期间仍在源内\n']);
+  assert.equal(output.evidence_gap.state, 'recording-failed');
+  const stopping = await f.call('task_stop', { task_id: start.task_id });
+  assert.equal(stopping.status, 'stopping', 'stop 回执不等于进程已经 terminal');
+  assert.equal(stopping.evidence_gap.state, 'recording-failed');
   const failed = await f.detail(ticket.ticket_id);
   assert.equal(failed.next_cursor, before.next_cursor);
   assert.equal(failed.recording.state, 'recording-failed');
@@ -260,8 +269,8 @@ test('保存失败不拒绝新任务、不伪造未执行；恢复只补可用�
   const recovered = await f.detail(ticket.ticket_id), events = taskRecords(recovered);
   assert.deepEqual(events.filter(r => r.kind === 'output').map(r => r.payload.text), ['已保存前缀\n', '故障期间仍在源内\n']);
   assert.ok(events.some(r => r.kind === 'lifecycle-gap'));
-  assert.equal(f.children.length, 2);
-  await f.call('task_stop', { task_id: start.task_id });
+  assert.equal(f.children.length, 1);
+  assert.equal((await f.call('task_status', { task_id: start.task_id })).status, 'stopped');
 });
 
 test('MCP 受管任务在 UI 离线期间保存双流与停止事实，重建后同票历史不重复', async t => {

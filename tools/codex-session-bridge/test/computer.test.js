@@ -20,7 +20,8 @@ async function connect(t, computerOptions = {}, beforeClose = () => {}) {
   const workspace = path.join(root, '工作区 空格'); mkdirSync(workspace);
   const readOnly = path.join(root, '只读'); mkdirSync(readOnly);
   const computer = new ComputerTools({ readRoots: [workspace, readOnly], writeRoots: [workspace], runtime: path.join(root, 'runtime'), ...computerOptions });
-  const manager = { closing: false, catalog: { list() { throw Error('Codex unavailable'); } } };
+  const manager = { closing: false, catalog: { list() { throw Error('Codex unavailable'); } },
+    harness: { executionGate: () => ({ recording: { state: 'recording' }, evidence_gap: null }) } };
   const server = createHttpServer(manager, computer);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const client = new Client({ name: 'computer-test', version: '1' });
