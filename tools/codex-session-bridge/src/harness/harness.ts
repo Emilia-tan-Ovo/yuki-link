@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { redact } from '../errors.js';
 import { Journal } from './journal.ts';
+import { ComputerCalls } from './computer-calls.ts';
 import { HarnessError, registrationSchema, attachSchema } from './model.ts';
 import type { Source, Project, Ticket, Binding, Event, Operation, RecordEntry } from './model.ts';
 
@@ -12,6 +13,7 @@ const unavailable = { state: 'unavailable', reason: 'source-not-provided' };
 export class Harness {
   journal: Journal;
   source: Source;
+  computerCalls: ComputerCalls;
   projects = new Map<string, Project>();
   tickets = new Map<string, Ticket>();
   bindings = new Map<string, Binding>();
@@ -26,6 +28,7 @@ export class Harness {
     this.source = source;
     this.journal = new Journal(runtime);
     for (const record of this.journal.records) this.apply(record);
+    this.computerCalls = new ComputerCalls(this.journal, id => this.ticket(id));
   }
   private apply(record: RecordEntry) {
     const data = record.data;
@@ -116,8 +119,10 @@ export class Harness {
   start(interval = 1000) { this.scan(true); this.timer ??= setInterval(() => this.scan(), interval); this.timer.unref(); }
   close() { if (this.timer) clearInterval(this.timer); this.timer = null; this.scan(); }
   health() {
-    return { state: this.journal.failure ? 'recording-failed' : this.sourceFailure ? 'collection-failed' : 'recording',
-      reason: this.journal.failure ?? this.sourceFailure, source_id: this.journal.sourceId, observed_at: this.checkedAt };
+    const computer = this.computerCalls.health();
+    return { state: this.journal.failure ? 'recording-failed' : this.sourceFailure || this.computerCalls.collectionFailure ? 'collection-failed' : 'recording',
+      reason: this.journal.failure ?? this.sourceFailure ?? computer.reason, source_id: this.journal.sourceId,
+      observed_at: this.checkedAt, sources: { computer } };
   }
   overview() {
     return { projects: [...this.projects.values()].map(p => ({ ...p, tickets: [...this.tickets.values()].filter(t => t.project_id === p.id) })),
@@ -129,10 +134,12 @@ export class Harness {
     const all = this.journal.records.filter(r => r.cursor > after && (
       r.data.kind === 'registered' && r.data.ticket.id === id ||
       r.data.kind === 'attached' && r.data.binding.ticket_id === id ||
-      r.data.kind === 'event' && r.data.event.ticket_id === id));
+      r.data.kind === 'event' && r.data.event.ticket_id === id ||
+      r.data.kind === 'computer_call' && r.data.call.ticket_id === id));
     const records = all.slice(0, 100);
     return { ticket, records, next_cursor: records.at(-1)?.cursor ?? after, has_more: all.length > records.length,
-      recording: this.health(), current: { state: this.journal.failure || this.sourceFailure || !this.checkedAt ? 'unknown' : 'observed', observed_at: this.checkedAt },
+      recording: this.health(), computer_calls: this.computerCalls.status(id),
+      current: { state: this.health().state !== 'recording' || !this.checkedAt ? 'unknown' : 'observed', observed_at: this.checkedAt },
       workflow: unavailable, changes: unavailable, acceptance: unavailable, source_gaps: [
         '未提供的工具正文/重试细节及接入前缺失日志：unavailable / source-not-provided',
         '尚未出现的 thread、消息或结果：unknown / not-yet-observed',

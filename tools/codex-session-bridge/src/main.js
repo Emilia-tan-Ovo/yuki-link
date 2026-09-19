@@ -60,16 +60,20 @@ if (values.help) {
     const shutdown = async () => {
       if (shuttingDown) return;
       shuttingDown = true;
+      observation.draining = true;
+      manager.closing = true;
+      computer.closing = true;
+      manager.harness.computerCalls.closing = true;
       try {
         // Raw connected sockets are not part of activity counters and can keep Node alive after an accepted stop.
         if (httpServer) { httpServer.close(); httpServer.closeIdleConnections(); httpServer.closeAllConnections(); }
+        // Keep the writer and read-only observation alive until all computer
+        // results are captured. Failed termination must not release ownership.
+        await computer.close();
+        await manager.harness.computerCalls.drain();
+        await manager.close(); // Final Codex capture, then release RuntimeStore.
         if (controlServer) { controlServer.close(); controlServer.closeIdleConnections(); controlServer.closeAllConnections(); }
         if (harnessServer) { harnessServer.close(); harnessServer.closeAllConnections(); }
-        manager.harness.close();
-        await manager.close();
-        // manager.close may append terminal run events before releasing its lock.
-        // Capture is finalized by SessionManager before that release.
-        await computer.close();
         if (server) await server.close();
         process.exitCode = 0;
       } catch (error) { console.error(JSON.stringify(publicError(error))); process.exitCode = 1; }
@@ -106,11 +110,14 @@ if (values.help) {
     httpServer?.close(); httpServer?.closeAllConnections();
     controlServer?.close(); controlServer?.closeAllConnections();
     harnessServer?.close(); harnessServer?.closeAllConnections();
-    manager?.harness?.close();
     console.error(JSON.stringify(publicError(error)));
+    if (manager) manager.closing = true;
+    if (computer) computer.closing = true;
+    if (manager?.harness) manager.harness.computerCalls.closing = true;
+    await computer?.close();
+    await manager?.harness?.computerCalls.drain();
     if (manager) await manager.close();
     else store?.close();
-    await computer?.close();
     process.exitCode = 1;
   }
 }
