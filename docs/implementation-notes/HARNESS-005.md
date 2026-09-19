@@ -16,11 +16,11 @@
 
 Workflow 记录加入 #42/#43 已有 journal union、cursor、单 writer 与分来源 recording health；未改同步电脑调用、OwnedTasks、执行器、manager/store、shutdown、Control Center/Supervisor 或 resident 配置。仓库 Workflow Skill/checkpoint 模板只增加“已登记且入口可用时保存成功回执”的可选约定；未启用 Harness 时保持原流程。
 
-实际写集（除本文件外）：
+实际写集（除本文件外；实现提交后 Emilia 另补 1 个旧工具数量断言）：
 
 - 新增 `tools/codex-session-bridge/src/harness/workflow-model.ts`、`workflow-source.ts`、`workflow.ts`、`test/harness-workflow.test.ts`。
 - 修改 `src/harness/model.ts`、`harness.ts`、`server.ts`、`src/mcp.js`。
-- 修改 `test/computer.test.js`、`test/tasks.test.js`、`test/harness-tasks.test.ts` 的 21 工具 schema 断言与名称。
+- 修改 `test/computer.test.js`、`test/tasks.test.js`、`test/harness-tasks.test.ts` 的 21 工具 schema 断言与名称；实现后 full suite 又发现 `test/bridge.test.js` 仍保留旧 8 工具断言，Emilia 机械改为 9 并定向复验通过。
 - 修改 `tools/codex-session-bridge/README.md`、`.workflow/skills/engineering-workflow/SKILL.md`、`checkpoint-template.md`。
 
 ## 测试与证据
@@ -36,8 +36,9 @@ Workflow 记录加入 #42/#43 已有 journal union、cursor、单 writer 与分�
 | `node --test --test-name-pattern '同 request 的 Ticket' test/harness-tasks.test.ts` | 1/1 passed，exit 0；Ticket 归属兼容与 21 工具 schema 通过。 |
 | 最终 `npm run typecheck` | exit 0。 |
 | `git diff --check` | exit 0；仅有 Git 的 CRLF 提示，无 whitespace error。 |
+| Emilia 外层 full suite | 125 tests / 120 pass / 4 fail / 1 skip。其中 1 个失败是 `bridge.test.js` 旧工具数断言（8→9），随后定向复验 1/1 pass；其余 3 个为既有 executable discovery（2）/ task timing（1）脆弱测试，未在本票扩修。 |
 
-按 Owner 明确边界未运行 full suite；未执行真实浏览器可视交互、ChatGPT→resident YCA、部署或 V0 全链验收。测试使用真实 MCP/HTTP/Journal/Git/文件系统及隔离仓库，只有 Codex source 使用无 session fixture；这些结果证明源码与定向 fixture 通过，不表示真实链路 accepted 或日常 stable。
+full suite 已由 Emilia 在实现提交后通过 YCA 外层执行一次，并如实保留上述 3 个既有非本票失败；未执行真实浏览器可视交互、ChatGPT→resident YCA、部署或 V0 全链验收。测试使用真实 MCP/HTTP/Journal/Git/文件系统及隔离仓库，只有 Codex source 使用无 session fixture；这些结果证明源码与定向 fixture 通过，不表示真实链路 accepted 或日常 stable。
 
 ## 交接状态
 
