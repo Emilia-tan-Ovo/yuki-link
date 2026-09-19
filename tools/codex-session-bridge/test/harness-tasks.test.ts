@@ -93,6 +93,44 @@ async function fixture(t: TestContext) {
   };
 }
 const taskRecords = (detail: Wire): Wire[] => detail.records.filter((r: Wire) => r.data.kind === 'owned_task').map((r: Wire) => r.data.task);
+test('root exit 早于 pipes close 时保存 unknown 与晚到输出，关闭后收敛', async t => {
+  const f = await fixture(t), ticket = await f.register();
+  const { service_epoch } = await f.call('task_status');
+  const start = await f.call('task_start', { service_epoch, request_id: 'exit-before-close', ticket_id: ticket.ticket_id, cwd: f.workspace, script: 'unused' });
+  const child = f.children[0];
+  assert.equal((await f.call('task_status', { task_id: start.task_id })).status, 'running');
+  child.stdout.write('退出前\n');
+  child.endProcess(7, false);
+  try {
+    await f.openUI();
+    const detail = await f.detail(ticket.ticket_id);
+    const exit = taskRecords(detail).find(r => r.kind === 'root.exit')!;
+    assert.equal(detail.owned_tasks[0].current.state, 'observed');
+    for (const snapshot of [exit.snapshot, detail.owned_tasks[0].snapshot]) {
+      assert.equal(snapshot.status, 'unknown');
+      assert.equal(snapshot.exit_code, 7);
+      assert.equal(snapshot.signal, null);
+      assert.equal(snapshot.root_state, 'exited');
+      assert.equal(snapshot.output.pipes_closed, false);
+      assert.equal(snapshot.termination.requested, false);
+    }
+    assert.equal((await f.call('task_status', { task_id: start.task_id })).status, 'unknown');
+    child.stdout.write('晚到 stdout\n');
+    child.stderr.write('晚到 stderr\n');
+  } finally { child.endProcess(7); }
+  await waitTask(f.call, start.task_id, (s: Wire) => s.status === 'failed');
+  const detail = await f.detail(ticket.ticket_id), records = taskRecords(detail);
+  const final = records.find(r => r.kind === 'final')!;
+  assert.equal(final.snapshot.status, 'failed');
+  assert.equal(final.snapshot.exit_code, 7);
+  assert.equal(final.snapshot.output.pipes_closed, true);
+  assert.equal(detail.owned_tasks[0].snapshot.status, 'failed');
+  assert.ok(records.every(r => r.binding.task_id === start.task_id));
+  assert.ok(!records.some(r => r.kind === 'stop.requested'));
+  assert.deepEqual(records.filter(r => r.kind === 'output').map(r => [r.payload.stream, r.payload.text]),
+    [['stdout', '退出前\n'], ['stdout', '晚到 stdout\n'], ['stderr', '晚到 stderr\n']]);
+});
+
 test('同 request 的 Ticket 身份不可改变，省略归属兼容旧行为且无新增工具', async t => {
   const f = await fixture(t), a = await f.register(), b = await f.register('OTHER');
   const { service_epoch } = await f.call('task_status');

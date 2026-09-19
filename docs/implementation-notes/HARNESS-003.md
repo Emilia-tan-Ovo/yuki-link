@@ -55,3 +55,14 @@ TaskCollector 从已提交记录重建去重与进度，source/epoch/task 身份
 - 不涉及 #44/#45/#48/#50/#51、不部署 resident、不修改 Control Center/Supervisor；无 push/PR。
 - 受测内容字节清单：`.local/workflow-state/HARNESS-003-tested-content.json`；精确 commit SHA 由提交后 checkpoint 记录。本文件与源码同批提交，避免自身 SHA 自引用。
 - 提交主题：`feat: 持久记录受管任务生命周期与公开输出`。下一步由 Emilia 使用 fixed point→提交 diff、#43 Notes/Spec、规范、本 handoff 和最小测试证据启动一次 fresh primary Review；不携带完整 implementation 聊天。
+
+## S1 fix handoff（fresh primary Review 后）
+
+- 原受审 target：`19053b9843dceb8a69c98ca9e13137daeef0f21f`；报告：`.local/workflow-state/HARNESS-003-review.md`。原结论 Standards passed / 0 findings；Spec 仅 S1 / P2 / open，无 incomplete。
+- S1 修复：在 `ComputerTask` 的 root exit 回调发布事实前，仅当管道尚未关闭且没有 termination request 时设 `status=unknown`。保留 exit_code/signal/root_state，不制造 stop requested；停止、timeout/output_limit/shutdown 分支不变，关闭管道后仍由既有 reconcile 得出终态。未改 TaskCollector 或 #44 gate。
+- 窄回归使用现有 processFixture 与公开 MCP→Harness detail seam：spawn 后 `endProcess(7, false)`，核对 durable root.exit、当前快照和 task_status；随后写入晚到 stdout/stderr 并 close，核对同 task 的 failed/exit_code=7、完整公开输出且无 stop.requested。
+- 红测：`node --test --test-name-pattern 'root exit 早于' test/harness-tasks.test.ts`，1 failed / exit 1，实际 running、预期 unknown；同命令修复后 1 passed / exit 0。
+- 定向：`node --test test/harness-tasks.test.ts`，7/7 passed / exit 0；strict `npm run typecheck`，exit 0。日志：`.local/workflow-state/HARNESS-003-S1-{red,green,tasks,typecheck}.log`。
+- 此修复不直接改变已请求 shutdown 的分支，未额外运行 shutdown；按 Owner 范围未重跑完整 bridge suite、未调查 discovery ETIMEDOUT。原未变范围的 Review/suite 证据保留，原全套 exit 1 事实不变。
+- 实际 tracked 写集仅 `tools/codex-session-bridge/src/computer/tasks.js`、`tools/codex-session-bridge/test/harness-tasks.test.ts`、本 handoff。提交主题：`fix: 修正根进程退出后管道未关闭的任务状态`；精确 fix SHA 与受测文件摘要见提交后 checkpoint。
+- S1：**fixed / pending focused verification**。review_policy: delegated，接收方 Emilia / engineering-workflow；下一步只针对原 S1 和修复 diff 做 fresh focused verification。本实现会话不自行 Review/Acceptance，不 push/PR/部署。

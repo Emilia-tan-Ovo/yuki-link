@@ -153,6 +153,7 @@ class ComputerTask {
     });
     child.once('exit', (code, signal) => {
       this.rootState = 'exited'; this.exitCode = code; this.signal = signal;
+      if (!this.closed && !this.termination.requested) this.status = 'unknown';
       this.observe('root.exit');
       clearTimeout(this.timer);
       this.armCleanup();
