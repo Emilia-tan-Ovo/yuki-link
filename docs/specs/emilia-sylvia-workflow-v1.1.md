@@ -112,6 +112,8 @@ Workflow v1.1 同时纳入两个工程增强方向：
 - 若存在上层 workflow policy，`implement` 将后续 Review 交给 `review-change`；单独使用 `implement` 时继续默认调用完整 `code-review`。
 - ticket-design 与 implementation 默认分离为 fresh session；Implementation Notes + checkpoint 是阶段连续性的 source of truth，只有 continuity 本身是验收目标或 Owner 明确批准时才例外复用。
 - 模型路由：普通 ticket-design / implementation / finding fix / focused review 默认 `gpt-5.6-sol medium`；复杂跨模块实现或 full review 可用 `gpt-5.6-sol high`；Astra 只在最困难问题或 Sol high 已不足时升级，且每次升级前由 Owner 明确批准；Luna/Terra 禁用，xhigh/max/ultra 默认禁用。
+- Codex 仓库工程 session 默认继承 Owner 本机原生权限；当前有效默认为 `danger-full-access + on-request`。除 Owner 明确要求更窄权限外，Orchestrator 不得显式降为 `workspace-write` / `read-only`。Full Access 只改变执行能力，不改变 Ticket scope 或 Owner gate。
+- 新 Repository Engineer adapter 必须提供可核验的权限 source of truth/冻结、durable session/run、usage、side-effect 与恢复事实，才算 workflow-compatible。
 - 默认最多一条活跃 Codex 模型线；第二条模型线必须有明确关键路径收益并取得 Owner 批准。
 - Git/GitHub、full suite、hash、checkpoint/closeout、大日志提取等机械工作由 Emilia + YCA 确定性完成；大型输入先压缩后进入模型。
 - 每个 run 的 input/cached/output/model/reasoning 进入 checkpoint `model_usage`；明显超预算时标记 cost anomaly 并在下一次模型调用前说明继续理由与收缩方案，但不以固定 token 数对合理大票设置硬熔断。
