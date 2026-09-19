@@ -20,7 +20,7 @@ disable-model-invocation: true
 
 | 模式 | 适用证据 | 动作 |
 | --- | --- | --- |
-| full | 权限/安全、并发、持久化、数据/schema/迁移、外部重要契约、架构边界、广泛生产变更，或用户显式要求完整审查 | 在 fresh context 中实际读取并执行同根 `code-review/SKILL.md`，两个轴独立并行、分开报告 |
+| full | 权限/安全、并发、持久化、数据/schema/迁移、外部重要契约、架构边界、广泛生产变更，或用户显式要求完整审查 | 在 fresh context 中实际读取并执行同根 `code-review/SKILL.md`；默认由同一 fresh reviewer 串行执行 Standards → Spec 并分开报告。只有 Owner 明确批准第二条活跃模型线时才允许并行 reviewer |
 | focused | 边界明确的局部 bug fix、具体风险、小范围行为变化，或已审查内容的原 finding 修复 | fresh reviewer 只核对原 finding/风险、修后相关 diff、fixed point 和必要规范/测试，检查修复直接影响的回归 |
 | evidence | 无生产/执行行为变化的文档、验收记录、closeout 或元数据 | fresh reviewer 做 diff 有效性和证据一致性核对 |
 
