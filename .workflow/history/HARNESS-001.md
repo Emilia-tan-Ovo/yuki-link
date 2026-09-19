@@ -2,7 +2,7 @@
 
 > 冻结历史摘要，不是动态 runtime source of truth。本机 raw 位置不保证在 fresh clone 可用；available 只表示观察时本机文件存在，不代表内容有效或验收通过。
 
-- 观察时间：2026-09-19T12:12:00.325Z
+- 观察时间：2026-09-19T12:13:29.682Z
 - Ticket / Issue：HARNESS-001 / GitHub \#40
 - 来源：docs/specs/yuki-harness-v0.md；docs/implementation-notes/HARNESS-001.md
 - worktree：C:\\Users\\KQ\_Sh\\Desktop\\yuki-link\\.local\\yuki-harness-v0-001
@@ -12,7 +12,7 @@
 
 ## 过程与结果
 
-HARNESS-001 已实现 Ticket 显式登记/关联、持久主 Conversation 与按 Project 分组的只读工作面；primary full Review 发现 F1 后最小修复并经 fresh focused re-review verified；Emilia 已按 \#40 本地产品公开 seam 完成 Acceptance。当前 resident ChatGPT/YCA 仍是旧 18 工具 schema，尚未部署本提交；V0 全链真实汇合验收留给 HARNESS-011 / \#51。
+HARNESS-001 已实现 Ticket 显式登记/关联、持久主 Conversation 与按 Project 分组的只读工作面；primary full Review 发现 F1 后最小修复并经 fresh focused re-review verified；Emilia 已按 \#40 本地产品公开 seam 完成 Acceptance；PR \#53 已创建。当前 resident ChatGPT/YCA 仍是旧 18 工具 schema，尚未部署本提交；V0 全链真实汇合验收留给 HARNESS-011 / \#51。
 
 ## implementation
 
@@ -62,9 +62,9 @@ HARNESS-001 已实现 Ticket 显式登记/关联、持久主 Conversation 与按
 
 ## PR
 
-- 状态：pending
-- 摘要：closeout archive 生成时尚未 push / 创建 PR。
-- 证据来源：unknown / 尚无来源
+- 状态：recorded
+- 摘要：PR \#53 OPEN；base codex/codex-session-bridge，head codex/yuki-harness-v0-001；PR body 包含 Closes \#40。
+- 证据来源：https://github.com/Emilia-tan-Ovo/yuki-link/pull/53
 
 ## Merge
 
@@ -76,20 +76,20 @@ HARNESS-001 已实现 Ticket 显式登记/关联、持久主 Conversation 与按
 
 - full-bridge-suite：available
   - 本机位置：.local/workflow-state/HARNESS-001-bridge-final.log
-  - 观察时间：2026-09-19T12:12:00.325Z；适用内容 / 来源身份：accepted implementation line：105 pass / 1 skip / 0 fail；初始实现 HEAD 5f3b60a 前受测字节，F1 局部修复不影响未变范围
+  - 观察时间：2026-09-19T12:13:29.682Z；适用内容 / 来源身份：accepted implementation line：105 pass / 1 skip / 0 fail；初始实现 HEAD 5f3b60a 前受测字节，F1 局部修复不影响未变范围
 
 - deployment-probe：available
   - 本机位置：.local/workflow-state/HARNESS-001-deployment-probe.log
-  - 观察时间：2026-09-19T12:12:00.325Z；适用内容 / 来源身份：Control Center 实际部署加载定向场景 1/1；验证 Node 24 无编译 TS 装配与工具摘要
+  - 观察时间：2026-09-19T12:13:29.682Z；适用内容 / 来源身份：Control Center 实际部署加载定向场景 1/1；验证 Node 24 无编译 TS 装配与工具摘要
 
 - primary-review：available
   - 本机位置：.local/workflow-state/HARNESS-001-review.md
-  - 观察时间：2026-09-19T12:12:00.325Z；适用内容 / 来源身份：subject 28863a6..5f3b60a；full/high；唯一 F1/P2
+  - 观察时间：2026-09-19T12:13:29.682Z；适用内容 / 来源身份：subject 28863a6..5f3b60a；full/high；唯一 F1/P2
 
 - focused-rereview：available
   - 本机位置：.local/workflow-state/HARNESS-001-focused-review.md
-  - 观察时间：2026-09-19T12:12:00.325Z；适用内容 / 来源身份：fix subject 5f3b60a..11859c7；F1 verified；0 open blocker
+  - 观察时间：2026-09-19T12:13:29.682Z；适用内容 / 来源身份：fix subject 5f3b60a..11859c7；F1 verified；0 open blocker
 
 - acceptance：available
   - 本机位置：.local/workflow-state/HARNESS-001-acceptance.md
-  - 观察时间：2026-09-19T12:12:00.325Z；适用内容 / 来源身份：Emilia deterministic Acceptance；\#40 5/5 AC PASS；明确 not resident-deployed / not \#51 / not stable
+  - 观察时间：2026-09-19T12:13:29.682Z；适用内容 / 来源身份：Emilia deterministic Acceptance；\#40 5/5 AC PASS；明确 not resident-deployed / not \#51 / not stable
