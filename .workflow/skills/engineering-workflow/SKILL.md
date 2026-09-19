@@ -31,7 +31,7 @@ checkpoint 的 `phase` 表示**下一步要进行的工作**，不是已经完�
 | 已有 Notes，实现/测试尚未完成，或有待修 finding | implementation | `implement`；修复时携带原 finding 及受影响范围 |
 | 实现及必要测试已完成，缺对应内容的有效 Review | review | fresh review；见下方兼容边界 |
 | Review 已通过且证据仍适用，缺验收 | acceptance | **优先由 Emilia 从外部事实逐项核对 Ticket**；只有 criteria 本身要求 Agent/session 行为时才启动 fresh 验收者 |
-| 验收已通过，待交接/归档 | closeout | 按仓库 closeout 流程交接；自动化尚未提供时明确留待处理 |
+| 验收已通过，待交接/归档 | closeout | 读取随包 closeout archive 说明，生成摘要并核对证据 |
 
 领域 Skill 调用前实际读取文件。新 Owner 产品、安全、架构、数据语义或范围决定才向 Owner 提问；事实查找和已决定事项由 Agent 完成。上游产物缺失时返回最早的必要阶段，明确缺口，保留仍然有效的下游证据。
 
@@ -56,7 +56,7 @@ Owner 明确表达“收尾”“别扩范围”“我要休息/睡觉”或等�
 
 对 Owner 的过程更新默认只回答三件事：**现在在做什么、为什么这是当前票必须的、还剩什么**。内部 digest、fixture、cursor、isolation 等低层细节只在 Owner 主动询问或确实影响决策时展开。
 
-### Review policy 与 005 边界
+### Review policy 与 closeout
 
 本 workflow 调用 implement 时显式传递 `review_policy: delegated`、接收 handoff 的上层、Ticket/Spec、fixed point 与授权终点。先读取同根 implement 及其 handoff 约定；仅有本 Skill 文件或旧 checkpoint 不构成 policy，独立 implement 保留默认完整 code-review。
 
@@ -64,7 +64,7 @@ implement 返回持久化 Implementation Handoff 后，核对测试、实际 com
 
 风险分类只由 review-change 定义。接收其报告后核对受审内容仍适用及 finding 状态：有待修 finding → implementation（保留原 finding 与修复基线）；缺轴/漂移 → 补必要审查；有效通过 → acceptance。已有充分证据时不重复 full review。finding 修复后 fresh 定向复核，出现新风险时由 review-change 升级；始终保留原 Standards / Spec 两轴结论。
 
-closeout 按当前仓库已提供的流程执行；005 archive automation 尚不可用时，保留 `phase: closeout`、已完成的验收事实和准确的 next action。不能自动关闭父 Issue、合并 PR、安装全局 Skills，或把本票验收说成整个 v1.1 已完成。
+进入 closeout 时读取 [归档输入与生成协议](closeout-archive.md)，用同根 `scripts/closeout-archive.mjs` 从精简本地输入生成 `.workflow/history/<ticket>.md`。先保存本机 evidence 观察快照，再确定性生成；Emilia 提交前回读摘要，对照实际来源做 evidence consistency 检查。完成标准是必要字段及来源齐全、缺失/过期/未知已标明、raw 留本机、归档可独立理解；生成成功本身不证明验收通过。PR/merge 等尚未发生时保留 pending/unknown，后续有回执再补记；checkpoint 保存剩余动作和授权边界。不能自动关闭父 Issue、合并 PR、安装全局 Skills，或把本票验收说成整个 v1.1 已完成。
 
 ## 3. 在边界保存可恢复产物
 

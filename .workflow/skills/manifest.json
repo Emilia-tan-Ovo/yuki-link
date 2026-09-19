@@ -56,7 +56,9 @@
       "files": [
         "SKILL.md",
         "checkpoint-template.md",
-        "recovery.md"
+        "recovery.md",
+        "closeout-archive.md",
+        "scripts/closeout-archive.mjs"
       ]
     },
     {

@@ -62,6 +62,8 @@ verify 确认磁盘内容和版本，不证明当前会话已重新加载 Skill�
 
 ## 测试与维护
 
+005 的 closeout helper 随 engineering-workflow 完整安装，入口与 schema 见 [归档协议](../../.workflow/skills/engineering-workflow/closeout-archive.md)。它独立于 installer CLI：observe 只探测显式本机位置，generate 从冻结快照生成轻量 Markdown。`test/closeout-archive.test.js` 覆盖公共输入/输出、确定性、证据状态、非法输入/路径与 raw 不复制；现有安装测试补充 source Skill 树不可用时运行安装版 helper。此类确定性验证不代表 006 全流程 Agent 验收或真实全局安装。
+
 `npm test` 从公共 CLI 创建临时 Git 仓库及测试安装根，覆盖完整 diff、批准/漂移、版本核验、未知文件、链接、Windows 路径、无 rg、原字节保留、互斥、故障和中断。故障由测试子进程在 OS 文件操作处注入，生产入口没有测试开关。004 增加完整 Review 包安装、受审内容采集和行为 fixture 检查器的自动回归；检查器的 synthetic 输入只测试核验器，不代表真实 Agent 按 Skill 执行。fresh-agent 路由/隔离/standalone 兼容性需按 [fixture 说明](fixtures/README.md) 另行验收。`npm run check` 检查 installer、随包 helper 和 fixture 的 Node 语法；本工具没有 TypeScript 或额外 lint 配置。
 
 YCA 回归入口是 `tools/codex-session-bridge/test/workflow-protection.test.js`、`text.test.js` 与 `control-paths.test.js`；断言普通 MCP 文件工具仍拒写安装版 Skill / AGENTS，同时 repo source 可编辑。搜索维护资料时先 `Get-Command rg -ErrorAction SilentlyContinue`；没有 rg 则使用限定目录的 `Get-ChildItem` / `Select-String`。

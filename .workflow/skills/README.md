@@ -8,4 +8,6 @@
 
 Review 依赖必须来自同一安装根：使用分级工作流时应一并选择 `engineering-workflow,implement,review-change,code-review` 的兼容版本。本工具不递归安装依赖；TDD 等其他 Skill 仍需环境提供。source 实现、确定性 fixture 测试、fresh-agent 行为验收是不同证据层级，见 [fixture 说明](../../tools/workflow-skills/fixtures/README.md)。真实全局安装与 fresh-session 激活需要另行批准，source/fixture 可用不代表已激活或 stable。
 
+005 为 engineering-workflow 增加随包 [closeout archive helper 与输入协议](engineering-workflow/closeout-archive.md)：精简输入/观察快照留 `.local`，仅生成 `.workflow/history/<ticket>.md`。脚本可从安装目录独立运行；生成与证据核对分开，raw 不进入 Git。当前能力声明限于 source 实现，真实 closeout 验收和全局激活由后续事实确认。
+
 当前内容版本由 Git commit 与实际字节摘要共同表示；`schema_version` 仅表示清单格式。后续 source 更新不会自动覆盖全局安装，安装目录改动也不会自动反向导入。导入来源清单保留历史，新内容的可追溯性由 Git 承担。

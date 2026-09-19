@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync, renameSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fixture, ok, json } from './helpers.js';
 
@@ -11,7 +12,9 @@ test('engineering-workflow installs its portable recovery references only throug
   assert.deepEqual(plan.source.files.map(file => file.path).sort(), [
     'engineering-workflow/SKILL.md',
     'engineering-workflow/checkpoint-template.md',
+    'engineering-workflow/closeout-archive.md',
     'engineering-workflow/recovery.md',
+    'engineering-workflow/scripts/closeout-archive.mjs',
   ]);
   assert.deepEqual(readdirSync(f.target), []);
   assert.equal(f.call('apply', ['--plan', preview.plan]).data.error.code, 'APPROVAL_REQUIRED');
@@ -20,6 +23,28 @@ test('engineering-workflow installs its portable recovery references only throug
   for (const file of plan.source.files) {
     assert.deepEqual(readFileSync(path.join(f.target, file.path)), readFileSync(path.join(f.repo, '.workflow/skills', file.path)));
   }
+  // Installed helper remains executable with the source Skill tree unavailable.
+  const pending = { status: 'pending', summary: '尚待执行', sources: [] };
+  const stage = { ...pending, sessions: [] };
+  const input = path.join(f.repo, '.local/closeout.json');
+  writeFileSync(input, JSON.stringify({
+    schema_version: 1, ticket: '005', issue: '#27', sources: ['ticket.md', 'spec.md'],
+    observed_at: '2026-09-19T04:00:00.000Z', worktree: f.repo, branch: 'fixture',
+    fixed_point: f.head, head: f.head, summary: '安装版归档生成验证',
+    stages: { implementation: stage, review: stage, acceptance: stage },
+    metrics: pending, failures: pending, findings: pending, interventions: pending,
+    delivery: { pr: pending, merge: pending },
+    evidence: [{ id: 'raw', location: null, status: 'unknown', observed_at: '2026-09-19T04:00:00.000Z', identity: null }],
+  }));
+  const sourceSkills = path.join(f.repo, '.workflow/skills');
+  const hiddenSkills = path.join(f.repo, '.local/source-skills');
+  renameSync(sourceSkills, hiddenSkills);
+  try {
+    const generated = spawnSync(process.execPath, [path.join(f.target, 'engineering-workflow/scripts/closeout-archive.mjs'),
+      'generate', f.repo, input], { cwd: f.root, encoding: 'utf8', shell: false, windowsHide: true });
+    assert.equal(generated.status, 0, generated.stderr || generated.stdout);
+    assert.match(readFileSync(path.join(f.repo, '.workflow/history/005.md'), 'utf8'), /安装版归档生成验证/);
+  } finally { renameSync(hiddenSkills, sourceSkills); }
   const manifestPath = path.join(f.repo, '.workflow/skills/manifest.json');
   const manifest = json(manifestPath);
   manifest.skills.find(skill => skill.name === 'review-change').installable = false;
