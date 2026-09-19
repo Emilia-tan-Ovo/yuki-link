@@ -91,7 +91,7 @@
 | 9 | PASS | fresh recovery thread `01a0b824-...` 未继承旧聊天，仅凭 Ticket/Spec/checkpoint/reports/receipt 恢复到正确 implementation next action。 |
 | 10 | PASS | 受控 external interruption 前后 phase / finding / diff / Next action / receipt 保持；`effect.count=1`，未重做 prepare、初次实现或原 full Review。 |
 | 11 | PASS | run `b1677e21-...` 的 `codex_get_output(wait_ms=60000)` 实际返回 `wait_elapsed`，同 run 后续继续产生事件并自然 completed，`timeout_ms=null`。旧 `0c688d9^` live-test 每 1.5s 执行 output+status；同一 60s 窗口估算 80 次调用，对比当前 1 次，约减少 98.75%。这是基于旧代码 cadence 的估算，不冒充历史运行实测。证据：`.local/workflow-validation/006/wait-polling-evidence.json`。 |
-| 12 | PASS | standalone fixture `review-004-rexp6E` 未传 delegated policy；未提交 `result.txt` 先完成 fresh full 双轴（0/0 finding），随后才 commit `c67940e`。证据：`.local/workflow-validation/006/standalone-evidence.json` 与 fixture `commit-binding.json`。 |
+| 12 | PASS | clean standalone fixture `review-004-exhZUF` 未传 delegated policy；未提交 `result.txt` 时先完成 fresh full 双轴（Standards 0 / Spec 0 finding）并最终 subject revalidation，随后才 commit `58413bafa7afd4642d9a1eb512fd8753053f9e4a`。证据：`.local/workflow-validation/006/standalone-evidence.json` 与 fixture `.local/standalone/final-checkpoint.json`。先前 `review-004-rexp6E` 因尝试读取 fixture 外 memory 被主动停止并排除，不作为验收证据。 |
 | 13 | PASS | 能力级别按下方声明分离；本票只把真实链路标为 accepted，不把单次验收写成长期 stable。 |
 
 ### Capability status
