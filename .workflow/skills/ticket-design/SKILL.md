@@ -94,4 +94,4 @@ Keep the notes concise. Record decisions, not the conversation; include no subst
 > The current ticket is ready for implementation.
 
 Recommend `/implement <current-ticket>`. Invoke it only when the user explicitly asks.
-显式授权可以来自本轮 engineering-workflow 的“设计后继续实现”；此时完成本 Skill 后返回上层继续，无需再次请求同一授权。没有实现授权时仍停在设计交接。默认复用 ticket-design session；需要 fresh implementation 时先保存 Notes/checkpoint。
+显式授权可以来自本轮 engineering-workflow 的“设计后继续实现”；此时完成本 Skill 后返回上层继续，无需再次请求同一授权。没有实现授权时仍停在设计交接。**ticket-design model session 到此默认结束；implementation 必须从已持久化的 Implementation Notes + checkpoint + fixed point 启动 fresh session。** 不把本次设计聊天复制给 implementation。只有 Owner 明确批准 session continuity 例外、且上层确认继续复用确有必要、不会造成上下文异常膨胀时才可复用。

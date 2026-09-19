@@ -234,18 +234,28 @@ pair-with-docs
 
 但不能依赖连续；阶段产物必须足够恢复。
 
-### Ticket Implementation Session
+### Ticket Design / Implementation Sessions
 
 ```text
 ticket-design
-→ implement
+→ persist Implementation Notes / checkpoint
+→ fresh implement
 ```
 
-默认允许复用。
+**默认分离。** ticket-design 结束时把有价值的代码 seam、precedent、测试位置和已确认约束写进 Implementation Notes/checkpoint；implementation 从这些持久化产物、fixed point 和当前 Git 事实恢复，不继承设计聊天。
 
-原因：ticket-design 刚刚建立的代码 seam、precedent、测试位置等属于有价值实现上下文。
+只有 session/thread continuity 本身属于验收目标，或桓宇明确批准的例外，才允许跨阶段复用。
 
-如果 ticket-design 已经异常膨胀，可以由 Emilia 主动切 fresh implementation session，并通过 checkpoint/Implementation Notes 恢复。
+Review finding 修复也使用 fresh fix session，只携带 finding、修复基线、直接受影响文件/规范与最小回归；不返回原 implementation session。
+
+### 模型路由、并发与成本
+
+- `gpt-5.6-sol medium` 是普通阶段默认主力；复杂跨模块实现、复杂调试或 full review 使用 `gpt-5.6-sol high`。
+- `gpt-6-astra` 仅处理最困难问题或 Sol high 已证明不足的阶段；每次使用前先向桓宇说明必要性并取得明确批准。
+- `gpt-5.6-luna`、`gpt-5.6-terra` 禁用；`xhigh/max/ultra` 默认禁用。
+- 默认一条活跃 Codex 模型线；第二条模型线需明确关键路径收益并经桓宇批准。
+- 机械 Git/GitHub、full suite、hash、checkpoint/closeout、日志筛选由 Emilia + YCA 完成。
+- 每个 run 结束后记录 input/cached/output/model/reasoning；超出阶段/整票目标时标记 cost anomaly，下一次模型调用前必须说明继续理由与上下文收缩方案。复杂大票允许合理超标，不设置固定 token 数硬熔断。
 
 ### Review Session
 

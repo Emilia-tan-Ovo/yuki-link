@@ -20,10 +20,19 @@
 
 ### 2. Implementation Session 与 Review Session 分离
 
-- 一张小票的设计与实现可以保持连续 implementation session，让 Sylvia 保留局部代码上下文；
+- ticket-design 与 implementation 默认使用不同的 fresh session；设计阶段把局部 seam、precedent 和测试位置压缩进 Implementation Notes/checkpoint，实现阶段从持久化产物恢复，而不是继承设计聊天；
 - 独立 Review 默认使用新的 reviewer session，只提供 fixed point、diff、Issue/Spec、适用标准和必要证据；
-- 修复 finding 后使用 focused re-review，只携带原 finding 和修后 diff，不把整个实现 session 的长历史继续背入；
+- finding 修复必须使用 fresh fix session，只携带原 finding、修复基线、受影响文件/规范和最小测试；修后再用 fresh focused re-review，不把原 implementation 历史继续背入；
 - 需要验证“同一 session/thread 继承”的票据除外，该需求本身就是验收对象。
+
+### 2.1 模型路由、并发与成本
+
+- 默认主力为 `gpt-5.6-sol medium`；复杂跨模块实现、复杂调试和 full review 可使用 `gpt-5.6-sol high`。
+- `gpt-6-astra` 只用于最困难的问题或已有证据表明 Sol high 不足的阶段；启动 Astra 前必须向桓宇说明升级理由并取得明确批准。
+- `gpt-5.6-luna` 与 `gpt-5.6-terra` 禁止使用；`xhigh/max/ultra` 默认禁止，除非桓宇明确批准。
+- 默认最多一条活跃 Codex 模型线；第二条模型线只有明确关键路径收益并经桓宇批准才启动。
+- Git/GitHub、full suite、hash、checkpoint/closeout、大日志筛选等机械工作由 Emilia + YCA 确定性完成；模型只拿必要的结构化摘要、失败切片和当前 delta。
+- raw input 使用量只作为工程诊断预算，不按固定数字硬熔断。单 run 或整票明显超出目标时标记 cost anomaly，在下一次模型调用前说明继续理由与收缩方案。
 
 ### 3. Review 分级
 
@@ -206,7 +215,7 @@ Skill `code-review` 的正式行为不被改写；这里规定的是“什么时
 - 避免“为了确认无问题”无限启动新的 reviewer。
 
 **Sylvia**
-- implementation session 负责按 finding 修复；
+- fresh fix session 负责按 finding 做最小修复；原 implementation session 不再承接 Review finding；
 - reviewer session 不直接改代码；
 - focused reviewer 只确认原 finding 是否关闭。
 
