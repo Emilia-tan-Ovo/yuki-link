@@ -1,5 +1,25 @@
 # Yuki Computer Agent
 
+## Harness 首条持久 Conversation（HARNESS-001 / #40）
+
+新增 Harness 模块使用 TypeScript，由 Node 24 原生类型擦除直接运行；不加 loader、不生成发布构建产物。开发依赖由本包 lockfile 锁定；`npm run typecheck` 独立检查新模块及产品测试，`npm test` 包含既有 JS 和新增 TS 测试。旧 JS 继续受支持。
+
+HTTP YCA 后台启动后独立采集显式关联的 Codex 历史，浏览器关闭不影响记录。可在隔离启动参数中添加 `--harness-port 7394`，从 `http://127.0.0.1:7394/` 打开只读产品页。端口只是示例，必须与 MCP/诊断端口分离；不要把此 listener 配到 tunnel。UI 端口冲突只报告 UI 不可用，不终止后台记录或已有 run。未设置该参数仍可通过 MCP 登记/关联并记录。stdio 生命周期仍跟随客户端，常驻观察应使用已有 HTTP YCA。
+
+- `harness_register_ticket({project_key, project_name, ticket_key, title, reference, expected_worktree?})` 返回 project_id、ticket_id、conversation_id。项目 key 全局唯一，ticket key 在项目内唯一；相同输入幂等，不同内容报 REGISTRATION_CONFLICT。本票不提供修改、删除或重新归属。
+- `harness_attach({ticket_id, session_id, run_id?})`：传 run_id 仅收该 run；省略时明确收该 session 的所有已有及后续 runs。应先登记，使用既有 Codex 入口取得真实 ID，再 attach。后台补入已有 message.sent，不要求 UI 同时在线。不存在 session 沿用 SESSION_NOT_FOUND；run/session 不一致或与其他 Ticket 的归属重叠报 ATTRIBUTION_MISMATCH。
+- 每张 Ticket 的主 Conversation 身份长期保持。关联新 session 记录切换边界，旧记录保留原 binding；thread 身份仅来自实际事件，不修改原有 THREAD_MISMATCH 保护，也不触发续跑。
+- 首页按 Project 分组进入 Ticket；任务、回复、已暴露的命令输出和错误可读，原始来源记录可展开。页面只读刷新；JSON 视图为 GET /api/projects 与 GET /api/tickets/:id?after=cursor。先访问首页建立本机 SameSite/HttpOnly 会话；API/详情须同源 cookie。分页每次至多 100 条，next_cursor 仅表示本地接收顺序。
+- 当前 session cwd、Git root/branch 与明确工作目录下 `.local/workflow-state/<ticket_key>.md` 的 ticket/worktree/branch 字段只用于核对。登记 key 用 HARNESS-001 这类文件安全名称时可读取对应 checkpoint；无法读取为 unknown，冲突为 attribution mismatch，不改归属。attach、后台恢复与页面刷新时重新观察，记录时间见 observed_at；checkpoint 不提供 Workflow 完成状态。
+
+数据位于原 `--runtime` 下的 `harness/history.jsonl`，由原 RuntimeStore 独占生命周期保护，不改写旧 sessions.json/runs、不扫描 Codex 私有历史。记录 flush 后发布 cursor，重启重建索引并去重补齐；正文复制进 Harness，源离线仍能读已保存部分。默认无 TTL/自动清理；此版启动时重建内存索引，尚无大历史压测结论。
+
+持久化失败返回 RECORDING_FAILED，页面标记 recording-failed，导入不越过未保存记录。损坏/部分尾记录保留现场和已验证前缀，不自动丢弃或修复；修复存储并核验现场后由既有管理流程重启。source 读取失败单独显示 collection-failed；恢复观察不会重放工程任务。**本票未实现 #44 的全入口 recording gate**，因此不能把“记录健康”当成已经具备系统级副作用门禁的证明。
+
+事件沿用 bridge 的 best-effort 脱敏，新写入注明本次是否改写；旧源逐条脱敏情况为 unknown。OUTPUT_LIMIT 明确提示来源截断。未产生 run 的历史拒绝请求、来源未暴露的工具细节/重试、缺失旧日志均 unavailable；尚未收到的 thread/结果为 unknown。不获取隐藏推理，Provider 已公开文字也不是执行或验收证据。Workflow、Changes、Acceptance、服务状态明确 unavailable；电脑同步正文、owned task 采集、控制按钮、自启、Review 子 Conversation 均属后续票。
+
+现有部署仍执行 `npm ci --ignore-scripts` 并运行 src/main.js；MCP 工具摘要包含新增两个工具（完整 YCA 为 20 个）。这里说明候选源码能力，不表示常驻部署、ChatGPT 真实链路验收或日常稳定使用已经完成。
+
 独立的前置开发工具，不属于 yuki-link 正式 ticket，也不依赖 `core/` 或 `providers/`。
 
 保留 `tools/codex-session-bridge` 目录，避免迁移已有 session/runtime。Computer Agent 直接提供固定 PowerShell 查询、真实短脚本及专用文件/Git 工具；Codex 模块只传输 prompt、管理 session/run、返回事件与回复。两条路径互不依赖：Codex 不可用不会阻止电脑工具启动。它不编排 Skills；调用方可在 prompt 中写 `$pair-with-docs`、`$implement`。会话由本工具新建并管理，不接管 Codex 桌面中正在运行的任务。

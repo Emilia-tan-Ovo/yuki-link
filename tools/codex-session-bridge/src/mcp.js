@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { publicError } from './errors.js';
 import { SANDBOX_MODE_VALUES, APPROVAL_POLICY_VALUES, APPROVAL_REVIEWER_VALUES } from './permissions.js';
+import { registrationSchema, attachSchema, HarnessError } from './harness/model.ts';
 
 export function createMcpServer(manager, computer) {
   const server = new McpServer({ name: 'yuki-computer-agent', version: '0.2.0' });
@@ -27,11 +28,21 @@ export function createMcpServer(manager, computer) {
         const result = await action(input, extra);
         return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
       } catch (error) {
-        const result = { error: publicError(error) };
+        const result = { error: error instanceof HarnessError ? { code: error.code, message: error.message, details: error.details } : publicError(error) };
         return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
       }
     });
   };
+  register('harness_register_ticket', 'Explicitly register a Project/Ticket and its stable main Conversation. Identical input is idempotent; conflicts never reattribute history. No engineering task is started.',
+    registrationSchema, input => {
+      if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
+      return manager.harness.register(input);
+    });
+  register('harness_attach', 'Attach an existing Codex session or one run to a registered Ticket. Omit run_id to include ALL existing and future runs of this session; supply run_id for that run only. Conflicting ownership is rejected. No model call or resume.',
+    attachSchema, input => {
+      if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
+      return manager.harness.attach(input);
+    });
   register('codex_list_models', 'Read the current local Codex model and reasoning catalog. No model inference is started.', {
     refresh: z.boolean().optional(),
   }, ({ refresh }) => manager.catalog.list(refresh), true);
