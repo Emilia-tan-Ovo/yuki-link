@@ -53,7 +53,7 @@ Review 遵守 upgrade-only 原则：可以因为真实 diff、证据冲突或新
 
 工作流在阶段边界把恢复所需状态写入外部 checkpoint，使 fresh session 可以在不依赖隐藏聊天上下文的情况下恢复。模型上下文作为缓存，而不是唯一状态存储。
 
-implementation session 默认可以承接 ticket-design 的有价值局部上下文；review session 默认 fresh；focused re-review 默认 fresh；acceptance 默认 fresh 或由 Emilia 从外部事实直接验收。只有 continuity 本身属于验收目标时才刻意复用 session/thread。
+ticket-design 与 implementation 默认使用不同的 fresh session；设计阶段通过 Implementation Notes/checkpoint 外置有价值局部上下文。Review 默认 fresh；finding 修复默认 fresh fix session；focused re-review 默认 fresh；acceptance 默认 fresh 或由 Emilia 从外部事实直接验收。只有 continuity 本身属于验收目标、或 Owner 明确批准的例外才刻意复用 session/thread。
 
 每张票完成后生成轻量 closeout archive 进入版本控制；原始 JSONL、大型 runtime 日志继续留在本机 YCA runtime / .local，不提交 Git。
 
@@ -70,7 +70,7 @@ Workflow v1.1 同时纳入两个工程增强方向：
 2. 作为 Owner，桓宇希望 Emilia 与 Sylvia 能直接交换必要事实和工作产物，从而不需要人工转述。
 3. 作为 Orchestrator，Emilia 希望通过统一工作流入口识别当前阶段并调用正确的领域 Skill。
 4. 作为 Orchestrator，Emilia 希望设计、Spec、Tickets、implementation、Review、acceptance 和 closeout 之间存在明确阶段边界。
-5. 作为 Repository Engineer，Sylvia 希望 ticket-design 与 implementation 默认可以复用连续上下文，以保留刚建立的代码 seam、测试位置和 precedent。
+5. 作为 Repository Engineer，Sylvia 希望 ticket-design 把代码 seam、测试位置和 precedent 压缩进 Implementation Notes/checkpoint，使 implementation 能在 fresh session 中恢复而不依赖设计聊天。
 6. 作为 Reviewer，Sylvia 希望 Review 默认运行在独立 fresh session 中，只接收 fixed point、diff、Spec/Ticket、工程标准和必要测试证据。
 7. 作为修复者，Sylvia 希望 finding 修复后只围绕原 finding、修后 diff 和相关规范执行 focused re-review。
 8. 作为 Orchestrator，Emilia 希望根据实际 diff 和风险选择 full、focused 或 evidence Review，并能在发现更高风险时升级。
@@ -110,9 +110,13 @@ Workflow v1.1 同时纳入两个工程增强方向：
 - `ticket-design` 保留 implementation frontier；调查后 frontier 为空时可以直接形成 Implementation Notes，不强制制造用户问题。
 - `implement` 保留 TDD、定向测试、typecheck、最终完整测试和 commit，并在完成后产生 Implementation Handoff，至少包含 fixed point、HEAD、变更范围、测试、已知风险和 commit。
 - 若存在上层 workflow policy，`implement` 将后续 Review 交给 `review-change`；单独使用 `implement` 时继续默认调用完整 `code-review`。
-- implementation session 默认可以延续 ticket-design session；上下文异常膨胀时允许通过 handoff + checkpoint 切换 fresh implementation session。
+- ticket-design 与 implementation 默认分离为 fresh session；Implementation Notes + checkpoint 是阶段连续性的 source of truth，只有 continuity 本身是验收目标或 Owner 明确批准时才例外复用。
+- 模型路由：普通 ticket-design / implementation / finding fix / focused review 默认 `gpt-5.6-sol medium`；复杂跨模块实现或 full review 可用 `gpt-5.6-sol high`；Astra 只在最困难问题或 Sol high 已不足时升级，且每次升级前由 Owner 明确批准；Luna/Terra 禁用，xhigh/max/ultra 默认禁用。
+- 默认最多一条活跃 Codex 模型线；第二条模型线必须有明确关键路径收益并取得 Owner 批准。
+- Git/GitHub、full suite、hash、checkpoint/closeout、大日志提取等机械工作由 Emilia + YCA 确定性完成；大型输入先压缩后进入模型。
+- 每个 run 的 input/cached/output/model/reasoning 进入 checkpoint `model_usage`；明显超预算时标记 cost anomaly 并在下一次模型调用前说明继续理由与收缩方案，但不以固定 token 数对合理大票设置硬熔断。
 - review session 默认 fresh；implementation 历史不能作为 reviewer 的隐式证据。
-- focused re-review 默认 fresh。
+- Review finding 修复默认由 fresh fix session 完成；focused re-review 默认 fresh。
 - acceptance 默认 fresh，或由 Emilia 直接使用 filesystem、Git、PowerShell、HTTP、YCA events、status/output 等外部事实完成。
 - 只有 session/thread continuity 本身属于验收要求时才复用原 session。
 - checkpoint 使用 YAML Front Matter + Markdown Body 的组合：机器字段结构化，人类语义内容可读。
@@ -139,7 +143,7 @@ Workflow v1.1 同时纳入两个工程增强方向：
 - 同一验收必须再启动一个全新 session，仅依赖持久化产物恢复任务；fresh session 必须重新验证易变化的动态状态，并从 checkpoint 的 next action 继续。
 - fixture 至少覆盖：
   - implementation / review / acceptance 任一阶段的人为 external interruption，恢复后不重复已完成阶段或未知副作用；
-  - ticket-design → implementation 连续上下文；
+  - ticket-design → implementation 使用 fresh session，并仅凭 Implementation Notes/checkpoint/fixed point 恢复；
   - full Review 使用 fresh reviewer；
   - finding 修复后进入 fresh focused re-review；
   - docs-only / closeout 进入 evidence Review；
