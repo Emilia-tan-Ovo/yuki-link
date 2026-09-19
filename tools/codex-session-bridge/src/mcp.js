@@ -10,8 +10,8 @@ export function createMcpServer(manager, computer) {
     request_id: z.string().min(1).max(128).describe('Caller-generated idempotency key. Reuse with identical arguments after a disconnect; use a NEW key for a new message.'),
     prompt: z.string().min(1).max(131072).describe('Complete prompt, passed verbatim through UTF-8 stdin. The bridge does not interpret skills.'),
     sender: z.string().max(80).optional().describe('Observable sender label, e.g. Assistant. This is not an authenticated identity.'),
-    model: z.string().min(1).max(128).optional().describe('Exact model from codex_list_models. Start default: gpt-6-astra; send default: inherit session.'),
-    reasoning: z.string().min(1).max(128).optional().describe('Exact supported reasoning from codex_list_models. Start default: high; send default: inherit session.'),
+    model: z.string().min(1).max(128).optional().describe('Exact model from codex_list_models. Start default: gpt-5.6-sol; send default: inherit session.'),
+    reasoning: z.string().min(1).max(128).optional().describe('Exact supported reasoning from codex_list_models. Start default: medium; send default: inherit session.'),
     timeout_ms: z.number().int().min(1000).max(1800000).optional().describe('Explicit hard execution deadline for this run. Omit for no wall-clock execution deadline.'),
   };
   const permissions = z.object({

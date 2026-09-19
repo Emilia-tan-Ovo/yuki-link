@@ -82,7 +82,7 @@ function setup(t, options = {}) {
   const catalog = new ModelCatalog();
   catalog.snapshot = { checked_at: new Date().toISOString(), models: [
     { model: 'gpt-6-astra', reasoning: ['low', 'high', 'ultra'] },
-    { model: 'gpt-5.6-sol', reasoning: ['low', 'high'] },
+    { model: 'gpt-5.6-sol', reasoning: ['low', 'medium', 'high'] },
   ] };
   const executor = new FakeExecutor();
   const permissionResolver = new FakePermissionResolver();
@@ -107,7 +107,7 @@ test('async acceptance, concurrent dedup, session lock, inheritance and explicit
   const threadId = manager.session(a.session_id).codex_thread_id;
   const nextInput = { request_id: randomUUID(), session_id: a.session_id, prompt: '继续' };
   const [c, d] = await Promise.all([manager.send(nextInput), manager.send(nextInput)]);
-  assert.equal(c.run_id, d.run_id); assert.equal(c.model, 'gpt-6-astra'); assert.equal(c.reasoning, 'high');
+  assert.equal(c.run_id, d.run_id); assert.equal(c.model, 'gpt-5.6-sol'); assert.equal(c.reasoning, 'medium');
   await tick(); executor.complete(1);
   const e = await manager.send({ ...nextInput, request_id: randomUUID(), model: 'gpt-5.6-sol', reasoning: 'low' });
   await tick(); executor.complete(2);
