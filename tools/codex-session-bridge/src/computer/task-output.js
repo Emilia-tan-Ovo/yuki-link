@@ -5,8 +5,9 @@ export const OUTPUT_BUDGETS = Object.freeze({ output_bytes: 1048576, events: 409
 
 // Publish only immutable, fully decoded/redacted lines. Never redact OS chunks.
 export class TaskOutput {
-  constructor(onLimit) {
+  constructor(onLimit, onPublish = () => {}) {
     this.onLimit = onLimit;
+    this.onPublish = onPublish;
     this.events = [];
     this.bytes = 0;
     this.redacted = false;
@@ -43,6 +44,7 @@ export class TaskOutput {
     this.redacted ||= text !== stream.pending;
     this.events.push({ seq: this.events.length, stream: name, text });
     stream.pending = '';
+    this.onPublish(this.events.at(-1));
     return true;
   }
 

@@ -64,6 +64,11 @@ export function createHarnessServer(harness: Harness) {
           text = JSON.stringify({ input: d.call.input, result: d.call.result, error: d.call.error,
             capture: d.call.capture, integrity: d.call.integrity }, null, 2);
         }
+        if (d.kind === 'owned_task') {
+          label = '受管任务 · ' + d.task.kind;
+          text = JSON.stringify({ task_id: d.task.binding.task_id, payload: d.task.payload,
+            snapshot: d.task.snapshot, integrity: d.task.integrity }, null, 2);
+        }
         if (d.kind === 'event' && d.event.payload && typeof d.event.payload === 'object') {
           const payload = d.event.payload as Record<string, unknown>;
           if (d.event.kind === 'message.sent') { label = '任务 · ' + String(payload.sender ?? 'caller'); text = String(payload.text ?? 'unknown'); }
@@ -91,7 +96,9 @@ export function createHarnessServer(harness: Harness) {
         + escape(detail.recording.state) + '<br>Workflow / Changes / Acceptance：unavailable；run completed 不代表验收通过。<br>'
         + detail.source_gaps.map(escape).join('<br>') + '</aside>'
         + (detail.computer_calls.length ? '<aside>同步调用状态（历史观察，不代表当前进程状态；stdout/stderr 无跨流顺序保证）<pre>'
-          + escape(JSON.stringify(detail.computer_calls, null, 2)) + '</pre></aside>' : '') + records
+          + escape(JSON.stringify(detail.computer_calls, null, 2)) + '</pre></aside>' : '')
+        + (detail.owned_tasks.length ? '<aside>受管任务：stdout/stderr 的 seq 表示已公开行发布顺序，非两管道实际写入全局顺序；本地 cursor 仅为保存顺序。脚本正文：source-not-provided。历史终态不代表当前进程状态。<pre>'
+          + escape(JSON.stringify(detail.owned_tasks, null, 2)) + '</pre></aside>' : '') + records
         + (detail.has_more ? '<a href="?after=' + detail.next_cursor + '">后续记录</a>' : '')), true);
     } catch (e) {
       const code = e instanceof HarnessError ? e.code : 'READ_FAILED';

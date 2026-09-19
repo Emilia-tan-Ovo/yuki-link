@@ -220,8 +220,7 @@ test('八类工具保留来源事实、脱敏和旧调用行为；错误归属�
   }
   assert.equal((await f.get('/api/tickets/' + b.ticket_id)).records.length, 1);
   const tools = (await f.client.listTools()).tools;
-  assert.equal(tools.filter(tool => tool.inputSchema.properties?.ticket_id && !tool.name.startsWith('harness_')).length, 8);
-  assert.equal(tools.find(tool => tool.name === 'task_start')!.inputSchema.properties?.ticket_id, undefined);
+  assert.equal(tools.filter(tool => tool.inputSchema.properties?.ticket_id && !tool.name.startsWith('harness_') && tool.name !== 'task_start').length, 8);
 });
 
 test('响应丢失后仍保存一次执行；重启不自动重放', async t => {

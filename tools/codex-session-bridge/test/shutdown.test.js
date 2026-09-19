@@ -149,7 +149,7 @@ test('computer STOP_FAILED still stops Codex while retaining writer and read-onl
   assert.ok(detail.records.some(r => r.data.kind === 'event' && r.data.event.kind === 'run.stopped'));
 });
 
-test('shutdown persists synchronous result before releasing the runtime writer', { timeout: 20000 }, async t => {
+test('shutdown persists synchronous and owned task results before releasing the runtime writer', { timeout: 20000 }, async t => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'yca-shutdown-'));
   const runtime = path.join(root, 'runtime'), workspace = path.join(root, 'workspace');
   mkdirSync(runtime); mkdirSync(workspace);
@@ -178,14 +178,21 @@ test('shutdown persists synchronous result before releasing the runtime writer',
     project_key: 'shutdown', project_name: 'shutdown', ticket_key: 'sync', title: 'sync', reference: 'fixture:shutdown',
   } });
   const ticket_id = registration.structuredContent.ticket_id;
+  const epoch = (await client.callTool({ name: 'task_status', arguments: {} })).structuredContent.service_epoch;
+  const task = await client.callTool({ name: 'task_start', arguments: {
+    ticket_id, service_epoch: epoch, request_id: 'shutdown-owned', cwd: workspace,
+    script: "[Console]::Out.WriteLine('任务关闭前输出'); Set-Content './task-started.txt' 'started'; Start-Sleep -Seconds 20",
+  } });
+  assert.notEqual(task.isError, true);
   const observation = new AbortController();
   const request = fetch(url, { method: 'POST', signal: observation.signal, headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 99, method: 'tools/call', params: { name: 'powershell_execute', arguments: {
       ticket_id, cwd: workspace, script: "[Console]::Out.Write('关闭前输出'); Set-Content './started.txt' 'started'; Start-Sleep -Seconds 20",
     } } }) }).then(r => r.text(), () => 'disconnected');
   const deadline = Date.now() + 10000;
-  while (!existsSync(path.join(workspace, 'started.txt')) && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));
+  while ((!existsSync(path.join(workspace, 'started.txt')) || !existsSync(path.join(workspace, 'task-started.txt'))) && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));
   assert.equal(existsSync(path.join(workspace, 'started.txt')), true);
+  assert.equal(existsSync(path.join(workspace, 'task-started.txt')), true);
   const stop = await fetch(`http://127.0.0.1:${controlPort}/stop`, { method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'x-confirm-impact': 'yes' } });
   assert.equal(stop.status, 202);
@@ -199,5 +206,12 @@ test('shutdown persists synchronous result before releasing the runtime writer',
   assert.ok(terminal, 'result must be durable before another writer can acquire runtime');
   assert.equal(terminal.data.call.error.details.result.completion_reason, 'shutdown');
   assert.match(terminal.data.call.error.details.result.stdout, /关闭前输出/);
+  const taskFinal = atRelease.find(r => r.data.kind === 'owned_task' && r.data.task.kind === 'final');
+  assert.ok(taskFinal, 'owned task terminal must be saved under the same writer lock');
+  assert.equal(taskFinal.data.task.binding.task_id, task.structuredContent.task_id);
+  assert.equal(taskFinal.data.task.snapshot.completion_reason, 'shutdown');
+  assert.equal(taskFinal.data.task.snapshot.root_state, 'exited');
+  assert.equal(taskFinal.data.task.snapshot.output.pipes_closed, true);
+  assert.ok(atRelease.some(r => r.data.kind === 'owned_task' && r.data.task.kind === 'output' && r.data.task.payload.text.includes('任务关闭前输出')));
   assert.equal(await Promise.race([exited, new Promise((_, reject) => setTimeout(() => reject(new Error('shutdown result saved but service did not exit')), 5000))]), 0);
 });

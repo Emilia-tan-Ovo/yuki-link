@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { redact } from '../errors.js';
 import { Journal } from './journal.ts';
 import { ComputerCalls } from './computer-calls.ts';
+import { TaskCollector } from './task-collector.ts';
+import type { TaskSource } from './task-source.ts';
 import { HarnessError, registrationSchema, attachSchema } from './model.ts';
 import type { Source, Project, Ticket, Binding, Event, Operation, RecordEntry } from './model.ts';
 
@@ -14,6 +16,7 @@ export class Harness {
   journal: Journal;
   source: Source;
   computerCalls: ComputerCalls;
+  taskHistory: TaskCollector;
   projects = new Map<string, Project>();
   tickets = new Map<string, Ticket>();
   bindings = new Map<string, Binding>();
@@ -24,11 +27,12 @@ export class Harness {
   sourceFailure: string | null = null;
   checkedAt: string | null = null;
   timer: ReturnType<typeof setInterval> | null = null;
-  constructor(runtime: string, source: Source) {
+  constructor(runtime: string, source: Source, tasks?: TaskSource) {
     this.source = source;
     this.journal = new Journal(runtime);
     for (const record of this.journal.records) this.apply(record);
     this.computerCalls = new ComputerCalls(this.journal, id => this.ticket(id));
+    this.taskHistory = new TaskCollector(this.journal, id => this.ticket(id), tasks);
   }
   private apply(record: RecordEntry) {
     const data = record.data;
@@ -87,6 +91,7 @@ export class Harness {
   }
   scan(refresh = false) {
     if (this.journal.failure) return;
+    this.taskHistory.scan();
     let failure = false;
     for (const binding of this.bindings.values()) {
       try {
@@ -117,12 +122,13 @@ export class Harness {
     this.checkedAt = now();
   }
   start(interval = 1000) { this.scan(true); this.timer ??= setInterval(() => this.scan(), interval); this.timer.unref(); }
-  close() { if (this.timer) clearInterval(this.timer); this.timer = null; this.scan(); }
+  close() { if (this.timer) clearInterval(this.timer); this.timer = null; this.scan(); this.taskHistory.close(); }
   health() {
     const computer = this.computerCalls.health();
-    return { state: this.journal.failure ? 'recording-failed' : this.sourceFailure || this.computerCalls.collectionFailure ? 'collection-failed' : 'recording',
-      reason: this.journal.failure ?? this.sourceFailure ?? computer.reason, source_id: this.journal.sourceId,
-      observed_at: this.checkedAt, sources: { computer } };
+    const tasks = this.taskHistory.health();
+    return { state: this.journal.failure ? 'recording-failed' : this.sourceFailure || this.computerCalls.collectionFailure || this.taskHistory.collectionFailure ? 'collection-failed' : 'recording',
+      reason: this.journal.failure ?? this.sourceFailure ?? computer.reason ?? tasks.reason, source_id: this.journal.sourceId,
+      observed_at: this.checkedAt, sources: { computer, tasks } };
   }
   overview() {
     return { projects: [...this.projects.values()].map(p => ({ ...p, tickets: [...this.tickets.values()].filter(t => t.project_id === p.id) })),
@@ -135,10 +141,12 @@ export class Harness {
       r.data.kind === 'registered' && r.data.ticket.id === id ||
       r.data.kind === 'attached' && r.data.binding.ticket_id === id ||
       r.data.kind === 'event' && r.data.event.ticket_id === id ||
-      r.data.kind === 'computer_call' && r.data.call.ticket_id === id));
+      r.data.kind === 'computer_call' && r.data.call.ticket_id === id ||
+      r.data.kind === 'owned_task' && r.data.task.binding.ticket_id === id));
     const records = all.slice(0, 100);
     return { ticket, records, next_cursor: records.at(-1)?.cursor ?? after, has_more: all.length > records.length,
       recording: this.health(), computer_calls: this.computerCalls.status(id),
+      owned_tasks: this.taskHistory.status(id),
       current: { state: this.health().state !== 'recording' || !this.checkedAt ? 'unknown' : 'observed', observed_at: this.checkedAt },
       workflow: unavailable, changes: unavailable, acceptance: unavailable, source_gaps: [
         '未提供的工具正文/重试细节及接入前缺失日志：unavailable / source-not-provided',
