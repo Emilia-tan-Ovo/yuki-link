@@ -248,6 +248,13 @@ ticket-design
 
 Review finding 修复也使用 fresh fix session，只携带 finding、修复基线、直接受影响文件/规范与最小回归；不返回原 implementation session。
 
+### Agent 权限与环境一致性
+
+- YCA-006 已完成原生权限解析/冻结；当前 Owner 本机默认为 `danger-full-access + on-request`。Workflow 创建普通 Codex 仓库工程 session 时默认省略显式 `permissions`，继承并冻结这个本机默认，不再由 Emilia 手工降成 `workspace-write`。
+- 只有 Owner 明确要求更窄权限时才创建受限 session；旧 session 权限不可切换，模式错误时创建 fresh session。
+- Full Access 是能力，不是额外授权；Ticket scope、Owner gate、merge/deploy/不可逆动作约束继续生效。
+- 新 Agent/模型接入必须证明能承载等价的权限、run/session、usage 与 side-effect 可观察性，才能进入正式三人/多 Agent workflow。
+
 ### 模型路由、并发与成本
 
 - `gpt-5.6-sol medium` 是普通阶段默认主力；复杂跨模块实现、复杂调试或 full review 使用 `gpt-5.6-sol high`。

@@ -56,6 +56,13 @@ checkpoint 的 `phase` 表示**下一步要进行的工作**，不是已经完�
 - `xhigh/max/ultra` 默认禁止；任何模型使用这些档位前都必须取得 Owner 明确批准。
 - 不因“这张票重要”自动使用高成本模型；模型选择按**当前阶段当前问题**的难度决定。
 
+#### 权限与 Agent Adapter
+
+- Workflow 不自行收紧 Owner 已选择的原生 Agent 权限。当前 Codex/YCA 已支持在 session 创建时解析并冻结本机默认权限；普通仓库工程 session **默认省略显式 `permissions`**，让 YCA 继承 Owner 的有效本机默认（当前为 `danger-full-access + on-request`）。
+- 若调用方必须显式指定权限，只能使用 Owner 已确认的等价模式；没有 Owner 明确要求，不得把 `danger-full-access` 降成 `workspace-write` / `read-only`。权限在 session 创建时冻结，发现创建错模式时不得在旧 session 上假装修复；停止该 session，保存事实，从 fresh session 用正确权限继续。
+- Full Access 不等于无限业务授权。模型仍必须遵守 Ticket scope、Owner gate、不可逆操作与 deployment/merge 边界；使用行为约束替代破坏环境一致性的隐式沙箱降级。
+- 后续接入其他 Repository Engineer（包括 DeepSeek Agent）时，adapter 必须提供与本 workflow 等价的：权限 source of truth/冻结、durable run/session、usage/模型身份、side-effect 证据与恢复语义。缺失这些能力时只能标记为部分兼容，不能静默跳过规则。
+
 #### 并发与机械工作
 
 - 默认最多一条活跃 Codex 模型工作线。第二条模型线只有在能明确缩短关键路径且 Owner 明确批准后才能启动；“允许并发”只是上限，不是默认配置。

@@ -12,6 +12,9 @@
 - **模型上下文不是工作流状态存储。** ticket-design 与 implementation 默认使用不同的 fresh model session；阶段连续性通过 Ticket `Implementation Notes`、checkpoint、Git 与 handoff 保留，不靠复用肥 session。实现 prompt 只给引用、fixed point、当前 delta 与必要约束，不复制完整设计聊天、Issue/Spec/Notes 正文。
 - primary Review 必须 fresh；Review finding 的修复也必须使用 **fresh fix session**，只接收 finding、修复基线、受影响文件/规范和最小测试，不得回到原 implementation session 继续背历史。修复后最多再进行一次 fresh focused re-review。
 - **模型路由固定为：Sol 主力、Astra 升级。** 普通 ticket-design / implementation / finding fix / focused review 默认使用 `gpt-5.6-sol medium`；复杂跨模块实现或 full review 可使用 `gpt-5.6-sol high`。只有 Sol high 明显不足，或任务本身属于最困难的并发/一致性/安全/跨系统疑难问题时，才允许升级到 `gpt-6-astra`，且启动前必须向 Owner 说明理由并取得明确批准。默认禁止 `xhigh/max/ultra`；`gpt-5.6-luna` 与 `gpt-5.6-terra` 禁止使用；其他未列模型只有 Owner 明确改变策略后才可使用。
+- **Codex 仓库工程 session 默认继承 Owner 的本机原生权限，不得被 Orchestrator 静默降级。** 当前 Owner 默认是 Full Access；创建普通 ticket-design / implementation / fix / review session 时，优先省略 `permissions` 让 YCA 解析并冻结本机默认。若必须显式传权限，则应与当前 Owner 默认等价（当前为 `danger-full-access + on-request`），除非 Owner 明确要求更窄权限。禁止为了“更安全”自行改成 `workspace-write` / `read-only`。
+- Full Access 只表示执行能力，不扩大任务授权：scope、不可逆操作、GitHub merge/deploy、生产配置等仍受 Ticket/Owner gate 约束。权限能力与行为授权分开管理。
+- 新接入的 Repository Engineer（例如后续 DeepSeek Agent）必须遵守同一运行策略：session/finding fresh 边界、成本记录、模型/能力路由、Owner 权限默认和机械工作下放。若其 adapter 不能可靠继承并冻结 Owner 权限、不能暴露 run/usage/side-effect 事实，则不得宣称工作流兼容完成。
 - **默认最多一条活跃 Codex 模型工作线。** “允许并发”只表示上限，不是默认行为；第二条模型线必须有明确关键路径收益，并在启动前取得 Owner 明确批准。YCA 的确定性工具调用不算模型并发。
 - Git/status/diff、hash、checkpoint/closeout、GitHub Issue/PR/merge/close、完整测试套件执行与大型日志提取等可由 Emilia + YCA 确定性完成的机械动作，不得为了方便启动模型。实现模型只运行直接驱动红→绿所需的最小定向测试；full suite 与长日志默认由 YCA 执行并只把摘要/失败切片交给模型。
 - 大型日志、Git history、测试输出、runtime JSONL 和长文件先由确定性工具筛选/压缩；模型默认只接收必要失败片段、结构化摘要和来源引用。不得把完整聊天、完整日志或整份历史重复灌入 fresh session。
