@@ -81,9 +81,14 @@ export function createMcpServer(manager, computer) {
       task_id: z.string().max(80).optional(),
     }).strict(), input => computer.tasks.status(input), true);
     register('task_start', 'Start a foreground noninteractive PowerShell task without Codex. Save task_id; retry identical input with the same epoch and request_id to recover acceptance.', z.object({
+      ticket_id: z.string().uuid().optional().describe('Explicit registered Harness Ticket, fixed at acceptance. Omit for legacy behavior. Changing attribution on a request_id conflicts. Full script is not retained in Harness history.'),
       service_epoch: z.string().uuid(), request_id: z.string().min(1).max(128), cwd: z.string().min(1),
       script: z.string().min(1).max(131072), timeout_ms: z.number().int().min(1000).max(1800000).optional(),
-    }).strict(), input => computer.tasks.start(input), false, true, true);
+    }).strict(), input => {
+      if (input.ticket_id !== undefined && !manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
+      const result = computer.tasks.start(input, id => manager.harness.taskHistory.validateTicket(id));
+      return input.ticket_id === undefined ? result : { ...result, harness_recording: manager.harness.taskHistory.receipt(result.task_id) };
+    }, false, true, true);
     register('task_output', 'Read immutable stdout/stderr line events after a cursor. No new events does not mean completion.', z.object({
       task_id: z.string().max(80), cursor: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(200).optional(),
     }).strict(), input => computer.tasks.output(input), true);

@@ -16,7 +16,7 @@ HTTP YCA 后台启动后独立采集显式关联的 Codex 历史，浏览器关�
 
 持久化失败返回 RECORDING_FAILED，页面标记 recording-failed，导入不越过未保存记录。损坏/部分尾记录保留现场和已验证前缀，不自动丢弃或修复；修复存储并核验现场后由既有管理流程重启。source 读取失败单独显示 collection-failed；恢复观察不会重放工程任务。**本票未实现 #44 的全入口 recording gate**，因此不能把“记录健康”当成已经具备系统级副作用门禁的证明。
 
-事件沿用 bridge 的 best-effort 脱敏，新写入注明本次是否改写；旧源逐条脱敏情况为 unknown。OUTPUT_LIMIT 明确提示来源截断。未产生 run 的历史拒绝请求、来源未暴露的工具细节/重试、缺失旧日志均 unavailable；尚未收到的 thread/结果为 unknown。不获取隐藏推理，Provider 已公开文字也不是执行或验收证据。Workflow、Changes、Acceptance、服务状态明确 unavailable；owned task 采集、控制按钮、自启、Review 子 Conversation 均属后续票。
+事件沿用 bridge 的 best-effort 脱敏，新写入注明本次是否改写；旧源逐条脱敏情况为 unknown。OUTPUT_LIMIT 明确提示来源截断。未产生 run 的历史拒绝请求、来源未暴露的工具细节/重试、缺失旧日志均 unavailable；尚未收到的 thread/结果为 unknown。不获取隐藏推理，Provider 已公开文字也不是执行或验收证据。Workflow、Changes、Acceptance、服务状态明确 unavailable；控制按钮、自启、Review 子 Conversation 均属后续票。Owned Task 采集见下方 #43。
 
 现有部署仍执行 `npm ci --ignore-scripts` 并运行 src/main.js；MCP 工具摘要包含新增两个工具（完整 YCA 为 20 个）。这里说明候选源码能力，不表示常驻部署、ChatGPT 真实链路验收或日常稳定使用已经完成。
 
@@ -33,6 +33,20 @@ HTTP YCA 后台启动后独立采集显式关联的 Codex 历史，浏览器关�
 - 正常关闭先停止新入口，等待电脑操作及同步记录收尾，再完成 Codex 最后采集并释放 RuntimeStore 单 writer 锁；无法确认停止时保留锁及只读观察。系统级 recording gate 留 #44，Owned Task 的归属与生命周期留 #43。
 
 该源码交付不代表真实浏览器可用性、resident 部署或 V0 全链验收通过。#43 必须串行基于本票实际 record union、健康投影与 shutdown 契约接入，不独立覆盖共享文件。
+
+### 受管任务持续记录（HARNESS-003 / #43）
+
+现有 `task_start` 增加顶层可选 `ticket_id`，与同步调用一样显式引用已登记 Ticket；省略保持旧行为、原工具数量，不猜票、不自动补关联。归属在受理时固定，并纳入同 service_epoch/request_id 的请求身份：相同输入只找回原 task，改变 Ticket（包括有/无切换）返回 REQUEST_CONFLICT。未知 Ticket 在执行前返回 TICKET_NOT_FOUND。
+
+- 长期记录真实 task_id/service_epoch/request_id、cwd/timeout 等必要元数据，以及 accepted、spawn、公开输出行、错误、停止请求/尝试/结果、root exit、管道关闭和最终 snapshot。UI/observer 断线不拥有采集或任务生命周期；后台事件通知捕捉短暂状态，扫描只补齐仍可取得的公开输出/当前快照。
+- **不额外保存完整 task_start 脚本正文**，长期历史明确为 source-not-provided，不从审计、进程或其他日志补抓。只保存 TaskOutput 已解码/脱敏的公开行；沿用原行/事件/分页/输出预算、截断与 output_limit，不新增 Harness 内容上限。
+- output 的 seq/stream 原样保存。seq 是 YCA 完整行发布顺序，**非两管道实际写入全局顺序**；journal cursor 是本地提交顺序。生命周期序号独立，两者与 observed_at 均不能推断跨流 OS 因果。exit_code、signal、root_state、pipes_closed 和 tree_kill 分开呈现。
+- 每条输出按 source/epoch/task/output/seq 去重；生命周期按独立源序号去重，只有 flush 成功后推进导入进度。重建、重读和回补不重复正文。无第二套 durable queue；未捕获且来源已不保留的生命周期记录明确为缺口，当前 snapshot 不冒充旧事件。
+- source-not-provided、not-yet-observed、collection-failed、recording-failed、redacted、truncated 分开保留。同 epoch 的 TASK_EXPIRED 显示 source-expired；新 epoch 显示 source-epoch-expired。已存历史默认无 TTL，旧终态仍可回看；未记录终态的旧任务保持 unknown，绝不映射新 task 或自动重放。
+- `task_start` 的可选 `harness_recording` 回执包含 task/ticket、accepted 保存状态与来源健康；已受理但记录失败仍返回真实 task_id/status，不声称“未执行”。#44 gate 未实现，记录故障不拒绝新的 task_start，也不强杀任务；记录期间丢失的事实不能保证恢复。
+- GET Ticket 视图的 owned_tasks 分开提供历史 snapshot、source_state 和带时间的 current。当前事实来自 live OwnedTasks；重连/重建重新核对 epoch，源失效后当前状态 unknown。历史不是进程保活承诺；服务关闭复用 #42 多来源收尾，真实终态采集结束前不释放 shared writer。
+
+源码与确定性测试交付不等于 ChatGPT→resident YCA 验收或日常 stable；本票未增加控制按钮、服务管理、自启或 recording gate。
 
 独立的前置开发工具，不属于 yuki-link 正式 ticket，也不依赖 `core/` 或 `providers/`。
 
@@ -88,7 +102,7 @@ Windows 常驻服务可以显式传入 `--codex-bin 'C:\path\to\codex.exe'`，�
 | `codex_stop_session` | `session_id` | 停止进度，需继续查状态 |
 | `powershell` | `cwd, query, timeout_ms?` | `operation_id, exit_code, stdout, stderr, data` |
 | `powershell_execute` | `cwd, script, timeout_ms?` | 执行结果；失败时位于 `error.details.result`，包含部分输出及终止信息 |
-| `task_start` | `service_epoch, request_id, cwd, script, timeout_ms?` | `task_id, status, deduplicated`；异步受理自有前台任务 |
+| `task_start` | `service_epoch, request_id, cwd, script, timeout_ms?, ticket_id?` | `task_id, status, deduplicated, harness_recording?`；异步受理自有前台任务 |
 | `task_status` | `task_id?` | 无 ID 返回本次 epoch/预算；有 ID 返回任务快照 |
 | `task_output` | `task_id, cursor?, limit?` | 独立两流行事件、`next_cursor, has_more, output` |
 | `task_stop` | `task_id` | 停止进度快照；继续查询以核对终态 |

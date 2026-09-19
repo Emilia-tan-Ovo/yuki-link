@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { taskRecordSchema } from './task-model.ts';
 
 const id = z.string().uuid();
 const text = z.string().min(1).max(512);
@@ -57,6 +58,7 @@ export const recordSchema = z.object({
     z.object({ kind: z.literal('attached'), binding: bindingSchema, previous_session_id: id.nullable() }),
     z.object({ kind: z.literal('event'), event: eventSchema }),
     z.object({ kind: z.literal('computer_call'), call: computerCallSchema }),
+    z.object({ kind: z.literal('owned_task'), task: taskRecordSchema }),
   ]),
 });
 export type RecordEntry = z.infer<typeof recordSchema>;
