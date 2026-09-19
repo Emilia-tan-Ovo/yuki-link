@@ -30,10 +30,31 @@ checkpoint 的 `phase` 表示**下一步要进行的工作**，不是已经完�
 | 当前 Ticket 可开始，缺实现决定 | ticket-design | `ticket-design` → Implementation Notes；frontier 为空直接 ready |
 | 已有 Notes，实现/测试尚未完成，或有待修 finding | implementation | `implement`；修复时携带原 finding 及受影响范围 |
 | 实现及必要测试已完成，缺对应内容的有效 Review | review | fresh review；见下方兼容边界 |
-| Review 已通过且证据仍适用，缺验收 | acceptance | fresh 验收者或 Emilia 从外部事实逐项核对 Ticket |
+| Review 已通过且证据仍适用，缺验收 | acceptance | **优先由 Emilia 从外部事实逐项核对 Ticket**；只有 criteria 本身要求 Agent/session 行为时才启动 fresh 验收者 |
 | 验收已通过，待交接/归档 | closeout | 按仓库 closeout 流程交接；自动化尚未提供时明确留待处理 |
 
 领域 Skill 调用前实际读取文件。新 Owner 产品、安全、架构、数据语义或范围决定才向 Owner 提问；事实查找和已决定事项由 Agent 完成。上游产物缺失时返回最早的必要阶段，明确缺口，保留仍然有效的下游证据。
+
+### 成本、范围与停止条件
+
+把 **Owner 时间 / 注意力 / 模型额度** 视为和权限、安全同样真实的资源边界。当前 Ticket 默认只为满足其 Ticket / Spec 明确目标和 Acceptance Criteria 工作；发现相邻问题时，先判断它是否直接阻塞当前 criteria。不是 blocker 的 drift/recovery、压力测试、额外 fixture、工作流研究或“顺便证明”内容只记录 follow-up，不扩大当前票。
+
+普通 Ticket 的默认模型/session 预算：
+
+- `ticket-design → implement` 尽量复用一个 Ticket Implementation Session；
+- Review 只启动一次必要的 fresh primary review，具体 `full / focused / evidence` 由 `review-change` 按实际风险决定；
+- primary review 产生 finding 时，修复后最多追加一次 fresh focused re-review；只有修复引入新的独立高风险范围时才允许升级或追加更重 Review；
+- Acceptance **优先由 Emilia 使用确定性外部事实直接逐条核对 Ticket**。只有 Acceptance Criteria 本身要求观察 Agent 路由、session/thread continuity 或其他模型行为时，才启动额外 fresh acceptance agent；普通 Ticket 不为“证明工作流本身”生成场景矩阵。
+
+超过上述默认预算时，先视为 **cost anomaly**：停止扩展，说明为什么现有证据仍不足；若只是增强信心或覆盖相邻风险，则拆为 follow-up。不得把“还能想到更多边界”当作继续当前票的充分理由。
+
+Git/status/diff、测试、commit、push、Skill apply/verify、PR/merge、Issue closeout 等能由确定性工具完成的动作，不为方便而启动 Codex/LLM。大型日志和历史仍先用确定性工具压缩后再交给模型。fresh reviewer 只输入必要显式证据，不重复灌入完整聊天、无关日志或整个项目历史。
+
+普通 Ticket 不自行提高到明显更高成本的模型/reasoning 档位，也不额外并行多个 Agent 追求“更漂亮”的证明；需要显著增加模型成本时，先向 Owner 说明必要性并取得明确同意。
+
+Owner 明确表达“收尾”“别扩范围”“我要休息/睡觉”或等价意图时，立即进入 **stop-expansion**：禁止新增 scope、fixture、测试矩阵、reviewer 和旁支调查；只允许处理当前 blocker、保存 checkpoint、完成必要 closeout。外部平台中断仍按恢复协议查 durable run/session/checkpoint，不因为 UI 静默或观察超时重启一套任务。
+
+对 Owner 的过程更新默认只回答三件事：**现在在做什么、为什么这是当前票必须的、还剩什么**。内部 digest、fixture、cursor、isolation 等低层细节只在 Owner 主动询问或确实影响决策时展开。
 
 ### Review policy 与 005 边界
 
@@ -53,7 +74,7 @@ closeout 按当前仓库已提供的流程执行；005 archive automation 尚不
 
 每次交接检查：已确认决定可定位；证据指向具体文件/命令结果和内容身份；finding 有状态；未知/已完成副作用区分；`Next action` 是可直接执行的一步。Ticket-design → implementation 默认延续 session；若上下文重复膨胀、范围失焦，先保存 Notes/checkpoint 再切 fresh implementation session，不依赖自报剩余 token。
 
-Review、focused re-review 默认 fresh sub-agent/session，输入只含 fixed point、目标 diff/内容身份、Ticket/Spec、标准及必要测试证据，不能继承 implementation 聊天。Acceptance 默认 fresh sub-agent/session 或 Emilia 外部核验；只有 continuity 本身是验收目标才复用 session。
+Review、focused re-review 默认 fresh sub-agent/session，输入只含 fixed point、目标 diff/内容身份、Ticket/Spec、标准及必要测试证据，不能继承 implementation 聊天。Acceptance 默认由 Emilia 使用外部事实直接核验；只有验收 criteria 本身要求 Agent 路由、session/thread continuity 或其他模型行为时才启动 fresh acceptance agent，且不为普通 Ticket 额外构造验收矩阵。
 
 ## 4. 中断与交接
 
