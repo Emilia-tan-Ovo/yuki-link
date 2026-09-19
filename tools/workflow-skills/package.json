@@ -6,6 +6,6 @@
   "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test test/*.test.js",
-    "check": "node --check src/cli.js && node --check src/files.js && node --check src/source.js && node --check src/plans.js && node --check src/apply.js && node --check ../../.workflow/skills/code-review/scripts/review-subject.mjs && node --check ../../.workflow/skills/engineering-workflow/scripts/closeout-archive.mjs && node --check fixtures/review-fixture.mjs && node --check fixtures/recovery-fixture.mjs"
+    "check": "node --check src/cli.js && node --check src/files.js && node --check src/source.js && node --check src/plans.js && node --check src/apply.js && node --check ../../.workflow/skills/code-review/scripts/review-subject.mjs && node --check ../../.workflow/skills/engineering-workflow/scripts/closeout-archive.mjs && node --check fixtures/review-fixture.mjs && node --check fixtures/recovery-fixture.mjs && node --check fixtures/end-to-end-fixture.mjs"
   }
 }
