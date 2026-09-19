@@ -13,6 +13,7 @@ import { createHttpServer } from '../src/http.js';
 import { createHarnessRuntime, createHarnessServer } from '../src/harness/runtime.ts';
 import { Harness } from '../src/harness/harness.ts';
 import type { AddressInfo } from 'node:net';
+import { connect } from 'node:net';
 
 interface Callbacks {
   onSpawn(pid: number | null): void;
@@ -42,6 +43,32 @@ async function browserFor(harness: Harness) {
     get: async (route: string): Promise<Wire> => { const r = await fetch(base + route, { headers: { cookie } }); assert.equal(r.status, 200); return r.json(); },
     close: () => { server.close(); server.closeAllConnections(); } };
 }
+
+test('malformed request-target returns 400 and Harness remains readable', { timeout: 5000 }, async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'harness-request-'));
+  const store = new RuntimeStore(root);
+  const noSession = () => { throw new Error('No source session in this HTTP fixture'); };
+  const harness = new Harness(root, { session: noSession, runs: () => [], events: () => [], attribution: noSession });
+  const ticket = harness.register({ project_key: 'http', project_name: 'HTTP fixture', ticket_key: 'F1', title: '仍可读取', reference: 'fixture:F1' });
+  const browser = await browserFor(harness);
+  t.after(() => { browser.close(); harness.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
+  const target = new URL(browser.base);
+  const response = await new Promise<string>((resolve, reject) => {
+    let data = '';
+    const socket = connect({ host: '127.0.0.1', port: Number(target.port) }, () => {
+      socket.write('GET http://[ HTTP/1.1\r\nHost: ' + target.host + '\r\nConnection: close\r\n\r\n');
+    });
+    socket.setEncoding('utf8');
+    socket.setTimeout(2000, () => socket.destroy(new Error('Malformed request did not receive a response')));
+    socket.on('data', chunk => { data += chunk; });
+    socket.once('error', reject);
+    socket.once('end', () => resolve(data));
+  });
+  assert.match(response, /^HTTP\/1\.1 400 /);
+  const detail = await browser.get('/api/tickets/' + ticket.ticket_id);
+  assert.equal(detail.ticket.main_conversation_id, ticket.conversation_id);
+  assert.equal(detail.ticket.title, '仍可读取');
+});
 
 test('Project → Ticket keeps the real bridge conversation while the UI is closed', async t => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'harness-'));

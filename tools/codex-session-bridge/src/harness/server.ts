@@ -27,7 +27,9 @@ export function createHarnessServer(harness: Harness) {
     if (req.headers.host !== new URL(origin).host || (req.headers.origin && req.headers.origin !== origin)
       || ['cross-site', 'same-site'].includes(req.headers['sec-fetch-site'] ?? '')) return send(403, { code: 'FORBIDDEN' });
     if (req.method !== 'GET') return send(405, { code: 'READ_ONLY' });
-    const url = new URL(req.url ?? '/', origin);
+    let url: URL;
+    try { url = new URL(req.url ?? '/', origin); }
+    catch { return send(400, { code: 'INVALID_URL' }); }
     if (url.pathname === '/style.css') {
       res.writeHead(200, { ...headers, 'content-type': 'text/css; charset=utf-8' }); return res.end(css);
     }

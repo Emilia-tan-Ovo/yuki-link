@@ -37,3 +37,14 @@
 - Commit：本实现与本 handoff 同批提交，主题 `feat: 实现 Harness 首条持久协作对话`；精确 SHA 由提交后 `.local/workflow-state/HARNESS-001.md` 记录，避免文档自引用提交 SHA。
 - Review subject：上述 fixed point 到 checkpoint 指向的最终 commit，包含本 handoff；如工作区又有变化，需重新核对，不能只使用旧测试结论。
 - 下一步仅由 Emilia 核验 Git 身份与证据，并接手 Review。当前授权终点为本票 commit、handoff 和 checkpoint phase=review；未 push、未开 PR，不进入 Acceptance/closeout。
+
+## F1 修复 Handoff（2026-09-19）
+
+- 原 fresh primary full Review：`.local/workflow-state/HARNESS-001-review.md`，受审 target `5f3b60a72f874b2930fcef1f7412e0756839ab32`；唯一 finding 为 F1 / P2。原 reviewer 在 fresh context 完成 Standards/Spec 两轴，平台 session UUID 未提供，以报告与受审 target 定位，不编造会话身份。
+- **F1：fixed，pending focused verification**。只在 Harness 的请求 URL 构造处捕获异常，非法 request-target 返回 HTTP 400 / INVALID_URL，不再逃逸至共享 Node 进程。Host/Origin、cookie、CSP 与正常读取路径不变。
+- 新增一个公开 HTTP 回归：原始 TCP 发送 `GET http://[ HTTP/1.1`；断言 400，再通过同一仍存活的 server 读取正常 Ticket，核对 Conversation 身份及标题。修复前明确复现未捕获 `ERR_INVALID_URL`（exit 1），修复后通过。
+- 定向验证：`node --test test/harness.test.ts test/shutdown.test.js` **5/5 通过，exit 0**；`npm run typecheck` **exit 0**。日志为当前 worktree 的 `.local/workflow-state/HARNESS-001-F1-red.log`、`HARNESS-001-F1-tests.log`、`HARNESS-001-F1-typecheck.log`。
+- 本次未重跑完整 bridge suite、Control Center 矩阵或 full Review。原 full Review 的未受影响结论保留，整票仍 **pending focused verification**，不能把修复测试通过解释为 reviewer 已 verified。
+- 写集仅含 `src/harness/server.ts`、`test/harness.test.ts` 和本 handoff。修复提交主题：`fix: 隔离 Harness 畸形请求的 URL 解析异常`；精确 fix commit 与受测内容身份记入提交后 checkpoint。
+- 真实浏览器可视检查仍为 **未验证（Computer Use connection failure）**；未重试浏览器。未执行 Review/Acceptance、push 或 PR。
+- 下一步由 Emilia / engineering-workflow 发起一次 fresh focused re-review，仅围绕 F1、原报告与原 target 到新 fix commit 的 diff；不重做 ticket-design 或 full Review。
