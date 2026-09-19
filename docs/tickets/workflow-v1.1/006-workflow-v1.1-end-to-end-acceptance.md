@@ -8,23 +8,23 @@
 
 **Risk hint:** high
 
-**Status:** ready-for-agent
+**Status:** accepted
 
 ## Acceptance criteria
 
-- [ ] 在临时 fixture 仓库从 Design Handoff / Spec / Ticket 启动 `engineering-workflow`。
-- [ ] ticket-design → implementation 按规则保留连续上下文。
-- [ ] full Review 使用 fresh reviewer。
-- [ ] 人为构造 finding 后，修复进入 fresh focused re-review。
-- [ ] docs-only / closeout 进入 evidence Review，且更高风险可升级。
-- [ ] checkpoint 在正确边界更新，动态事实会重新验证。
-- [ ] acceptance 使用 filesystem/Git/command/test/YCA events 等 ground truth，而不是模型自述。
-- [ ] closeout archive 正确生成且不复制大型 raw logs。
-- [ ] 新开完全 fresh session 后，仅凭持久化产物可以恢复并继续正确 next action。
-- [ ] 人为触发至少一次 external interruption（模拟 ChatGPT 审查/客户端断连/对话切换），中断前后 phase、finding、diff、next action 保持一致，且不重复已完成阶段或副作用。
-- [ ] Codex 等待期间 observation wait 不会终止仍在推进的 run，且重复轮询显著减少。
-- [ ] 单独调用 `implement` 的兼容行为仍成立。
-- [ ] 最终能力说明明确区分 implemented / accepted / stable；本票通过只证明真实链路验收，不自动宣称长期稳定。
+- [x] 在临时 fixture 仓库从 Design Handoff / Spec / Ticket 启动 `engineering-workflow`。
+- [x] ticket-design → implementation 按规则保留连续上下文。
+- [x] full Review 使用 fresh reviewer。
+- [x] 人为构造 finding 后，修复进入 fresh focused re-review。
+- [x] docs-only / closeout 进入 evidence Review，且更高风险可升级。
+- [x] checkpoint 在正确边界更新，动态事实会重新验证。
+- [x] acceptance 使用 filesystem/Git/command/test/YCA events 等 ground truth，而不是模型自述。
+- [x] closeout archive 正确生成且不复制大型 raw logs。
+- [x] 新开完全 fresh session 后，仅凭持久化产物可以恢复并继续正确 next action。
+- [x] 人为触发至少一次 external interruption（模拟 ChatGPT 审查/客户端断连/对话切换），中断前后 phase、finding、diff、next action 保持一致，且不重复已完成阶段或副作用。
+- [x] Codex 等待期间 observation wait 不会终止仍在推进的 run，且重复轮询显著减少。
+- [x] 单独调用 `implement` 的兼容行为仍成立。
+- [x] 最终能力说明明确区分 implemented / accepted / stable；本票通过只证明真实链路验收，不自动宣称长期稳定。
 ## Implementation Notes
 
 - **依据与边界。** Issue #28；以本票、正式 Spec 的 Testing Decisions、confirmed decisions 及当前 repo-local Skills 为准。implementation frontier 为空：以下收敛既定 seam 与执行顺序，无新的产品/架构决定。设计 ready，AC 仍待实际验收。本轮只写本地 Notes/checkpoint；tracker 未同步。后续由 Emilia 接续 implement，不把此设计交接当作实现、Review 或验收完成。
@@ -73,3 +73,31 @@
 - **最小修复。** helper 改为检查 finding 条目内含稳定 ID（字母开头、含数字，可有连字符/下划线）与 `open`；保留原 finding section 的完整快照/恢复比较，身份或状态改变仍拒绝。不增加 Markdown parser、不改变其他阶段。操作说明删除强制 F1 别名，归档模板使用“原 finding ID”。本票前文 F1 只是示例简称，实际执行以 Reviewer ID 为准，不改真实报告/checkpoint。
 - **定向 TDD。** 仅运行 `node --test --test-name-pattern='stable finding identity' tools/workflow-skills/test/end-to-end-fixture.test.js`：先因 `/\bF1\b/` 拒绝真实格式 ID 红灯（exit 1），修复后 **1/1 pass，exit 0**。同一回归检查 interrupt/check-resume 接受原 ID/open、拒绝无 finding/非 open，以及恢复时 ID 替换；全部使用独立 synthetic 测试仓库。日志：`.local/workflow-validation/006/finding-id-{red,green}.txt`。没有操作真实验收 fixture，没有改其 Review 或 checkpoint，没有启动 reviewer。
 - **变更与剩余动作。** 修改 source helper、对应 test、同目录操作说明、本 Ticket 与 outer checkpoint。未跑 full suite、未 commit；仅标记 source 修复完成，fresh focused re-review 与真实 Acceptance 继续 pending。outer phase 回到 implementation；Emilia 机械核对变更/测试并 commit 后，启动 fresh focused re-review，只审本 blocker 与直接回归，再使用原 finding ID 接续原现场验收，不重跑已完成阶段。旧实现文件摘要只适用修复前版本。
+
+## Acceptance Results
+
+观察时间：2026-09-19。13 条 Acceptance Criteria 均以真实 Git / 文件 / 测试 / YCA 事件或真实 Agent Review 证据核对为 PASS；synthetic checker 仅用于验证验收载体，不单独作为行为通过依据。
+
+| AC | 结果 | 关键证据 |
+| --- | --- | --- |
+| 1 | PASS | 主 fixture `end-to-end-006-TtRZFF` 从 Design Handoff / Spec / 无 Notes Ticket 进入 repo-local `engineering-workflow`；`docs/acceptance.md`。 |
+| 2 | PASS | ticket-design → delegated implementation 复用真实 thread `01a0b81a-9d09-7fb1-a29c-a053575452bb`；实现 commit `cd8d1b9`。 |
+| 3 | PASS | 权限 staged diff 将 low hint 实际升级 full；fresh coordinator `01a0b81e-...`，Standards / Spec 两轴独立 `fork_turns=none`。 |
+| 4 | PASS | `FIXTURE-006-SPEC-001` / P1：open → fixed → fresh focused verified；focused session `01a0b82c-...`，未重跑 full。 |
+| 5 | PASS | 高风险权限变化实际升级 full；主 fixture 的 `docs/acceptance.md` + closeout archive 由 fresh evidence Review 验证，报告 `.local/evidence-review.md`，0 finding。 |
+| 6 | PASS | external interruption 后 fresh recovery 重新读取 Git / Review / receipt，发现并刷新 stale HEAD；finding、diff、Next action、side effects 保持。 |
+| 7 | PASS | Emilia 直接使用 Git、filesystem、命令退出码、测试、YCA status/output 和内容摘要核验；未用模型自述替代 Acceptance。 |
+| 8 | PASS | `.workflow/history/FIXTURE-006.md` 由 005 closeout helper 生成；raw sentinel 260000 bytes 留在 ignored `.local`，Evidence Review 确认 archive 未复制 raw。 |
+| 9 | PASS | fresh recovery thread `01a0b824-...` 未继承旧聊天，仅凭 Ticket/Spec/checkpoint/reports/receipt 恢复到正确 implementation next action。 |
+| 10 | PASS | 受控 external interruption 前后 phase / finding / diff / Next action / receipt 保持；`effect.count=1`，未重做 prepare、初次实现或原 full Review。 |
+| 11 | PASS | run `b1677e21-...` 的 `codex_get_output(wait_ms=60000)` 实际返回 `wait_elapsed`，同 run 后续继续产生事件并自然 completed，`timeout_ms=null`。旧 `0c688d9^` live-test 每 1.5s 执行 output+status；同一 60s 窗口估算 80 次调用，对比当前 1 次，约减少 98.75%。这是基于旧代码 cadence 的估算，不冒充历史运行实测。证据：`.local/workflow-validation/006/wait-polling-evidence.json`。 |
+| 12 | PASS | standalone fixture `review-004-rexp6E` 未传 delegated policy；未提交 `result.txt` 先完成 fresh full 双轴（0/0 finding），随后才 commit `c67940e`。证据：`.local/workflow-validation/006/standalone-evidence.json` 与 fixture `commit-binding.json`。 |
+| 13 | PASS | 能力级别按下方声明分离；本票只把真实链路标为 accepted，不把单次验收写成长期 stable。 |
+
+### Capability status
+
+- **implemented**：Workflow v1.1 所需 source / Skill / checkpoint-recovery / review routing / closeout / wait 能力已实现；006 Acceptance blocker 修复提交为 `2032fcf66db7ae0f6fd23a82d0343f121148b11a`。最终 workflow-skills 回归 **55/55 pass**，syntax check 与 `git diff --check` 均 exit 0。
+- **accepted**：当前 repo-local Workflow v1.1 Skill 字节已通过本票定义的真实端到端链路，包括连续 ticket-design→implementation、fresh full、finding→fresh focused、fresh recovery、ground-truth Acceptance、docs/closeout evidence、observation wait 和 standalone implement 兼容。主 fixture 创建后到 `2032fcf` 没有 `.workflow/skills` 字节变化；后续提交仅修 Acceptance helper/测试/说明。
+- **stable**：**未证明。** 本票不提供长期、多项目、多天运行稳定性结论；后续真实日常使用中的 drift / outage / 长期可靠性仍按实际事件记录，不由本次 Acceptance 自动升级。
+
+正式启用范围限定为上述已验收的 Workflow v1.1 行为与 repo-local source；本票不隐含新的 protected/global Skill apply，也不重复已经完成的历史 apply/verify。
