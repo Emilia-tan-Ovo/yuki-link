@@ -80,6 +80,75 @@ test('service shutdown closes raw idle HTTP sockets that are not counted as acti
   assert.equal(result.code, 0);
 });
 
+test('computer STOP_FAILED still stops Codex while retaining writer and read-only observation', { timeout: 15000 }, async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'yca-shutdown-'));
+  const runtime = path.join(root, 'runtime'), workspace = path.join(root, 'workspace');
+  mkdirSync(runtime); mkdirSync(workspace);
+  const mcpPort = await port(), controlPort = await port(), harnessPort = await port();
+  const token = randomBytes(32).toString('hex');
+  // Isolated source adapters: no real model/process tree. Exercise the production
+  // entry point, real manager lifecycle, public stop and read-only observation.
+  const preload = `
+    import { ComputerTools } from ${JSON.stringify(new URL('../src/computer/tools.js', import.meta.url).href)};
+    import { BridgeError } from ${JSON.stringify(new URL('../src/errors.js', import.meta.url).href)};
+    import { CodexExecutor } from ${JSON.stringify(new URL('../src/executor.js', import.meta.url).href)};
+    import { ModelCatalog } from ${JSON.stringify(new URL('../src/catalog.js', import.meta.url).href)};
+    import { PermissionResolver } from ${JSON.stringify(new URL('../src/permissions.js', import.meta.url).href)};
+    ComputerTools.prototype.close = async function () { this.closing = true; throw new BridgeError('STOP_FAILED', 'fixture computer still running'); };
+    ModelCatalog.prototype.validate = async () => ({ model: 'fixture', reasoning: 'low' });
+    PermissionResolver.prototype.resolve = async () => ({ version: 1, kind: 'native', stored: true,
+      sandbox_mode: 'read-only', approval_policy: 'never', approvals_reviewer: 'user', workspace_write: null,
+      source: 'fixture', resolved_at: new Date().toISOString() });
+    CodexExecutor.prototype.start = (_run, _session, _prompt, callbacks) => {
+      callbacks.onSpawn(null);
+      return { stop: async () => callbacks.onDone({ code: 1 }) };
+    };
+  `;
+  const child = spawn(process.execPath, ['--import', 'data:text/javascript,' + encodeURIComponent(preload),
+    fileURLToPath(new URL('../src/main.js', import.meta.url)), '--transport', 'http', '--port', String(mcpPort),
+    '--runtime', runtime, '--allow-cwd', workspace, '--control-port', String(controlPort),
+    '--control-instance', randomUUID(), '--harness-port', String(harnessPort)], {
+    env: { ...process.env, YUKI_CONTROL_TOKEN: token }, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let diagnostics = '';
+  child.stderr.on('data', chunk => { diagnostics += chunk.toString(); });
+  const exited = new Promise(resolve => child.once('exit', resolve));
+  const client = new Client({ name: 'dual-source-shutdown', version: '1' });
+  t.after(async () => {
+    await client.close();
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await exited;
+    rmSync(root, { recursive: true, force: true });
+  });
+  await ready(`http://127.0.0.1:${mcpPort}/healthz`);
+  const ui = `http://127.0.0.1:${harnessPort}`;
+  await ready(ui + '/');
+  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${mcpPort}/mcp`)));
+  const call = async (name, args) => (await client.callTool({ name, arguments: args })).structuredContent;
+  const ticket = await call('harness_register_ticket', { project_key: 'dual', project_name: 'dual', ticket_key: 'SPEC-1', title: '双来源关停', reference: 'fixture:SPEC-1' });
+  const run = await call('codex_start_session', { cwd: workspace, request_id: randomUUID(), prompt: 'fixture only' });
+  await call('harness_attach', { ticket_id: ticket.ticket_id, session_id: run.session_id });
+  const headers = { Authorization: `Bearer ${token}` };
+  const statusUrl = `http://127.0.0.1:${controlPort}/status`;
+  assert.equal((await (await fetch(statusUrl, { headers })).json()).active.codex, 1);
+  const response = await fetch(`http://127.0.0.1:${controlPort}/stop`, { method: 'POST', headers: { ...headers, 'x-confirm-impact': 'yes' } });
+  assert.equal(response.status, 202);
+  const deadline = Date.now() + 1500;
+  let status;
+  do {
+    status = await (await fetch(statusUrl, { headers })).json();
+    if (status.active.codex === 0 && diagnostics.includes('STOP_FAILED')) break;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  } while (Date.now() < deadline);
+  assert.equal(status.active.codex, 0, 'computer stop failure must not skip the accepted Codex stop');
+  assert.match(diagnostics, /STOP_FAILED/);
+  assert.equal(existsSync(path.join(runtime, 'bridge.lock')), true);
+  assert.equal(child.exitCode, null, 'failure must not pretend normal service exit');
+  const home = await fetch(ui + '/'), cookie = home.headers.get('set-cookie').split(';')[0];
+  const detail = await (await fetch(ui + '/api/tickets/' + ticket.ticket_id, { headers: { cookie } })).json();
+  assert.ok(detail.records.some(r => r.data.kind === 'event' && r.data.event.kind === 'run.stopped'));
+});
+
 test('shutdown persists synchronous result before releasing the runtime writer', { timeout: 20000 }, async t => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'yca-shutdown-'));
   const runtime = path.join(root, 'runtime'), workspace = path.join(root, 'workspace');

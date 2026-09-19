@@ -46,3 +46,13 @@ Node `v24.18.1`；包依赖通过 `npm ci --offline --ignore-scripts` 安装，e
 - 受测源码/测试 SHA-256 清单：本机 `.local/workflow-state/HARNESS-002-tested-content.json`；精确提交 SHA 由提交后 `.local/workflow-state/HARNESS-002.md` 记录，避免本文自引用。
 - 提交主题：`feat: 保存同步电脑调用的持久历史与完整性事实`。无 push、PR、部署、resident 操作或 Review。
 - 下一步：Emilia 核验 checkpoint 中 commit 与写集后启动一次 fresh primary Review，输入 fixed point→提交 diff、#42 Notes/Spec、规范、本 handoff 和必要测试证据；不传 implementation 聊天。#43 等共享底座交接后串行推进。
+
+## SPEC-1 修复 Handoff（2026-09-19）
+
+- 原 fresh primary full Review：`.local/workflow-state/HARNESS-002-review.md`；原 target `cf2361c3eaea30a4e20002471182313ef20ae4e8`。Standards passed / 0 findings；Spec 唯一 SPEC-1 / P2 / open。原未受影响结论与测试异常证据继续沿用。
+- **SPEC-1：fixed / pending focused verification**。电脑来源 STOP_FAILED 不再跳过 Codex 停止：manager 新增 `stopRuns()`，仅尝试停止/等待自身 runs，不释放 writer；既有 `close()` 仍先停止再做 Harness 最后采集及 Store 关闭。main 的多来源协调收集电脑、Codex、同步记录收尾的全部结果，任一失败就保留分来源错误、只读观察与锁；全部成功后才调用最终 close。
+- 正常 shutdown 与 startup error cleanup 复用同一协调；startup 清理失败也不提前关闭已建立的只读观察 listener。此处新增 `manager.js` 写集是 SPEC-1 所需，已先记录 checkpoint，不扩 #43/#44 或其他关闭/恢复策略。
+- 首个最小受控双来源测试经生产 main、真实 MCP stop、manager 与只读 HTTP 观察，电脑关闭源返回 STOP_FAILED，Codex executor 使用无模型 fixture；修前 active.codex 仍为 1，明确红测 exit 1。修后 active.codex=0、run.stopped 可读，原失败事实存在、bridge.lock 保留，服务未伪装正常退出。只增加这一条回归，不新增恢复矩阵。
+- 验证：新增用例定向 1/1 pass，exit 0；`node --test test/shutdown.test.js` **3/3 pass，exit 0**（获准沙箱外隔离执行）；`npm run typecheck` **exit 0**；`git diff --check` exit 0。日志：`.local/workflow-state/HARNESS-002-SPEC-1-red.log`、`HARNESS-002-SPEC-1-targeted.log`、`HARNESS-002-SPEC-1-shutdown.log`、`HARNESS-002-SPEC-1-typecheck.log`。
+- 实际写集仅 4 文件：`tools/codex-session-bridge/src/main.js`、`src/manager.js`、`test/shutdown.test.js`（后两者同 bridge 根）和本 handoff。受测修复字节清单：`.local/workflow-state/HARNESS-002-SPEC-1-tested-content.json`。未重跑完整 suite，未处理 discovery ETIMEDOUT，未改系统环境。
+- 提交主题：`fix: 独立尝试各执行来源关停并保留失败时的写锁`；精确 fix SHA 记入提交后 checkpoint。review_policy 仍 delegated，接收方 Emilia / engineering-workflow；下一步仅 fresh focused re-review，围绕 SPEC-1、原受审 target 到 fix commit 的 diff 与上述证据。未自行 Review、Acceptance、push、PR 或部署。
