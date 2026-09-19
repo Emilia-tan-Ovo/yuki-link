@@ -15,6 +15,16 @@ import { createHarnessServer } from '../src/harness/server.ts';
 type Wire = Record<string, any>;
 const payload = (result: Record<string, unknown>) => result.structuredContent as Wire;
 const sha256 = (file: string) => createHash('sha256').update(readFileSync(file)).digest('hex');
+const compare = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
+const subjectIdentity = (subject: Wire) => createHash('sha256').update(JSON.stringify({
+  head: subject.head,
+  staged: subject.staged.map((file: Wire) => ({ path: file.path.replaceAll('\\', '/'), sha256: file.sha256 }))
+    .sort((left: Wire, right: Wire) => compare(left.path, right.path) || compare(left.sha256, right.sha256)),
+  unstaged: subject.unstaged.map((file: Wire) => ({ path: file.path.replaceAll('\\', '/'), sha256: file.sha256 }))
+    .sort((left: Wire, right: Wire) => compare(left.path, right.path) || compare(left.sha256, right.sha256)),
+  untracked: subject.untracked.map((file: Wire) => ({ path: file.path.replaceAll('\\', '/'), sha256: file.sha256 }))
+    .sort((left: Wire, right: Wire) => compare(left.path, right.path) || compare(left.sha256, right.sha256)),
+})).digest('hex');
 
 function git(cwd: string, ...args: string[]) {
   return execFileSync('git', ['-c', 'core.fsmonitor=false', ...args], { cwd, encoding: 'utf8' }).trim();
@@ -155,14 +165,16 @@ test('公开 MCP 记录 Workflow 后，首页与 Ticket 可追溯真实阶段且
 
   checkpointPhase(f, 'review');
   const reviewed = snapshot(f);
+  const reviewedIdentity = subjectIdentity(reviewed.subject);
   reviewed.reviews = [{ review_id: 'review-full', original_review_id: null, mode: 'full', status: 'findings',
-    subject_ref: 'implementation-1', artifact_refs: [],
+    subject_ref: 'implementation-1', subject_identity: reviewedIdentity, artifact_refs: [],
     standards: { status: 'passed', evidence: ['standards-report'], reason: null },
     spec: { status: 'findings', evidence: ['SPEC-1'], reason: '发现一项问题' },
     finding_refs: [{ origin_review_id: 'review-full', finding_id: 'SPEC-1' }], isolated: true,
     applicability: 'verified', reason: null }];
   reviewed.findings = [{ origin_review_id: 'review-full', finding_id: 'SPEC-1', status: 'open', severity: 'P2',
-    summary: '需要修复', subject_ref: 'implementation-1', verification_review_id: null, artifact_refs: [],
+    summary: '需要修复', subject_ref: 'implementation-1', subject_identity: reviewedIdentity,
+    verification_review_id: null, artifact_refs: [],
     evidence: ['review-report'], applicability: 'verified', reason: null }];
   const revision2 = payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
     ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 1, schema_version: 1, snapshot: reviewed,
@@ -172,8 +184,9 @@ test('公开 MCP 记录 Workflow 后，首页与 Ticket 可追溯真实阶段且
   checkpointPhase(f, 'implementation');
   const fixed = snapshot(f, 'implementation');
   fixed.subject.subject_id = 'fix-1';
+  const fixedIdentity = subjectIdentity(fixed.subject);
   fixed.reviews = reviewed.reviews;
-  fixed.findings = [{ ...reviewed.findings[0], status: 'fixed', subject_ref: 'fix-1' }];
+  fixed.findings = [{ ...reviewed.findings[0], status: 'fixed', subject_ref: 'fix-1', subject_identity: fixedIdentity }];
   assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
     ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 2, schema_version: 1, snapshot: fixed,
   } })).workflow_revision, 3);
@@ -182,14 +195,14 @@ test('公开 MCP 记录 Workflow 后，首页与 Ticket 可追溯真实阶段且
   const verified = snapshot(f);
   verified.subject.subject_id = 'fix-1';
   const focused = { review_id: 'review-focused', original_review_id: 'review-full', mode: 'focused', status: 'passed',
-    subject_ref: 'fix-1', artifact_refs: [],
+    subject_ref: 'fix-1', subject_identity: fixedIdentity, artifact_refs: [],
     standards: { status: 'not-applicable', evidence: [], reason: '原 Standards 结论未变' },
     spec: { status: 'passed', evidence: ['focused-report'], reason: null },
     finding_refs: [{ origin_review_id: 'review-full', finding_id: 'SPEC-1' }], isolated: true,
     applicability: 'verified', reason: null };
   verified.reviews = [reviewed.reviews[0], focused];
   verified.findings = [{ ...reviewed.findings[0], status: 'verified', subject_ref: 'fix-1',
-    verification_review_id: 'review-focused', evidence: ['review-report', 'focused-report'] }];
+    subject_identity: fixedIdentity, verification_review_id: 'review-focused', evidence: ['review-report', 'focused-report'] }];
   assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
     ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 3, schema_version: 1, snapshot: verified,
   } })).workflow_revision, 4);
@@ -362,35 +375,88 @@ test('accepted 要求当前 subject 的内容身份及覆盖它的终态 Review 
     reference: 'issue:45', expected_worktree: f.worktree,
   } }));
   checkpointPhase(f, 'acceptance');
-  const oldReview = snapshot(f, 'acceptance');
-  oldReview.subject.subject_id = 'implementation-2';
-  oldReview.reviews = [{ review_id: 'review-full', original_review_id: null, mode: 'full', status: 'passed',
-    subject_ref: 'implementation-1', artifact_refs: [],
+  const legacy = snapshot(f, 'acceptance');
+  legacy.subject.subject_id = 'stable-subject-id';
+  legacy.reviews = [{ review_id: 'legacy-review', original_review_id: null, mode: 'full', status: 'passed',
+    subject_ref: 'stable-subject-id', artifact_refs: [],
     standards: { status: 'passed', evidence: ['standards-report'], reason: null },
     spec: { status: 'passed', evidence: ['spec-report'], reason: null }, finding_refs: [], isolated: true,
     applicability: 'verified', reason: null }];
-  oldReview.acceptance = { acceptance_id: 'acceptance-1', status: 'passed', actor: { name: 'Emilia', method: 'deterministic' },
-    subject_ref: 'implementation-2', criteria: [{ criteria_ref: '#45-AC1', status: 'pass', evidence: ['test'], notes: null }],
+  legacy.acceptance = { acceptance_id: 'acceptance-1', status: 'passed', actor: { name: 'Emilia', method: 'deterministic' },
+    subject_ref: 'stable-subject-id', criteria: [{ criteria_ref: '#45-AC1', status: 'pass', evidence: ['test'], notes: null }],
     evidence: ['test'], evidence_refs: [], execution_refs: [], applicability: 'verified', reason: '逐项核对通过' };
   assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
-    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot: oldReview,
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot: legacy,
   } })).workflow_revision, 1);
   assert.equal((f.harness.workflowHistory.summary(ticket.ticket_id) as Wire).acceptance.accepted, false);
 
-  const checkpointText = readFileSync(f.checkpoint, 'utf8').replace(/^head: .*$/m, 'head: ');
-  writeFileSync(f.checkpoint, checkpointText, 'utf8');
-  const missingIdentity = snapshot(f, 'acceptance');
-  missingIdentity.subject.subject_id = 'implementation-2';
-  missingIdentity.subject.head = null;
-  missingIdentity.checkpoint.head = null;
-  missingIdentity.reviews = [{ ...oldReview.reviews[0], subject_ref: 'implementation-2' }];
-  missingIdentity.acceptance = oldReview.acceptance;
+  const reviewed = snapshot(f, 'acceptance');
+  reviewed.subject.subject_id = 'stable-subject-id';
+  const originalIdentity = subjectIdentity(reviewed.subject);
+  reviewed.reviews = [{ ...legacy.reviews[0], review_id: 'review-full', subject_identity: originalIdentity }];
+  reviewed.acceptance = legacy.acceptance;
   assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
-    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 1, schema_version: 1, snapshot: missingIdentity,
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 1, schema_version: 1, snapshot: reviewed,
   } })).workflow_revision, 2);
-  const summary = f.harness.workflowHistory.summary(ticket.ticket_id) as Wire;
+  assert.equal((f.harness.workflowHistory.summary(ticket.ticket_id) as Wire).acceptance.accepted, true);
+
+  writeFileSync(path.join(f.worktree, 'tracked.txt'), 'new head\n', 'utf8');
+  git(f.worktree, 'add', 'tracked.txt'); git(f.worktree, 'commit', '-m', 'new content head');
+  const changedHead = git(f.worktree, 'rev-parse', 'HEAD');
+  writeFileSync(f.checkpoint, readFileSync(f.checkpoint, 'utf8').replace(/^head: .*$/m, `head: "${changedHead}"`), 'utf8');
+  const reusedFullReview = snapshot(f, 'acceptance');
+  reusedFullReview.subject.subject_id = 'stable-subject-id';
+  reusedFullReview.subject.head = changedHead;
+  reusedFullReview.checkpoint.head = changedHead;
+  reusedFullReview.reviews = reviewed.reviews;
+  reusedFullReview.acceptance = reviewed.acceptance;
+  assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 2, schema_version: 1, snapshot: reusedFullReview,
+  } })).workflow_revision, 3);
+  let summary = f.harness.workflowHistory.summary(ticket.ticket_id) as Wire;
   assert.equal(summary.assessment.state, 'verified', JSON.stringify(summary.assessment));
-  assert.equal(summary.acceptance.accepted, false);
+  assert.equal(summary.acceptance.accepted, false, 'same subject_id must not make an old full Review current');
+
+  const fixed = snapshot(f, 'acceptance');
+  fixed.subject.subject_id = 'stable-subject-id';
+  fixed.subject.head = changedHead;
+  fixed.checkpoint.head = changedHead;
+  const fixedIdentity = subjectIdentity(fixed.subject);
+  const origin = { ...reviewed.reviews[0], status: 'findings',
+    spec: { status: 'findings', evidence: ['SPEC-1'], reason: '发现问题' },
+    finding_refs: [{ origin_review_id: 'review-full', finding_id: 'SPEC-1' }] };
+  const focused = { review_id: 'review-focused', original_review_id: 'review-full', mode: 'focused', status: 'passed',
+    subject_ref: 'stable-subject-id', subject_identity: fixedIdentity, artifact_refs: [],
+    standards: { status: 'not-applicable', evidence: [], reason: '原 Standards 结论未变' },
+    spec: { status: 'passed', evidence: ['focused-report'], reason: null },
+    finding_refs: [{ origin_review_id: 'review-full', finding_id: 'SPEC-1' }], isolated: true,
+    applicability: 'verified', reason: null };
+  fixed.reviews = [origin, focused];
+  fixed.findings = [{ origin_review_id: 'review-full', finding_id: 'SPEC-1', status: 'verified', severity: 'P1',
+    summary: '已修复', subject_ref: 'stable-subject-id', subject_identity: fixedIdentity,
+    verification_review_id: 'review-focused', artifact_refs: [], evidence: ['focused-report'],
+    applicability: 'verified', reason: null }];
+  fixed.acceptance = reviewed.acceptance;
+  assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 3, schema_version: 1, snapshot: fixed,
+  } })).workflow_revision, 4);
+  assert.equal((f.harness.workflowHistory.summary(ticket.ticket_id) as Wire).acceptance.accepted, true);
+
+  writeFileSync(path.join(f.worktree, 'tracked.txt'), 'dirty after focused review\n', 'utf8');
+  const changedDirty = snapshot(f, 'acceptance');
+  changedDirty.subject.subject_id = 'stable-subject-id';
+  changedDirty.subject.head = changedHead;
+  changedDirty.subject.unstaged = [{ path: 'tracked.txt', sha256: sha256(path.join(f.worktree, 'tracked.txt')) }];
+  changedDirty.checkpoint.head = changedHead;
+  changedDirty.reviews = fixed.reviews;
+  changedDirty.findings = fixed.findings;
+  changedDirty.acceptance = fixed.acceptance;
+  assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 4, schema_version: 1, snapshot: changedDirty,
+  } })).workflow_revision, 5);
+  summary = f.harness.workflowHistory.summary(ticket.ticket_id) as Wire;
+  assert.equal(summary.assessment.state, 'verified', JSON.stringify(summary.assessment));
+  assert.equal(summary.acceptance.accepted, false, 'focused verification must bind the repaired dirty identity');
 });
 
 test('首页突出 Workflow 异常且不误标正常 Ticket', async t => {

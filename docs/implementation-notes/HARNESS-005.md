@@ -64,3 +64,13 @@ full suite 已由 Emilia 在实现提交后通过 YCA 外层执行一次，并�
 - 已知边界：外部 reference 不自动抓取；不可取得或未声明依赖的来源保持 unknown/not-applicable。best-effort 脱敏不保证识别任意秘密。assessment 只核对可安全读取的明确来源，不替 Emilia 判断报告语义。
 - 提交主题：`fix: 修复 Workflow Review findings`。精确 commit SHA 由提交后 `.local/workflow-state/HARNESS-005.md` 记录，避免本文件自引用。
 - 下一步：Emilia 核对 `ca3d01ecd4565e6f3ff2e957ab4e557408f209e6`→finding-fix commit 的写集和本 handoff 后，使用 fresh context 启动一次 delegated focused re-review；只复核 STD-001、SPEC-001～004 及其回归，不携带 implementation/fix 聊天。无 push、PR、部署或 GitHub 写入。
+
+## SPEC-003 fresh micro-fix
+
+- 修复基线：`d5e907c478bd6908742500b1fea0ad0571279caf`；本轮只处理 focused re-review 遗留的 SPEC-003 P1。
+- Review 与 finding 新增可选 `subject_identity`。它是规范化 `HEAD + staged/unstaged/untracked path/SHA-256` 的 SHA-256 digest；路径分组内稳定排序并统一使用 `/`。
+- `accepted` 不再只依赖自由文本 `subject_id`：无 finding 时 full Review 的身份必须等于当前 subject identity；有 finding 时 origin Review 必须具备内容身份，verified finding 与对应 focused Review 必须同时绑定当前修复后身份。
+- 旧 Workflow v1 记录缺少该字段时由 schema 安全补为 `null`，可继续加载，但不能被视为当前 accepted。
+- 最小回归覆盖：复用相同 `subject_id` 后改变 HEAD 时旧 full Review 失效；有 finding 的 focused verification 在 dirty identity 改变后失效；具备正确身份的两条 happy path 仍可 accepted。
+- 验证：`node --test test/harness-workflow.test.ts` 8/8 passed；`npm run typecheck` exit 0；`git diff --check` exit 0（仅 Git LF→CRLF 提示）。未跑 full suite。
+- 状态：SPEC-003 **fixed-unverified**；待 Emilia 从本次提交启动一次 fresh focused re-review。无 push、PR、GitHub 或部署动作。

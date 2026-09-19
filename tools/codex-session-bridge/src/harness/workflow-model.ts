@@ -31,7 +31,7 @@ const axisSchema = z.object({
 const findingRefSchema = z.object({ origin_review_id: text, finding_id: text }).strict();
 export const workflowReviewSchema = z.object({
   review_id: text, original_review_id: nullableText, mode: z.enum(['full', 'focused', 'evidence']),
-  status: z.enum(['pending', 'passed', 'findings', 'incomplete']), subject_ref: text,
+  status: z.enum(['pending', 'passed', 'findings', 'incomplete']), subject_ref: text, subject_identity: hash.nullable().default(null),
   artifact_refs: z.array(text).max(64), standards: axisSchema, spec: axisSchema,
   finding_refs: z.array(findingRefSchema).max(128), isolated: z.union([z.boolean(), z.literal('unknown')]),
   applicability: applicabilitySchema, reason: nullableText,
@@ -39,7 +39,7 @@ export const workflowReviewSchema = z.object({
 export const workflowFindingSchema = z.object({
   origin_review_id: text, finding_id: text,
   status: z.enum(['open', 'fixed', 'fixed-unverified', 'verified']), severity: nullableText, summary: text,
-  subject_ref: text, verification_review_id: nullableText, artifact_refs: z.array(text).max(64),
+  subject_ref: text, subject_identity: hash.nullable().default(null), verification_review_id: nullableText, artifact_refs: z.array(text).max(64),
   evidence: z.array(text).max(128), applicability: applicabilitySchema, reason: nullableText,
 }).strict();
 

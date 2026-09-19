@@ -8,6 +8,14 @@ import type { WorkflowAssessment, WorkflowRecordInput, WorkflowSnapshotRecord } 
 import { WorkflowSource } from './workflow-source.ts';
 
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const subjectIdentity = (subject: WorkflowSnapshotRecord['snapshot']['subject']) => {
+  const compare = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
+  const files = (values: typeof subject.staged) => values
+    .map(file => ({ path: file.path.replaceAll('\\', '/'), sha256: file.sha256 }))
+    .sort((left, right) => compare(left.path, right.path) || compare(left.sha256 ?? '', right.sha256 ?? ''));
+  if (subject.head === null || [...subject.staged, ...subject.unstaged, ...subject.untracked].some(file => file.sha256 === null)) return null;
+  return digest({ head: subject.head, staged: files(subject.staged), unstaged: files(subject.unstaged), untracked: files(subject.untracked) });
+};
 const comparable = (assessment: WorkflowAssessment) => JSON.stringify({ ...assessment, checked_at: null,
   reasons: assessment.reasons.map(reason => ({ ...reason })), artifacts: assessment.artifacts.map(value => ({ ...value, checked_at: null })),
   runtime: assessment.runtime.map(value => ({ ...value, checked_at: null })) });
@@ -88,21 +96,23 @@ export class WorkflowHistory {
     if (!record) return { state: 'unavailable', reason: 'not-yet-observed' };
     const snapshot = record.snapshot, assessment = this.assessments.get(ticketId) ?? record.assessment;
     const currentSubject = snapshot.subject.subject_id;
-    const subjectFiles = [...snapshot.subject.staged, ...snapshot.subject.unstaged, ...snapshot.subject.untracked];
-    const contentIdentity = snapshot.subject.head !== null && subjectFiles.every(file => file.sha256 !== null);
+    const currentIdentity = subjectIdentity(snapshot.subject);
     const terminalReview = (review: typeof snapshot.reviews[number]) => !['pending', 'incomplete'].includes(review.status)
       && review.applicability === 'verified'
       && [review.standards, review.spec].every(axis => !['pending', 'incomplete'].includes(axis.status));
     const fullReviews = snapshot.reviews.filter(review => review.mode === 'full' && terminalReview(review));
-    const reviewGate = contentIdentity && (snapshot.findings.length === 0
-      ? fullReviews.some(review => review.status === 'passed' && review.subject_ref === currentSubject)
+    const reviewGate = currentIdentity !== null && (snapshot.findings.length === 0
+      ? fullReviews.some(review => review.status === 'passed' && review.subject_ref === currentSubject
+        && review.subject_identity === currentIdentity)
       : fullReviews.length > 0 && snapshot.findings.every(finding => {
         const origin = fullReviews.find(review => review.review_id === finding.origin_review_id);
         const verification = snapshot.reviews.find(review => review.review_id === finding.verification_review_id);
         return finding.status === 'verified' && finding.applicability === 'verified' && finding.subject_ref === currentSubject
-          && Boolean(origin) && Boolean(verification) && verification!.mode === 'focused'
+          && finding.subject_identity === currentIdentity && Boolean(origin?.subject_identity) && Boolean(verification)
+          && verification!.mode === 'focused'
           && verification!.original_review_id === finding.origin_review_id && verification!.status === 'passed'
-          && verification!.subject_ref === currentSubject && terminalReview(verification!);
+          && verification!.subject_ref === currentSubject && verification!.subject_identity === currentIdentity
+          && terminalReview(verification!);
       }));
     const accepted = snapshot.acceptance.status === 'passed' && snapshot.acceptance.applicability === 'verified'
       && assessment.state === 'verified' && snapshot.acceptance.subject_ref === currentSubject
