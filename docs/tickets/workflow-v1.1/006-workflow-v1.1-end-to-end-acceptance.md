@@ -66,3 +66,10 @@
 - `git diff --check`：exit 0；最终未提交写集仅包含本 Ticket、`tools/workflow-skills/package.json`、fixture README，以及新增的 `end-to-end-fixture.mjs` / `end-to-end.md` / `end-to-end-fixture.test.js`。`.local` 证据与 checkpoint 未进入 Git。
 - Ticket Implementation Session：`9c51cca2-94b0-4d0d-ab81-78897ca06811`；ticket-design run `b1677e21-4b43-453c-993d-bba6c7c11221` 与 implementation run `04579e4d-43ef-46c4-875f-6c9d6fcdcfd7` 均自然 completed、exit 0、`timeout_ms: null`，复用同一 Codex thread `01a0b7fc-2340-7bc3-98c0-2aec3c574cae`。
 - 本节只记录实现后的机械验证；delegated Review、真实 fixture Agent/session Acceptance、closeout 与交付仍 pending，不据此把 006 标为 accepted/stable。
+
+## Acceptance Fix Handoff
+
+- **当前 blocker / 修复基线。** Acceptance 反馈：真实 Reviewer 产出 `FIXTURE-006-SPEC-001`（P1/open），source helper 的 `checkpointState()` 却要求字面量 F1，导致 interrupt 拒绝合法 checkpoint。修复前 HEAD 为 `458659697abb36fa3170cffe6e2b073ae564ad54`；本轮同一 implementation session，Review 继续 delegated 给 Emilia。
+- **最小修复。** helper 改为检查 finding 条目内含稳定 ID（字母开头、含数字，可有连字符/下划线）与 `open`；保留原 finding section 的完整快照/恢复比较，身份或状态改变仍拒绝。不增加 Markdown parser、不改变其他阶段。操作说明删除强制 F1 别名，归档模板使用“原 finding ID”。本票前文 F1 只是示例简称，实际执行以 Reviewer ID 为准，不改真实报告/checkpoint。
+- **定向 TDD。** 仅运行 `node --test --test-name-pattern='stable finding identity' tools/workflow-skills/test/end-to-end-fixture.test.js`：先因 `/\bF1\b/` 拒绝真实格式 ID 红灯（exit 1），修复后 **1/1 pass，exit 0**。同一回归检查 interrupt/check-resume 接受原 ID/open、拒绝无 finding/非 open，以及恢复时 ID 替换；全部使用独立 synthetic 测试仓库。日志：`.local/workflow-validation/006/finding-id-{red,green}.txt`。没有操作真实验收 fixture，没有改其 Review 或 checkpoint，没有启动 reviewer。
+- **变更与剩余动作。** 修改 source helper、对应 test、同目录操作说明、本 Ticket 与 outer checkpoint。未跑 full suite、未 commit；仅标记 source 修复完成，fresh focused re-review 与真实 Acceptance 继续 pending。outer phase 回到 implementation；Emilia 机械核对变更/测试并 commit 后，启动 fresh focused re-review，只审本 blocker 与直接回归，再使用原 finding ID 接续原现场验收，不重跑已完成阶段。旧实现文件摘要只适用修复前版本。

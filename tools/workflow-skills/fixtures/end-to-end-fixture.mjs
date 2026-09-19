@@ -96,8 +96,10 @@ function checkpointState(root) {
   const text = read(root, checkpoint).replaceAll('\r\n', '\n');
   assert.match(text, /^phase: implementation$/m, 'save finding/repair boundary first');
   const finding = section(text, 'Open findings / blockers');
-  assert.match(finding, /\bF1\b/);
-  assert.match(finding, /\bopen\b/);
+  // Accept a stable ID and open status on the same entry; preserve the whole
+  // section below so recovery cannot silently rename or close that finding.
+  assert.match(finding, /^\s*(?:[-*]\s+)?[`*]*(?=[A-Za-z0-9_-]*\d)[A-Za-z][A-Za-z0-9_-]*[`*]*(?=[\s:：—–])[^\n]*\bopen\b/m,
+    'checkpoint must contain a stable finding ID with open status');
   return { finding, next_action: section(text, 'Next action'), side_effects: section(text, 'Side effects') };
 }
 function inject(root, state) {
@@ -153,7 +155,7 @@ function closeoutInput(root, fixed) {
     summary: '临时 fixture；待补真实链路证据，不声明 stable。',
     stages: Object.fromEntries(['implementation', 'review', 'acceptance'].map(stage => [stage, { ...fact('待 Emilia 核对真实证据'), sessions: [] }])),
     metrics: fact('待实际等待窗口/调用数与估算对照口径'), failures: fact('待汇总实际失败与重试'),
-    findings: fact('待记录 F1 open/fixed/verified 及原双轴结论'), interventions: fact('待记录人工注入与 external interruption'),
+    findings: fact('待记录原 finding ID、open/fixed/verified 及原双轴结论'), interventions: fact('待记录人工注入与 external interruption'),
     delivery: { pr: { status: 'not-applicable', summary: '临时 fixture 不发布 PR', sources: [] },
       merge: { status: 'not-applicable', summary: '临时 fixture 不合并', sources: [] } },
     evidence: [{ id: 'raw-sentinel', location: '.local/raw-sentinel.txt', status: 'unknown',

@@ -26,9 +26,9 @@ node tools/workflow-skills/fixtures/end-to-end-fixture.mjs inject <root>
 
 前置是上步实现交接已齐备；只把 `policy.json` 的 guest_private 改 true 并 stage。`.local/injection.json` 保留前后完整 subject/实际红绿测试及旧绿证据失效声明。重复 inject 拒绝；若命令只留下 pending，保留现场核对，不重试变更。helper 不创建 finding。
 
-Emilia 用显式最小证据包启动 fresh reviewer，从 engineering-workflow 进入 review-change，检查实际权限 diff（Ticket 的 low hint 不能降级），实际执行 full 双轴独立 Review。报告放 fixture `.local`，完整报告/索引须引用两个真实轴及受审 subject；将真实权限 finding 统一标识为 F1，保留原 reviewer ID 映射。若没有发现该违约行为，本条验收失败，不补造成功报告。
+Emilia 用显式最小证据包启动 fresh reviewer，从 engineering-workflow 进入 review-change，检查实际权限 diff（Ticket 的 low hint 不能降级），实际执行 full 双轴独立 Review。报告放 fixture `.local`，完整报告/索引须引用两个真实轴及受审 subject；保留 Reviewer 实际产出的稳定 finding ID（如 FIXTURE-006-SPEC-001），不得为 checker 改名。下文 F1 仅为这一次 finding 的示例简称，不要求字面量或新增别名。若没有发现该违约行为，本条验收失败，不补造成功报告。
 
-Emilia 根据报告保存 fixture checkpoint：`phase: implementation`、当前 `head`、`# Open findings / blockers` 中的 `F1 open`/原报告引用、`# Next action` 修复 F1 后 focused，以及 side effects/真实 run 查询引用。真实原 run 必须 terminal，或继续观察而不能并行重启。
+Emilia 根据报告保存 fixture checkpoint：`phase: implementation`、当前 `head`、`# Open findings / blockers` 中的原 finding ID + `open` 状态/原报告引用、`# Next action` 修复 F1 后 focused，以及 side effects/真实 run 查询引用。真实原 run 必须 terminal，或继续观察而不能并行重启。
 
 ```text
 node tools/workflow-skills/fixtures/end-to-end-fixture.mjs interrupt <root> .local/full-review.md

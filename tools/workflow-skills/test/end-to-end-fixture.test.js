@@ -85,6 +85,34 @@ test('one permission injection and interruption preserve actual finding, diff an
   assert.equal(json(path.join(root, '.local/effect.json')).count, 1);
 });
 
+test('stable finding identity and open status survive interrupt and resume without an F1 alias', t => {
+  const f = fixture(t);
+  const { root } = ok(call('create', f.repo));
+  implemented(root);
+  ok(call('inject', root));
+  const id = 'FIXTURE-006-SPEC-001';
+  const report = '# Synthetic checker input\nFIXTURE-006-SPEC-001 — Spec / P1 / open: permission violation.\n';
+  put(root, '.local/full-review.md', report);
+  const base = read(root, checkpoint).replace('phase: review', 'phase: implementation');
+  const withFinding = finding => base.replace('无产品未决项，尚未 Review。', finding);
+  for (const invalid of ['无 finding。', `${id} — Spec / P1 / fixed`]) {
+    put(root, checkpoint, withFinding(invalid));
+    assert.notEqual(call('interrupt', root, '.local/full-review.md').status, 0);
+    assert.equal(fs.existsSync(path.join(root, '.local/interruption.json')), false);
+  }
+  const ready = withFinding(`${id} — Spec / P1 / open: permission violation.`);
+  put(root, checkpoint, ready);
+  assert.equal(ok(call('interrupt', root, '.local/full-review.md')).status, 'interruption-prepared');
+  // Synthetic fresh recovery refreshes HEAD, preserving the actual ID and status.
+  put(root, checkpoint, ready);
+  assert.equal(ok(call('check-resume', root)).status, 'artifact-check-passed');
+  for (const changed of ['无 finding。', `${id} — Spec / P1 / verified`, 'FIXTURE-006-SPEC-002 — Spec / P1 / open']) {
+    put(root, checkpoint, withFinding(changed));
+    assert.notEqual(call('check-resume', root).status, 0, 'finding identity/status must be preserved');
+  }
+  assert.equal(read(root, '.local/full-review.md'), report);
+});
+
 test('closeout uses the existing archive seam and refuses pending evidence or copied raw content', t => {
   const f = fixture(t);
   const { root } = ok(call('create', f.repo));
