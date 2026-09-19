@@ -16,9 +16,23 @@ HTTP YCA 后台启动后独立采集显式关联的 Codex 历史，浏览器关�
 
 持久化失败返回 RECORDING_FAILED，页面标记 recording-failed，导入不越过未保存记录。损坏/部分尾记录保留现场和已验证前缀，不自动丢弃或修复；修复存储并核验现场后由既有管理流程重启。source 读取失败单独显示 collection-failed；恢复观察不会重放工程任务。**本票未实现 #44 的全入口 recording gate**，因此不能把“记录健康”当成已经具备系统级副作用门禁的证明。
 
-事件沿用 bridge 的 best-effort 脱敏，新写入注明本次是否改写；旧源逐条脱敏情况为 unknown。OUTPUT_LIMIT 明确提示来源截断。未产生 run 的历史拒绝请求、来源未暴露的工具细节/重试、缺失旧日志均 unavailable；尚未收到的 thread/结果为 unknown。不获取隐藏推理，Provider 已公开文字也不是执行或验收证据。Workflow、Changes、Acceptance、服务状态明确 unavailable；电脑同步正文、owned task 采集、控制按钮、自启、Review 子 Conversation 均属后续票。
+事件沿用 bridge 的 best-effort 脱敏，新写入注明本次是否改写；旧源逐条脱敏情况为 unknown。OUTPUT_LIMIT 明确提示来源截断。未产生 run 的历史拒绝请求、来源未暴露的工具细节/重试、缺失旧日志均 unavailable；尚未收到的 thread/结果为 unknown。不获取隐藏推理，Provider 已公开文字也不是执行或验收证据。Workflow、Changes、Acceptance、服务状态明确 unavailable；owned task 采集、控制按钮、自启、Review 子 Conversation 均属后续票。
 
 现有部署仍执行 `npm ci --ignore-scripts` 并运行 src/main.js；MCP 工具摘要包含新增两个工具（完整 YCA 为 20 个）。这里说明候选源码能力，不表示常驻部署、ChatGPT 真实链路验收或日常稳定使用已经完成。
+
+### 同步电脑调用回看（HARNESS-002 / #42）
+
+8 个现有工具 `powershell`、`powershell_execute`、`filesystem_list/read/write/move`、`git_status/diff` 接受顶层可选 `ticket_id`，值来自 `harness_register_ticket`。例如 `filesystem_read({path, ticket_id})`；不增加工具，不依赖 Codex session。不提供该字段时保持旧行为且不采集正文；未知 Ticket 在操作前返回 `TICKET_NOT_FOUND`，不根据路径或当前界面猜票。调用参数中的 cwd/目标路径与 expected_worktree 仅作带时间的辅助核对，冲突显示 attribution mismatch，不自动改票或阻止原本允许的跨工作区读取。
+
+显式关联调用在后台保存脱敏后的输入与公开结果（失败时包括来源已提供的 `error.details.result`），同一 Ticket Conversation 可在断线、关闭页面或后台重启后回看。返回值另附 `harness_recording`：包含观察用 `call_id`、`ticket_id`、`started/result` 保存状态和观察时间；`call_id` 不是幂等键，响应丢失后应查历史，不能盲重发。MCP schema 在 action 前拒绝的输入和旧审计未记录正文无法补抓。
+
+- 不新增统一 Harness 内容上限；沿用各工具现有脚本/文件/输出限制与拒绝语义，来源实际提供的内容不二次截断。UI 折叠/分页不删正文，stdout/stderr 分开保留，不宣称跨流因果顺序。
+- 持久化副本先用既有 best-effort 规则脱敏，不改变实际执行参数，不存秘密原文旁副本；这不是任意秘密检测保证。`integrity.redacted` 表示本次副本处理，`source_redaction/truncated/incomplete` 保留来源事实；来源未给出时为 `unknown`。`stdout/stderr/exit_code` 的 `source-not-provided` 不等于空输出或退出码零。
+- `not-yet-observed` 表示还未收到结果；重启后只有 started 则为 `unknown / completion-not-recorded`。`collection-failed` 表示快照采集/保护失败，可写时保存缺口；`recording-failed` 表示落盘失败，不发布未保存 cursor。两类失败不改写原执行成功/失败，也不自动重试。
+- 电脑采集缺口不会被成功的 Codex 扫描清除；记录的是当时事实，页面的 `current_process_state: unknown` 不作当前进程存活声明。磁盘故障期间不能保证完整历史，坏 journal 保留现场。
+- 正常关闭先停止新入口，等待电脑操作及同步记录收尾，再完成 Codex 最后采集并释放 RuntimeStore 单 writer 锁；无法确认停止时保留锁及只读观察。系统级 recording gate 留 #44，Owned Task 的归属与生命周期留 #43。
+
+该源码交付不代表真实浏览器可用性、resident 部署或 V0 全链验收通过。#43 必须串行基于本票实际 record union、健康投影与 shutdown 契约接入，不独立覆盖共享文件。
 
 独立的前置开发工具，不属于 yuki-link 正式 ticket，也不依赖 `core/` 或 `providers/`。
 

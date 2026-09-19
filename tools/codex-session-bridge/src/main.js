@@ -9,7 +9,7 @@ import { PermissionResolver } from './permissions.js';
 import { SessionManager } from './manager.js';
 import { createMcpServer } from './mcp.js';
 import { createHttpServer } from './http.js';
-import { publicError } from './errors.js';
+import { BridgeError, publicError } from './errors.js';
 import { ComputerTools } from './computer/tools.js';
 import { createDiagnostics, toolSummary } from './diagnostics.js';
 import { sourceVersion } from './source.js';
@@ -41,6 +41,24 @@ if (values.help) {
   let httpServer;
   let controlServer;
   let harnessServer;
+  const closeExecutionSources = async () => {
+    if (manager) manager.closing = true;
+    if (computer) computer.closing = true;
+    if (manager?.harness) manager.harness.computerCalls.closing = true;
+    // Attempt every source even if another stop rejects. No source owns the
+    // shared writer's release until all stop/capture outcomes are confirmed.
+    const sources = ['computer', 'codex', 'sync-recording'];
+    const outcomes = await Promise.allSettled([
+      Promise.resolve().then(() => computer?.close()),
+      Promise.resolve().then(() => manager?.stopRuns()),
+      Promise.resolve().then(() => manager?.harness?.computerCalls.drain()),
+    ]);
+    const failures = outcomes.flatMap((outcome, index) => outcome.status === 'rejected'
+      ? [{ source: sources[index], error: publicError(outcome.reason) }] : []);
+    if (failures.length) throw new BridgeError('STOP_FAILED', 'Execution sources could not all close; retain the runtime writer and observation.', { failures });
+    if (manager) await manager.close(); // Final capture/recheck, then writer release.
+    else store?.close();
+  };
   try {
     if (!values['allow-cwd']?.length || !['stdio', 'http'].includes(values.transport)) throw new Error('Specify --allow-cwd and a supported --transport.');
     if (!path.isAbsolute(values.runtime) || [...values['allow-cwd'], ...(values['read-root'] ?? []), ...(values['control-root'] ?? [])].some(p => !path.isAbsolute(p))) throw new Error('Runtime and allowlist paths must be absolute.');
@@ -60,16 +78,18 @@ if (values.help) {
     const shutdown = async () => {
       if (shuttingDown) return;
       shuttingDown = true;
+      observation.draining = true;
+      manager.closing = true;
+      computer.closing = true;
+      manager.harness.computerCalls.closing = true;
       try {
         // Raw connected sockets are not part of activity counters and can keep Node alive after an accepted stop.
         if (httpServer) { httpServer.close(); httpServer.closeIdleConnections(); httpServer.closeAllConnections(); }
+        // Keep the writer and read-only observation alive until all computer
+        // results are captured. Failed termination must not release ownership.
+        await closeExecutionSources();
         if (controlServer) { controlServer.close(); controlServer.closeIdleConnections(); controlServer.closeAllConnections(); }
         if (harnessServer) { harnessServer.close(); harnessServer.closeAllConnections(); }
-        manager.harness.close();
-        await manager.close();
-        // manager.close may append terminal run events before releasing its lock.
-        // Capture is finalized by SessionManager before that release.
-        await computer.close();
         if (server) await server.close();
         process.exitCode = 0;
       } catch (error) { console.error(JSON.stringify(publicError(error))); process.exitCode = 1; }
@@ -104,13 +124,12 @@ if (values.help) {
     }
   } catch (error) {
     httpServer?.close(); httpServer?.closeAllConnections();
-    controlServer?.close(); controlServer?.closeAllConnections();
-    harnessServer?.close(); harnessServer?.closeAllConnections();
-    manager?.harness?.close();
     console.error(JSON.stringify(publicError(error)));
-    if (manager) await manager.close();
-    else store?.close();
-    await computer?.close();
+    try {
+      await closeExecutionSources();
+      controlServer?.close(); controlServer?.closeAllConnections();
+      harnessServer?.close(); harnessServer?.closeAllConnections();
+    } catch (cleanupError) { console.error(JSON.stringify(publicError(cleanupError))); }
     process.exitCode = 1;
   }
 }

@@ -19,19 +19,33 @@ export function createMcpServer(manager, computer) {
     approval_policy: z.enum(APPROVAL_POLICY_VALUES).optional().describe('Codex native approval policy. Omit to inherit the effective local default at session creation.'),
     approvals_reviewer: z.enum(APPROVAL_REVIEWER_VALUES).optional().describe('Approval reviewer. Omit to inherit and freeze the effective local default.'),
   }).strict().optional();
-  const register = (name, description, inputSchema, action, readOnly = false, idempotent = true, destructive = false) => {
+  const register = (name, description, inputSchema, action, readOnly = false, idempotent = true, destructive = false, synchronous = false) => {
     server.registerTool(name, {
       description, inputSchema,
       annotations: { readOnlyHint: readOnly, destructiveHint: destructive, idempotentHint: idempotent, openWorldHint: !readOnly },
     }, async (input, extra) => {
       try {
-        const result = await action(input, extra);
-        return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
+        let result, isError = false;
+        if (synchronous && input.ticket_id !== undefined) {
+          if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
+          const { ticket_id, ...argumentsOnly } = input;
+          const recorded = await manager.harness.computerCalls.run(name, ticket_id, argumentsOnly, () => action(argumentsOnly, extra));
+          result = recorded.response; isError = recorded.isError;
+        } else result = await action(input, extra);
+        return { ...(isError ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
       } catch (error) {
         const result = { error: error instanceof HarnessError ? { code: error.code, message: error.message, details: error.details } : publicError(error) };
         return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
       }
     });
+  };
+  const registerComputer = (name, description, inputSchema, action, readOnly = false, idempotent = true, destructive = false) => {
+    const attribution = { ticket_id: z.string().uuid().optional().describe('Explicit registered Harness Ticket. Omit to preserve legacy behavior; never inferred. Recording failure does not retry execution.') };
+    const schema = inputSchema instanceof z.ZodObject ? inputSchema.extend(attribution) : { ...inputSchema, ...attribution };
+    register(name, description, schema, (input, extra) => {
+      if (computer.closing) throw new HarnessError('SHUTTING_DOWN');
+      return action(input, extra);
+    }, readOnly, idempotent, destructive, true);
   };
   register('harness_register_ticket', 'Explicitly register a Project/Ticket and its stable main Conversation. Identical input is idempotent; conflicts never reattribute history. No engineering task is started.',
     registrationSchema, input => {
@@ -76,31 +90,31 @@ export function createMcpServer(manager, computer) {
     register('task_stop', 'Request stopping only this owned foreground task. Poll status: a request or a successful tree-kill command is not proof of termination. Retry explicitly after failure.', z.object({
       task_id: z.string().max(80),
     }).strict(), input => computer.tasks.stop(input), false, false, true);
-    register('powershell', 'Direct PowerShell 7 read-only query, independent of Codex. query must be version, location, system or processes. Arbitrary scripts, native commands, deletion and system changes are not supported.', {
+    registerComputer('powershell', 'Direct PowerShell 7 read-only query, independent of Codex. query must be version, location, system or processes. Arbitrary scripts, native commands, deletion and system changes are not supported.', {
       cwd: z.string().min(1), query: z.enum(['version', 'location', 'system', 'processes']),
       timeout_ms: z.number().int().min(1000).max(30000).optional(),
     }, input => computer.powershell(input), true);
-    register('powershell_execute', 'Execute a short noninteractive PowerShell script directly, without Codex. May modify files, run native commands or access external systems. Not idempotent: never blindly retry an unknown result. cwd is separate from script. Default 30s, maximum 30s, then at most 5s termination cleanup; combined output 1 MiB. Failures preserve partial output in error.details.result.', z.object({
+    registerComputer('powershell_execute', 'Execute a short noninteractive PowerShell script directly, without Codex. May modify files, run native commands or access external systems. Not idempotent: never blindly retry an unknown result. cwd is separate from script. Default 30s, maximum 30s, then at most 5s termination cleanup; combined output 1 MiB. Failures preserve partial output in error.details.result.', z.object({
       cwd: z.string().min(1),
       script: z.string().min(1).max(131072).describe('Complete PowerShell text, passed verbatim over UTF-8 JSON stdin; at most 128 KiB UTF-8. No interactive stdin.'),
       timeout_ms: z.number().int().min(1000).max(30000).optional(),
     }).strict(), input => computer.powershellExecute(input), false, false, true);
-    register('filesystem_list', 'List allowed files/directories with pagination. Protected paths, credentials and links are omitted. No glob expansion.', {
+    registerComputer('filesystem_list', 'List allowed files/directories with pagination. Protected paths, credentials and links are omitted. No glob expansion.', {
       path: z.string().min(1), cursor: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(200).optional(),
     }, input => computer.filesystem.list(input), true);
-    register('filesystem_read', 'Read one explicitly addressed absolute local UTF-8 text file up to 256 KiB, including outside read roots and .agents/skills or .codex/skills documents. Preserve BOM/newlines and hash the complete raw bytes. Oversize files fail without truncation. Other protected components, runtime/control configuration, credential-like content and links remain denied. Reading a Skill does not execute it.', {
+    registerComputer('filesystem_read', 'Read one explicitly addressed absolute local UTF-8 text file up to 256 KiB, including outside read roots and .agents/skills or .codex/skills documents. Preserve BOM/newlines and hash the complete raw bytes. Oversize files fail without truncation. Other protected components, runtime/control configuration, credential-like content and links remain denied. Reading a Skill does not execute it.', {
       path: z.string().min(1),
     }, input => computer.filesystem.read(input), true);
-    register('filesystem_write', 'Create a UTF-8 workspace file, or replace different content only with the current expected_sha256 from filesystem_read. Identical content returns changed:false without writing, even with a missing or stale hash; this is not hash validation. Parent must exist. Agent code/configuration and credentials are protected.', {
+    registerComputer('filesystem_write', 'Create a UTF-8 workspace file, or replace different content only with the current expected_sha256 from filesystem_read. Identical content returns changed:false without writing, even with a missing or stale hash; this is not hash validation. Parent must exist. Agent code/configuration and credentials are protected.', {
       path: z.string().min(1), content: z.string().max(262144), expected_sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
     }, input => computer.filesystem.write(input), false, true, true);
-    register('filesystem_move', 'Move one ordinary UTF-8 workspace file to a new, nonexisting same-volume path. Requires source expected_sha256. No directories, overwrites, credential paths or links.', {
+    registerComputer('filesystem_move', 'Move one ordinary UTF-8 workspace file to a new, nonexisting same-volume path. Requires source expected_sha256. No directories, overwrites, credential paths or links.', {
       source: z.string().min(1), destination: z.string().min(1), expected_sha256: z.string().regex(/^[0-9a-f]{64}$/),
     }, input => computer.filesystem.move(input), false, false, true);
-    register('git_status', 'Read local repository status. No index refresh locks, fsmonitor hooks, submodule traversal, network, commit or push. Repository root must be within read roots.', {
+    registerComputer('git_status', 'Read local repository status. No index refresh locks, fsmonitor hooks, submodule traversal, network, commit or push. Repository root must be within read roots.', {
       cwd: z.string().min(1),
     }, input => computer.gitQuery(input, 'status'), true);
-    register('git_diff', 'Read an unstaged or staged diff for one existing allowed UTF-8 file. No directory-wide diff, deleted paths, external diff/textconv, network, commit or push.', {
+    registerComputer('git_diff', 'Read an unstaged or staged diff for one existing allowed UTF-8 file. No directory-wide diff, deleted paths, external diff/textconv, network, commit or push.', {
       cwd: z.string().min(1), path: z.string().min(1), staged: z.boolean().optional(),
     }, input => computer.gitQuery(input, 'diff'), true);
   }

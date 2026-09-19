@@ -59,6 +59,11 @@ export function createHarnessServer(harness: Harness) {
         let label = d.kind === 'attached' ? (d.previous_session_id && d.previous_session_id !== d.binding.session_id ? 'session 切换边界' : 'session/run 显式关联')
           : d.kind === 'event' ? d.event.kind : 'Ticket 登记';
         let text = '';
+        if (d.kind === 'computer_call') {
+          label = '同步电脑调用 · ' + d.call.tool + ' · ' + d.call.stage + ' · ' + d.call.outcome;
+          text = JSON.stringify({ input: d.call.input, result: d.call.result, error: d.call.error,
+            capture: d.call.capture, integrity: d.call.integrity }, null, 2);
+        }
         if (d.kind === 'event' && d.event.payload && typeof d.event.payload === 'object') {
           const payload = d.event.payload as Record<string, unknown>;
           if (d.event.kind === 'message.sent') { label = '任务 · ' + String(payload.sender ?? 'caller'); text = String(payload.text ?? 'unknown'); }
@@ -84,7 +89,9 @@ export function createHarnessServer(harness: Harness) {
       return send(200, page(detail.ticket.title, '<p>Conversation: ' + escape(detail.ticket.main_conversation_id)
         + '</p><p><a href="/tickets/' + detail.ticket.id + '">刷新历史</a></p><aside class="warning">Recording: '
         + escape(detail.recording.state) + '<br>Workflow / Changes / Acceptance：unavailable；run completed 不代表验收通过。<br>'
-        + detail.source_gaps.map(escape).join('<br>') + '</aside>' + records
+        + detail.source_gaps.map(escape).join('<br>') + '</aside>'
+        + (detail.computer_calls.length ? '<aside>同步调用状态（历史观察，不代表当前进程状态；stdout/stderr 无跨流顺序保证）<pre>'
+          + escape(JSON.stringify(detail.computer_calls, null, 2)) + '</pre></aside>' : '') + records
         + (detail.has_more ? '<a href="?after=' + detail.next_cursor + '">后续记录</a>' : '')), true);
     } catch (e) {
       const code = e instanceof HarnessError ? e.code : 'READ_FAILED';

@@ -32,6 +32,22 @@ export const eventSchema = z.object({
   }),
 });
 export type Event = z.infer<typeof eventSchema>;
+export const computerToolSchema = z.enum(['powershell', 'powershell_execute', 'filesystem_list', 'filesystem_read',
+  'filesystem_write', 'filesystem_move', 'git_status', 'git_diff']);
+const fieldState = z.enum(['observed', 'source-not-provided', 'not-yet-observed', 'collection-failed']);
+const sourceFlag = z.union([z.boolean(), z.literal('unknown')]);
+export const computerCallSchema = z.object({
+  call_id: id, ticket_id: id, conversation_id: id, tool: computerToolSchema,
+  stage: z.enum(['started', 'result']), outcome: z.enum(['not-yet-observed', 'succeeded', 'failed']),
+  capture: z.enum(['observed', 'collection-failed']), source: z.literal('yca-sync-public-result'),
+  source_at: z.string(), input: z.unknown(), result: z.unknown(), error: z.unknown(), attribution: z.unknown(),
+  integrity: z.object({ policy: z.literal('bridge-redact-v1'), redacted: z.boolean(),
+    source_redaction: sourceFlag, truncated: sourceFlag, incomplete: sourceFlag,
+    stdout: fieldState, stderr: fieldState, exit_code: fieldState,
+  }),
+});
+export type ComputerCall = z.infer<typeof computerCallSchema>;
+export type ComputerTool = z.infer<typeof computerToolSchema>;
 export const recordSchema = z.object({
   schema_version: z.literal(1), cursor: z.number().int().positive(),
   event_id: id, source_id: id, observed_at: text,
@@ -40,6 +56,7 @@ export const recordSchema = z.object({
     z.object({ kind: z.literal('registered'), project: projectSchema, ticket: ticketSchema }),
     z.object({ kind: z.literal('attached'), binding: bindingSchema, previous_session_id: id.nullable() }),
     z.object({ kind: z.literal('event'), event: eventSchema }),
+    z.object({ kind: z.literal('computer_call'), call: computerCallSchema }),
   ]),
 });
 export type RecordEntry = z.infer<typeof recordSchema>;

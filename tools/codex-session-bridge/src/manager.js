@@ -286,7 +286,9 @@ export class SessionManager {
     return result;
   }
 
-  async close() {
+  // Stop this execution source without releasing the shared runtime writer.
+  // Other sources may still have unconfirmed processes or pending records.
+  async stopRuns() {
     this.closing = true;
     for (const session of Object.values(this.store.state.sessions)) if (session.active_run_id) this.stop(session.id);
     const deadline = Date.now() + 10_000;
@@ -296,6 +298,10 @@ export class SessionManager {
       throw new BridgeError('STOP_FAILED', 'Some owned runs have not stopped; retain the runtime lock.');
     }
     for (const waiter of [...this.observationWaiters]) waiter.cancel(new BridgeError('BRIDGE_CLOSED', 'Bridge closed while observing output.'));
+  }
+
+  async close() {
+    await this.stopRuns();
     this.harness?.close();
     this.store.close();
   }
