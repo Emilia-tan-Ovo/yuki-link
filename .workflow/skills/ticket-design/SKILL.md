@@ -12,13 +12,15 @@ This is the checkpoint in `to-tickets -> ticket-design -> implement`. Stay in de
 
 ## 1. Establish the implementation context
 
-Read, in this order:
+Read progressively, in this order:
 
-1. The complete current ticket.
-2. Its source spec.
-3. `CONTEXT.md` and relevant ADRs.
-4. Every applicable `AGENTS.md` plus the project's engineering conventions.
-5. The current code, configuration, tests, Git state, and nearby implementation precedents.
+1. The complete current ticket and any already-persisted notes for this ticket.
+2. Every applicable `AGENTS.md` plus the stable project conventions/invariants needed to interpret the ticket.
+3. The relevant sections of its source Spec. Expand to the full relevant Spec when the ticket boundary, contract, or acceptance semantics remain uncertain.
+4. `CONTEXT.md` / ADR entries named by the ticket/Spec or required by an unresolved implementation decision; do not load unrelated history by default.
+5. The current code, configuration, tests, Git state, and nearby implementation precedents. For large sources, prefer the relevant symbol / section / line range once the implementation area is located.
+
+Historical Tickets, prior Review/Acceptance/closeout records, `.workflow/history`, README indexes, complete large Specs, and full Memory are **cold by default, not forbidden**. Search/retrieve first and open the relevant slice; read the complete source whenever the retrieved evidence is insufficient or a correctness-sensitive decision depends on broader context. Context planning is a starting map, not a hard allowlist; correctness takes priority over context budget.
 
 Resolve facts available from those sources or tools yourself. Ask the user only for information that cannot be discovered and would materially change the design. If the ticket conflicts with the spec or current code, surface the conflict rather than silently redefining scope.
 
@@ -69,7 +71,8 @@ Summarize:
 
 - the agreed Implementation Decisions;
 - a short implementation sequence;
-- the few deferred implementation details, if any.
+- the few deferred implementation details, if any;
+- a short **Context Plan** for the fresh implementation session.
 
 Ask the user to confirm shared understanding. After confirmation, inspect the current tracker format and how `/implement` reads tickets. If an extra Markdown section is compatible, add or update this section in the current ticket:
 
@@ -79,6 +82,13 @@ Ask the user to confirm shared understanding. After confirmation, inspect the cu
 ## Implementation Notes
 
 - <only decision-rich data, interface, module/seam, integration, or test notes>
+
+### Context Plan
+
+- Core: <current Ticket/AC + applicable invariants + direct code/test entry points>
+- Related: <only known-high-relevance Spec/Ticket/interface/source + why it is relevant>
+- Retrieval: <cold sources or keywords/symbols to search if more context is needed>
+- Expansion triggers: <uncertainty/risk signals that require broader investigation>
 ```
 
 Keep the notes concise. Record decisions, not the conversation; include no substantial implementation code and do not repeat requirements already present in the spec. Preserve the ticket's existing structure and all unrelated content.

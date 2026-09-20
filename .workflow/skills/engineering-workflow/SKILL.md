@@ -14,7 +14,7 @@ disable-model-invocation: true
 
 核对实际加载路径。开发验收可显式读取 repo `.workflow/skills`；安装版从本 Skill 所在安装根找兄弟 Skill，禁止静默混用另一套重名副本。未实现的占位文件不是可调用能力。必要领域依赖不存在时记录缺失路径，不宣称该阶段完成。
 
-已有票据或恢复任务依次读取 **Ticket → source Spec → CONTEXT / ADR / 适用 AGENTS → Implementation Notes → checkpoint**。没有 Ticket 时从用户指定的 Spec / Design Handoff 开始，明确尚不存在的产物。checkpoint 固定为当前 worktree 的 `.local/workflow-state/<ticket>.md`；拆票前使用稳定的 feature 标识，拆票后每票独立，不把其他工作树的 checkpoint 当作当前状态。
+已有票据或恢复任务先读取**当前 Ticket → 适用 AGENTS / 稳定项目约束 → Implementation Notes → checkpoint**，再按 Notes 中的 Context Plan 定位 source Spec、CONTEXT / ADR、关联 Ticket 与代码入口；旧票没有 Context Plan 时按 `ticket-design` 的 progressive reading 原则补齐，不默认展开全部历史。没有 Ticket 时仍从用户指定的 Spec / Design Handoff 开始。checkpoint 固定为当前 worktree 的 `.local/workflow-state/<ticket>.md`；拆票后每票独立，不把其他工作树的 checkpoint 当作当前状态。
 
 遇到恢复、动态值冲突、未知副作用或 session 切换时，先完整执行 [恢复协议](recovery.md)，再选择阶段。完成标准：产物、授权、真实 Git 身份与下一阶段依据齐全。
 
@@ -27,7 +27,7 @@ checkpoint 的 `phase` 表示**下一步要进行的工作**，不是已经完�
 | 需求尚有真正的产品/领域未决项 | discovery | `pair-with-docs` → 已确认 Design Handoff |
 | 已有 Design Handoff，缺正式 Spec | spec | `to-spec` → Spec、测试 seam、发布引用 |
 | 已有 Spec，缺可执行 Ticket frontier | tickets | `to-tickets` → 票据引用、blocking edges、frontier |
-| 当前 Ticket 可开始，缺实现决定 | ticket-design | `ticket-design` → Implementation Notes；frontier 为空直接 ready |
+| 当前 Ticket 可开始，缺实现决定 | ticket-design | `ticket-design` → Implementation Notes + 简短 Context Plan；frontier 为空直接 ready |
 | 已有 Notes，实现/测试尚未完成，或有待修 finding | implementation | `implement`；修复时携带原 finding 及受影响范围 |
 | 实现及必要测试已完成，缺对应内容的有效 Review | review | fresh review；见下方兼容边界 |
 | Review 已通过且证据仍适用，缺验收 | acceptance | **优先由 Emilia 从外部事实逐项核对 Ticket**；只有 criteria 本身要求 Agent/session 行为时才启动 fresh 验收者 |
@@ -47,6 +47,17 @@ checkpoint 的 `phase` 表示**下一步要进行的工作**，不是已经完�
 - finding 修复后只允许一次必要的 fresh focused re-review；只有修复引入独立新高风险范围时才由 `review-change` 升级。
 - 只有 continuity 本身就是明确验收目标，或 Owner 明确批准的例外，才允许跨阶段复用 model session；checkpoint 必须记录理由。
 
+#### Context Plan
+
+每张进入 implementation 的 Ticket 由 `ticket-design` 在既有 `Implementation Notes` 中附带一个**简短 Context Plan**；不为此新增第三套项目地图、记忆库或长期运行状态。它只负责给 fresh implementation 一个高信号起点，**不是文件访问白名单，也不是正确性门禁**。
+
+- **Core**：当前 Ticket/AC、适用 `AGENTS.md` 与稳定项目不变量、Notes/checkpoint/fixed point，以及直接代码/测试入口。实现启动时先理解这些事实。
+- **Related**：只点名当前已知高相关的 Spec/Ticket/接口/文件，并说明“为什么相关”；默认按需读取，不把相关历史全文复制进 prompt。
+- **Retrieval / cold context**：其他历史 Ticket、Review/Acceptance/closeout、`.workflow/history`、README 索引、完整大 Spec、完整 Memory 等默认保持冷状态。需要时先用 Git/关键词/symbol/section 检索定位，再读取命中片段；证据仍不足时允许读完整来源。
+- **Expansion triggers**：权限/安全、并发、持久化、数据一致性、跨模块/外部契约，或任何会影响设计/实现判断的不确定性出现时，Agent 应主动扩大调查。Context budget 是效率护栏，不能压过正确性；不需要为正常事实查找逐次向 Owner 请求许可。
+- **Large files by slice**：大源码、大测试或长文档在完成首次定位后，后续优先按 symbol / section / line range 读取，避免为了确认局部事实反复全文加载。
+
+implementation prompt 引用 Context Plan 与持久化来源，从 Core 开始、Related 按需展开；显著超出计划时只需在 handoff/checkpoint 说明扩张原因和新增关键来源，不维护逐文件阅读账本。Codex 自身的 compaction、cache、history/notes 或其他原生 context management 仍由 Codex 管理；YCA/Workflow **不另建竞争性的模型记忆或压缩状态**。工程 source of truth 继续是 Git、Ticket/Notes、checkpoint 与可核验外部事实。
 #### 模型路由
 
 - 默认主力：`gpt-5.6-sol medium`，适用于普通 ticket-design、implementation、finding fix、focused review。
