@@ -7,8 +7,8 @@ const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => 
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 }[c]!));
 const css = 'body{font:16px system-ui;margin:0;background:#f5f3fa;color:#262034}main{max-width:1040px;margin:3rem auto;padding:0 1.5rem}a{color:#6240a0}section,article,aside{background:white;border:1px solid #ded7ec;border-radius:12px;padding:1rem;margin:1rem 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}small{color:#645c70}.warning{border-left:4px solid #ad6b21}h1{font-size:28px}';
-const page = (title: string, body: string) => '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
-  + '<title>' + escape(title) + '</title><link rel="stylesheet" href="/style.css"></head><body><main>'
+const page = (title: string, body: string, csrf = '') => '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+  + '<meta name="csrf-token" content="' + escape(csrf) + '"><title>' + escape(title) + '</title><link rel="stylesheet" href="/style.css"></head><body><main>'
   + '<nav><a href="/">Yuki Harness · Projects</a></nav><h1>' + escape(title) + '</h1>' + body + '</main></body></html>';
 const equal = (value: string | undefined, secret: string) => {
   const bytes = Buffer.from(value ?? ''), expected = Buffer.from(secret);
@@ -16,25 +16,81 @@ const equal = (value: string | undefined, secret: string) => {
 };
 export function createHarnessServer(harness: Harness) {
   const session = randomBytes(32).toString('hex');
-  return http.createServer((req, res) => {
+  const csrf = randomBytes(32).toString('hex');
+  return http.createServer(async (req, res) => {
     const origin = 'http://127.0.0.1:' + req.socket.localPort;
     const headers = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
-      'content-security-policy': "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" };
+      'content-security-policy': "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" };
     const send = (status: number, value: unknown, html = false, cookie = false) =>
       res.writeHead(status, { ...headers, 'content-type': html ? 'text/html; charset=utf-8' : 'application/json; charset=utf-8',
         ...(cookie ? { 'set-cookie': 'yuki_harness=' + session + '; HttpOnly; SameSite=Strict; Path=/' } : {}) })
         .end(html ? String(value) : JSON.stringify(value));
+    const redirect = (location: string) => res.writeHead(303, { ...headers, location }).end();
     if (req.headers.host !== new URL(origin).host || (req.headers.origin && req.headers.origin !== origin)
       || ['cross-site', 'same-site'].includes(req.headers['sec-fetch-site'] ?? '')) return send(403, { code: 'FORBIDDEN' });
-    if (req.method !== 'GET') return send(405, { code: 'READ_ONLY' });
     let url: URL;
     try { url = new URL(req.url ?? '/', origin); }
     catch { return send(400, { code: 'INVALID_URL' }); }
+    const controlPath = /^\/api\/tickets\/[0-9a-f-]+\/(?:refresh|runs\/[0-9a-f-]+\/stop|tasks\/[^/]+\/stop|worktree\/open)$/.test(url.pathname);
+    if (req.method === 'POST' && !controlPath) return send(405, { code: 'METHOD_NOT_ALLOWED' });
     if (url.pathname === '/style.css') {
       res.writeHead(200, { ...headers, 'content-type': 'text/css; charset=utf-8' }); return res.end(css);
     }
     const cookie = /(?:^|;\s*)yuki_harness=([^;]*)/.exec(req.headers.cookie ?? '')?.[1];
     if (url.pathname !== '/' && !equal(cookie, session)) return send(403, { code: 'SESSION_REQUIRED' });
+    if (req.method === 'POST') {
+      if (req.headers.origin !== origin) return send(403, { code: 'FORBIDDEN' });
+      const contentType = req.headers['content-type'] ?? '';
+      const jsonRequest = /^application\/json(?:;|$)/i.test(contentType);
+      const formRequest = /^application\/x-www-form-urlencoded(?:;|$)/i.test(contentType);
+      if (!jsonRequest && !formRequest) return send(415, { code: 'UNSUPPORTED_MEDIA_TYPE' });
+      let body = '', size = 0;
+      try {
+        for await (const chunk of req) {
+          size += Buffer.byteLength(chunk);
+          if (size > 4096) return send(413, { code: 'BODY_TOO_LARGE' });
+          body += chunk;
+        }
+        if (jsonRequest && body) JSON.parse(body);
+      } catch { return send(400, { code: 'INVALID_BODY' }); }
+      const form = formRequest ? new URLSearchParams(body) : null;
+      if (!equal(jsonRequest ? req.headers['x-csrf-token'] as string | undefined : form?.get('csrf') ?? undefined, csrf)) {
+        return send(403, { code: 'FORBIDDEN' });
+      }
+      try {
+        const refresh = /^\/api\/tickets\/([0-9a-f-]+)\/refresh$/.exec(url.pathname);
+        const runStop = /^\/api\/tickets\/([0-9a-f-]+)\/runs\/([0-9a-f-]+)\/stop$/.exec(url.pathname);
+        const taskStop = /^\/api\/tickets\/([0-9a-f-]+)\/tasks\/([^/]+)\/stop$/.exec(url.pathname);
+        const open = /^\/api\/tickets\/([0-9a-f-]+)\/worktree\/open$/.exec(url.pathname);
+        if (refresh) {
+          const result = harness.refreshControls(refresh[1]);
+          return formRequest ? redirect('/tickets/' + refresh[1]) : send(200, result);
+        }
+        if (runStop) {
+          const result = harness.stopRun(runStop[1], runStop[2]);
+          const status = result.outcome === 'requested' ? 202 : result.outcome === 'active_run_changed' ? 409
+            : result.outcome === 'request_failed' ? 503 : 200;
+          return formRequest && status < 400 ? redirect('/tickets/' + runStop[1]) : send(status, result);
+        }
+        if (taskStop) {
+          const result = harness.stopTask(taskStop[1], decodeURIComponent(taskStop[2]));
+          const status = result.outcome === 'requested' ? 202 : result.outcome === 'request_failed' ? 503 : 200;
+          return formRequest && status < 400 ? redirect('/tickets/' + taskStop[1]) : send(status, result);
+        }
+        if (open) {
+          const result = harness.openWorktree(open[1]);
+          return formRequest && result.outcome === 'open_requested' ? redirect('/tickets/' + open[1])
+            : send(result.outcome === 'open_requested' ? 202 : 503, result);
+        }
+        return send(404, { code: 'NOT_FOUND' });
+      } catch (e) {
+        const code = e instanceof HarnessError ? e.code : 'CONTROL_FAILED';
+        const status = ['TICKET_NOT_FOUND', 'RUN_NOT_FOUND', 'TASK_NOT_FOUND'].includes(code) ? 404
+          : ['TASK_EPOCH_EXPIRED', 'ATTRIBUTION_MISMATCH', 'WORKTREE_MISMATCH'].includes(code) ? 409 : 503;
+        return send(status, { code });
+      }
+    }
+    if (req.method !== 'GET') return send(405, { code: 'METHOD_NOT_ALLOWED' });
     try {
       // Explicit UI refresh asks for current facts. The independent background
       // collector is still responsible for capture while no browser is present.
@@ -69,9 +125,9 @@ export function createHarnessServer(harness: Harness) {
               + ' · Changes ' + escape(changes.freshness) + ' / ' + escape(changes.completeness)
               + ' · files ' + changes.file_count + ' · commits ' + escape(changes.commit_count ?? 'unknown') + '</li>';
           }).join('') + '</ul></section>').join('');
-        return send(200, page('工程协作历史', '<p>只读观察 · <a href="/">刷新</a></p><aside>Recording: ' + escape(summary.recording.state)
+        return send(200, page('工程协作历史', '<p>观察已有运行 · <a href="/">刷新</a></p><aside>Recording: ' + escape(summary.recording.state)
           + '<br>Changes：按 Ticket 固定基线刷新；服务状态：unavailable（尚未接入）</aside>'
-          + (groups || '<p>尚未登记 Project / Ticket。由 Emilia 通过 YCA 显式登记。</p>')), true, true);
+          + (groups || '<p>尚未登记 Project / Ticket。由 Emilia 通过 YCA 显式登记。</p>'), csrf), true, true);
       }
       const conversationRoute = /^\/(api\/)?conversations\/([0-9a-f-]+)$/.exec(url.pathname);
       const route = /^\/(api\/)?tickets\/([0-9a-f-]+)$/.exec(url.pathname);
@@ -117,6 +173,11 @@ export function createHarnessServer(harness: Harness) {
           label = 'Workflow 事实刷新 · revision ' + d.workflow.workflow_revision;
           text = JSON.stringify(d.workflow.assessment, null, 2);
         }
+        if (d.kind === 'control_action') {
+          label = '控制动作 · ' + d.control.action + ' · ' + d.control.stage + ' · ' + d.control.outcome;
+          text = JSON.stringify({ target: d.control.target, source_status: d.control.source_status,
+            integrity: d.control.integrity }, null, 2);
+        }
         if (d.kind === 'event' && d.event.payload && typeof d.event.payload === 'object') {
           const payload = d.event.payload as Record<string, unknown>;
           if (d.event.kind === 'message.sent') { label = '任务 · ' + String(payload.sender ?? 'caller'); text = String(payload.text ?? 'unknown'); }
@@ -159,15 +220,29 @@ export function createHarnessServer(harness: Harness) {
         + '<details><summary>时效、来源与 evidence gaps</summary><pre>'
         + escape(JSON.stringify({ checked_at: changes.checked_at, sources: changes.sources, evidence_gaps: changes.evidence_gaps }, null, 2))
         + '</pre></details></aside>';
+      const controls = detail.controls;
+      const csrfField = '<input type="hidden" name="csrf" value="' + escape(csrf) + '">';
+      const actions = '<form method="post" action="/api/tickets/' + detail.ticket.id + '/refresh">' + csrfField
+        + '<button type="submit">刷新当前状态</button></form>'
+        + (detail.ticket.expected_worktree ? '<form method="post" action="/api/tickets/' + detail.ticket.id + '/worktree/open">'
+          + csrfField + '<button type="submit">打开 Ticket worktree</button></form>' : '')
+        + controls.runs.filter((run: any) => run.manageable).map((run: any) => '<form method="post" action="/api/tickets/'
+          + detail.ticket.id + '/runs/' + run.run_id + '/stop">' + csrfField + '<button type="submit">停止此 run</button></form>').join('')
+        + controls.tasks.filter((task: any) => task.manageable).map((task: any) => '<form method="post" action="/api/tickets/'
+          + detail.ticket.id + '/tasks/' + encodeURIComponent(task.task_id) + '/stop">' + csrfField + '<button type="submit">停止此 task</button></form>').join('');
+      const controlPanel = '<aside><strong>已有运行控制</strong><br>观察与执行状态分开显示；请求成功不等于已到终态。'
+        + actions + '<pre>' + escape(JSON.stringify(controls, null, 2)) + '</pre>'
+        + (controls.runs.some((run: any) => run.execution.status === 'stopping') ? '<strong>停止请求已发送，等待 source 确认终态。</strong>' : '')
+        + '</aside>';
       return send(200, page(detail.ticket.title, '<p>Conversation: ' + escape(detail.ticket.main_conversation_id)
         + '</p><p><a href="/tickets/' + detail.ticket.id + '">刷新历史</a></p><aside class="warning">Recording: '
         + escape(detail.recording.state) + '<br>Workflow 记录不自动执行或验收。<br>'
         + detail.source_gaps.map(escape).join('<br>') + '</aside>' + changesPanel + workflowPanel + childPanel
         + (detail.computer_calls.length ? '<aside>同步调用状态（历史观察，不代表当前进程状态；stdout/stderr 无跨流顺序保证）<pre>'
           + escape(JSON.stringify(detail.computer_calls, null, 2)) + '</pre></aside>' : '')
-        + (detail.owned_tasks.length ? '<aside>受管任务：stdout/stderr 的 seq 表示已公开行发布顺序，非两管道实际写入全局顺序；本地 cursor 仅为保存顺序。脚本正文：source-not-provided。历史终态不代表当前进程状态。<pre>'
+        + controlPanel + (detail.owned_tasks.length ? '<aside>受管任务：stdout/stderr 的 seq 表示已公开行发布顺序，非两管道实际写入全局顺序；本地 cursor 仅为保存顺序。脚本正文：source-not-provided。历史终态不代表当前进程状态。<pre>'
           + escape(JSON.stringify(detail.owned_tasks, null, 2)) + '</pre></aside>' : '') + records
-        + (detail.has_more ? '<a href="?after=' + detail.next_cursor + '">后续记录</a>' : '')), true);
+        + (detail.has_more ? '<a href="?after=' + detail.next_cursor + '">后续记录</a>' : ''), csrf), true);
     } catch (e) {
       const code = e instanceof HarnessError ? e.code : 'READ_FAILED';
       return send(code === 'TICKET_NOT_FOUND' || code === 'CONVERSATION_NOT_FOUND' ? 404 : code === 'INVALID_CURSOR' ? 400 : 503, { code });

@@ -86,6 +86,11 @@ export const recordSchema = z.object({
     z.object({ kind: z.literal('workflow_snapshot'), workflow: workflowSnapshotRecordSchema }),
     z.object({ kind: z.literal('workflow_observation'), workflow: workflowObservationRecordSchema }),
     z.object({ kind: z.literal('child_conversation_associated'), association: childConversationAssociationRecordSchema }),
+    z.object({ kind: z.literal('control_action'), control: z.object({
+      control_id: id, ticket_id: id, action: z.enum(['refresh', 'run.stop', 'task.stop', 'worktree.open']),
+      stage: z.enum(['requested', 'result']), outcome: text, target: z.unknown(), source_status: z.unknown(),
+      occurred_at: text, integrity: z.object({ capture: z.enum(['recorded', 'recording-failed']), redacted: z.boolean() }),
+    }).strict() }),
   ]),
 });
 export type RecordEntry = z.infer<typeof recordSchema>;
@@ -94,6 +99,7 @@ export interface SourceEvent { seq: number; at: string; session_id: string; run_
 export interface SourceRun {
   id: string; session_id: string; created_at: string; model: string; reasoning: string;
   status: string; config_source: string; timeout_ms: number | null; exit_code: number | null;
+  started_at?: string | null; finished_at?: string | null; error?: unknown;
 }
 export interface SourceSession { id: string; cwd: string; codex_thread_id: string | null; permissions: unknown }
 export interface Source {
@@ -101,6 +107,9 @@ export interface Source {
   runs(sessionId: string): SourceRun[];
   events(run: SourceRun): SourceEvent[];
   attribution(ticket: Ticket, session?: SourceSession): unknown;
+  status?(sessionId: string, runId: string): { run: SourceRun | null; session_status: string };
+  stop?(sessionId: string, runId: string): { outcome: string };
+  worktree?(ticket: Ticket): string;
 }
 export class HarnessError extends Error {
   code: string;

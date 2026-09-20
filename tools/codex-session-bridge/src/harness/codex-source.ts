@@ -1,9 +1,13 @@
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PathPolicy } from '../computer/paths.js';
 import { sessionPermissionSnapshot } from '../permissions.js';
+import { HarnessError } from './model.ts';
 import type { Source, SourceEvent, SourceRun, SourceSession, Ticket } from './model.ts';
+
+const samePath = (left: string, right: string) => process.platform === 'win32'
+  ? left.toLowerCase() === right.toLowerCase() : left === right;
 
 // Only this adapter knows the legacy manager/store shape. No private Codex files.
 interface Manager {
@@ -15,6 +19,8 @@ interface Manager {
     readEvents(run: SourceRun): SourceEvent[];
   };
   session(id: string): SourceSession;
+  status(input: { session_id: string; run_id: string }): { run: SourceRun | null; session_status: string };
+  stopRun(sessionId: string, runId: string): { outcome: string };
 }
 export class CodexSource implements Source {
   manager: Manager;
@@ -32,7 +38,40 @@ export class CodexSource implements Source {
     return Object.values(this.manager.store.state.runs).filter(r => r.session_id === sessionId).map(r => ({
       id: r.id, session_id: r.session_id, created_at: r.created_at, model: r.model, reasoning: r.reasoning,
       status: r.status, config_source: r.config_source, timeout_ms: r.timeout_ms ?? null, exit_code: r.exit_code,
+      started_at: r.started_at ?? null, finished_at: r.finished_at ?? null, error: (r as SourceRun).error ?? null,
     }));
+  }
+  status(sessionId: string, runId: string) { return this.manager.status({ session_id: sessionId, run_id: runId }); }
+  stop(sessionId: string, runId: string) { return this.manager.stopRun(sessionId, runId); }
+  worktree(ticket: Ticket) {
+    let directory: string;
+    try {
+      directory = this.paths.resolve(ticket.expected_worktree);
+      if (!statSync(directory).isDirectory()) throw new Error('Not a directory');
+    } catch { throw new HarnessError('WORKTREE_UNAVAILABLE'); }
+    const baseline = ticket.comparison_baseline;
+    if (!baseline) throw new HarnessError('WORKTREE_UNAVAILABLE');
+    const git = spawnSync('git', ['--no-optional-locks', '-c', 'core.hooksPath=', '-c', 'core.fsmonitor=false',
+      'rev-parse', '--show-toplevel', '--path-format=absolute', '--git-common-dir'], {
+      cwd: directory, encoding: 'utf8', windowsHide: true, shell: false, timeout: 2000, maxBuffer: 8192,
+    });
+    if (git.status !== 0 || git.error) throw new HarnessError('WORKTREE_UNAVAILABLE');
+    try {
+      const [rootValue, repositoryValue] = git.stdout.trim().split(/\r?\n/);
+      const root = realpathSync.native(rootValue);
+      const repository = realpathSync.native(repositoryValue);
+      const info = statSync(repository);
+      const instance = `${info.dev}:${info.ino}:${info.birthtimeMs}`;
+      if (!samePath(root, directory) || !samePath(root, baseline.worktree_root)
+        || !samePath(repository, baseline.repository_id)
+        || baseline.repository_instance_id !== undefined && instance !== baseline.repository_instance_id) {
+        throw new HarnessError('WORKTREE_MISMATCH');
+      }
+    } catch (error) {
+      if (error instanceof HarnessError) throw error;
+      throw new HarnessError('WORKTREE_UNAVAILABLE');
+    }
+    return directory;
   }
   events(run: SourceRun) {
     const file = this.manager.store.eventFile(run.id);

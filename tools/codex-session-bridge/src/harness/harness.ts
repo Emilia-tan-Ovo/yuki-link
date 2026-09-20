@@ -8,6 +8,8 @@ import { ConversationHistory } from './conversations.ts';
 import { WorkflowSource } from './workflow-source.ts';
 import { ChangesSource, ChangesSourceError } from './changes-source.ts';
 import { Changes } from './changes.ts';
+import { HarnessControls } from './controls.ts';
+import type { HarnessControlOptions } from './controls.ts';
 import type { WorkflowSourceOptions } from './workflow-source.ts';
 import type { TaskSource } from './task-source.ts';
 import { HarnessError, registrationSchema, attachSchema } from './model.ts';
@@ -43,6 +45,7 @@ export class Harness {
   workflowHistory: WorkflowHistory;
   conversations: ConversationHistory;
   changes: Changes;
+  controls: HarnessControls;
   projects = new Map<string, Project>();
   tickets = new Map<string, Ticket>();
   bindings = new Map<string, Binding>();
@@ -53,7 +56,8 @@ export class Harness {
   sourceFailure: string | null = null;
   checkedAt: string | null = null;
   timer: ReturnType<typeof setInterval> | null = null;
-  constructor(runtime: string, source: Source, tasks?: TaskSource, workflowOptions: WorkflowSourceOptions = {}) {
+  constructor(runtime: string, source: Source, tasks?: TaskSource, workflowOptions: WorkflowSourceOptions = {},
+    controlOptions: HarnessControlOptions = {}) {
     this.source = source;
     this.journal = new Journal(runtime);
     for (const record of this.journal.records) this.apply(record);
@@ -62,6 +66,8 @@ export class Harness {
     this.workflowHistory = new WorkflowHistory(this.journal, id => this.ticket(id), new WorkflowSource(source, workflowOptions));
     this.conversations = new ConversationHistory(this.journal, source, this.workflowHistory, id => this.ticket(id), this.bindings);
     this.changes = new Changes(source, new ChangesSource({ git: workflowOptions.git }));
+    this.controls = new HarnessControls(this.journal, source, this.taskHistory, id => this.ticket(id),
+      this.bindings, this.observations, controlOptions);
   }
   private apply(record: RecordEntry) {
     const data = record.data;
@@ -221,6 +227,7 @@ export class Harness {
       r.data.kind === 'attached' && r.data.binding.ticket_id === id ||
       r.data.kind === 'event' && r.data.event.ticket_id === id && r.data.event.conversation_id === ticket.main_conversation_id ||
       r.data.kind === 'computer_call' && r.data.call.ticket_id === id ||
+      r.data.kind === 'control_action' && r.data.control.ticket_id === id ||
       r.data.kind === 'owned_task' && r.data.task.binding.ticket_id === id ||
       (r.data.kind === 'workflow_snapshot' || r.data.kind === 'workflow_observation') && r.data.workflow.ticket_id === id));
     const records = all.slice(0, 100);
@@ -230,7 +237,7 @@ export class Harness {
       child_conversations: this.conversations.summary(id), records,
       next_cursor: records.at(-1)?.cursor ?? after, has_more: all.length > records.length,
       recording: this.health(), computer_calls: this.computerCalls.status(id),
-      owned_tasks: this.taskHistory.status(id),
+      owned_tasks: this.taskHistory.status(id), controls: this.controls.view(id, this.sourceFailure),
       current: { state: this.health().state !== 'recording' || !this.checkedAt ? 'unknown' : 'observed', observed_at: this.checkedAt },
       workflow, changes: this.changes.view(ticket, this.bindings.values(), workflowFixedPoint), source_gaps: [
         '未提供的工具正文/重试细节及接入前缺失日志：unavailable / source-not-provided',
@@ -239,4 +246,8 @@ export class Harness {
       ] };
   }
   conversationDetail(id: string, after = 0) { return this.conversations.detail(id, after); }
+  refreshControls(id: string) { this.executionGate('observe'); return this.controls.refresh(id, () => this.scan(true), () => this.sourceFailure); }
+  stopRun(id: string, runId: string) { this.executionGate('manage-existing'); return this.controls.stopRun(id, runId); }
+  stopTask(id: string, taskId: string) { this.executionGate('manage-existing'); return this.controls.stopTask(id, taskId); }
+  openWorktree(id: string) { this.executionGate('manage-existing'); return this.controls.openWorktree(id); }
 }
