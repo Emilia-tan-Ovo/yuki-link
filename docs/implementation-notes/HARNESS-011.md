@@ -158,3 +158,13 @@ HARNESS-010 已完成真实 Windows 注销→登录 Acceptance 5/5，证明 UI �
 - **设计状态：not ready for acceptance execution。** 已有完整验收计划，但 `evidence` Review 无法产生 `accepted=true` 的公开投影，是 concrete implementation blocker。
 - **当前环境状态：not ready。** blocker 修复之后仍需：生产 YCA rollout 到含修复且至少包含 `1451c13…` 的已合并 commit、生产配置 `harnessPort`，以及 ChatGPT 22-tool schema 刷新。
 - **Owner action**：先决定是否授权对上述 accepted-gate defect 做最小实现修复。修复合并后，再批准生产配置备份/`harnessPort` 写入与 Control Center 受控 update-and-restart，并完成或授权 YCA plugin schema 刷新/重装。Windows startup 重装不是本票所需动作。
+
+## Blocker Fix Handoff
+
+- **来源与身份**：仅修 GitHub #51 已确认的 accepted-gate blocker；worktree `C:\Users\KQ_Sh\Desktop\yuki-link\.local\worktrees\harness-011`，branch `codex/yuki-harness-v0-011`，fixed point `1451c1316bcf78c5796061c714d156e51ff007ef`，implementation start HEAD `96a0a209c832ecdff2b91f4304b9374525ed13a8`。
+- **实际文件**：`tools/codex-session-bridge/src/harness/workflow.ts`、`tools/codex-session-bridge/test/harness-workflow.test.ts`、本 Notes。未改 schema、Acceptance criteria 或 run-completion 语义。
+- **语义**：无 findings 时，当前 subject 可由符合既有 `terminalReview`、`applicability=verified`、subject ref/identity 匹配的 passed `full` 或 `evidence` Review 满足 `reviewGate`；有 findings 时仍只从 `fullReviews` 寻找 origin，并要求关联当前 subject identity 的 passed terminal `focused` verification，`evidence` 不能替代 full origin。
+- **红→绿**：新增同一 seam 的最小回归，先确认无 findings evidence case 在旧实现下 `accepted=false`（断言 `false !== true`），修复后该 case 为 true；同测 guard 确认 evidence origin 即使配 focused verification 且 finding 已 verified，仍为 `accepted=false`。
+- **测试**：`node --test test/harness-workflow.test.ts` 最终 9/9 passed、exit 0；`npm run typecheck` passed、exit 0；`git diff --check` passed、exit 0（仅报告 Windows LF→CRLF working-copy warning）。
+- **Review policy**：`delegated`，接收方为上层 Emilia/YCA；本 session 不启动 Review，状态 pending。
+- **Commit / 下一步**：Owner 明确禁止 commit/push/PR，因此当前为未提交实现字节；上层应基于实际 diff 启动 fresh Review，再决定后续 Acceptance，不得把本 handoff 当作 Review 或 Acceptance 通过。

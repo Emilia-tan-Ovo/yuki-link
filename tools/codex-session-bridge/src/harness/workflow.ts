@@ -100,9 +100,11 @@ export class WorkflowHistory {
     const terminalReview = (review: typeof snapshot.reviews[number]) => !['pending', 'incomplete'].includes(review.status)
       && review.applicability === 'verified'
       && [review.standards, review.spec].every(axis => !['pending', 'incomplete'].includes(axis.status));
-    const fullReviews = snapshot.reviews.filter(review => review.mode === 'full' && terminalReview(review));
+    const terminalReviews = snapshot.reviews.filter(review => (review.mode === 'full' || review.mode === 'evidence')
+      && terminalReview(review));
+    const fullReviews = terminalReviews.filter(review => review.mode === 'full');
     const reviewGate = currentIdentity !== null && (snapshot.findings.length === 0
-      ? fullReviews.some(review => review.status === 'passed' && review.subject_ref === currentSubject
+      ? terminalReviews.some(review => review.status === 'passed' && review.subject_ref === currentSubject
         && review.subject_identity === currentIdentity)
       : fullReviews.length > 0 && snapshot.findings.every(finding => {
         const origin = fullReviews.find(review => review.review_id === finding.origin_review_id);
