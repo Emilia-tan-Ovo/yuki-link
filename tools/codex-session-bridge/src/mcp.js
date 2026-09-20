@@ -58,7 +58,7 @@ export function createMcpServer(manager, computer) {
       return action(input, extra);
     }, readOnly, idempotent, destructive, true);
   };
-  register('record-only', 'harness_register_ticket', 'Explicitly register a Project/Ticket and its stable main Conversation. Identical input is idempotent; conflicts never reattribute history. No engineering task is started.',
+  register('record-only', 'harness_register_ticket', 'Explicitly register a Project/Ticket, its stable main Conversation, and when expected_worktree plus fixed_point are supplied, an immutable Git comparison baseline with a start observation. Identical input is idempotent; a different baseline conflicts. No engineering task is started.',
     registrationSchema, input => {
       if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
       return manager.harness.register(input);

@@ -7,15 +7,35 @@ const id = z.string().uuid();
 const text = z.string().min(1).max(512);
 export const registrationSchema = z.object({
   project_key: text, project_name: text, ticket_key: text, title: text,
-  reference: text, expected_worktree: text.optional(),
+  reference: text, expected_worktree: text.optional(), fixed_point: text.optional(),
 }).strict();
 export const attachSchema = z.object({ ticket_id: id, session_id: id, run_id: id.optional() }).strict();
 export type Registration = z.infer<typeof registrationSchema>;
 export type Attachment = z.infer<typeof attachSchema>;
 export const projectSchema = z.object({ id, key: text, name: text });
+const startObservationEntrySchema = z.object({
+  path: z.string().min(1), area: z.enum(['staged', 'unstaged', 'untracked']),
+  state: z.enum(['observed', 'unavailable', 'truncated']), sha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+}).strict();
+export const comparisonBaselineSchema = z.object({
+  repository_id: z.string().min(1), repository_instance_id: z.string().min(1).optional(), worktree_root: z.string().min(1),
+  commit_oid: z.string().regex(/^[0-9a-f]{40,64}$/), recorded_at: text,
+  adoption: z.enum(['at-registration', 'late']),
+  start_observation: z.object({
+    head: z.string().regex(/^[0-9a-f]{40,64}$/).nullable(), entries: z.array(startObservationEntrySchema).max(2048),
+    integrity: z.enum(['complete', 'incomplete']), observed_at: text,
+  }).strict(),
+  integrity: z.enum(['complete', 'incomplete']),
+}).strict();
+export const baselineGapSchema = z.object({
+  code: z.enum(['BASELINE_NOT_RECORDED', 'BASELINE_COMMIT_UNAVAILABLE', 'GIT_UNAVAILABLE', 'REPOSITORY_MISMATCH']),
+  source: z.literal('git/filesystem'), impact: text,
+}).strict();
 export const ticketSchema = z.object({
   id, project_id: id, key: text, title: text, reference: text,
   main_conversation_id: id, expected_worktree: z.string().nullable(),
+  comparison_baseline: comparisonBaselineSchema.nullable().default(null),
+  comparison_baseline_gap: baselineGapSchema.nullable().default(null),
 });
 export const bindingSchema = z.object({
   id, ticket_id: id, conversation_id: id, source_id: id,
@@ -23,6 +43,8 @@ export const bindingSchema = z.object({
 });
 export type Project = z.infer<typeof projectSchema>;
 export type Ticket = z.infer<typeof ticketSchema>;
+export type ComparisonBaseline = z.infer<typeof comparisonBaselineSchema>;
+export type BaselineGap = z.infer<typeof baselineGapSchema>;
 export type Binding = z.infer<typeof bindingSchema>;
 export const eventSchema = z.object({
   ticket_id: id, conversation_id: id, binding_id: id, session_id: id,

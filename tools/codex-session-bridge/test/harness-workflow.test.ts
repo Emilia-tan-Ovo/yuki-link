@@ -463,7 +463,7 @@ test('首页突出 Workflow 异常且不误标正常 Ticket', async t => {
   const f = await fixture(); t.after(f.close);
   const ticket = payload(await f.client.callTool({ name: 'harness_register_ticket', arguments: {
     project_key: 'home', project_name: 'home', ticket_key: 'HARNESS-005', title: 'home status',
-    reference: 'issue:45', expected_worktree: f.worktree,
+    reference: 'issue:45', expected_worktree: f.worktree, fixed_point: f.head,
   } }));
   assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
     ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot: snapshot(f),

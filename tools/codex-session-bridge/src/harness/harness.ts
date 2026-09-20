@@ -6,6 +6,8 @@ import { TaskCollector } from './task-collector.ts';
 import { WorkflowHistory } from './workflow.ts';
 import { ConversationHistory } from './conversations.ts';
 import { WorkflowSource } from './workflow-source.ts';
+import { ChangesSource, ChangesSourceError } from './changes-source.ts';
+import { Changes } from './changes.ts';
 import type { WorkflowSourceOptions } from './workflow-source.ts';
 import type { TaskSource } from './task-source.ts';
 import { HarnessError, registrationSchema, attachSchema } from './model.ts';
@@ -40,6 +42,7 @@ export class Harness {
   taskHistory: TaskCollector;
   workflowHistory: WorkflowHistory;
   conversations: ConversationHistory;
+  changes: Changes;
   projects = new Map<string, Project>();
   tickets = new Map<string, Ticket>();
   bindings = new Map<string, Binding>();
@@ -58,6 +61,7 @@ export class Harness {
     this.taskHistory = new TaskCollector(this.journal, id => this.ticket(id), tasks);
     this.workflowHistory = new WorkflowHistory(this.journal, id => this.ticket(id), new WorkflowSource(source, workflowOptions));
     this.conversations = new ConversationHistory(this.journal, source, this.workflowHistory, id => this.ticket(id), this.bindings);
+    this.changes = new Changes(source, new ChangesSource({ git: workflowOptions.git }));
   }
   private apply(record: RecordEntry) {
     const data = record.data;
@@ -83,8 +87,28 @@ export class Harness {
     if (project.name !== value.project_name) throw new HarnessError('REGISTRATION_CONFLICT');
     const old = [...this.tickets.values()].find(t => t.project_id === project.id && t.key === value.ticket_key);
     if (old && (old.title !== value.title || old.reference !== value.reference || old.expected_worktree !== (value.expected_worktree ?? null))) throw new HarnessError('REGISTRATION_CONFLICT');
+    let comparisonBaseline = null, comparisonBaselineGap = null;
+    if (value.expected_worktree && value.fixed_point) {
+      try { comparisonBaseline = this.changes.facts.capture(value.expected_worktree, value.fixed_point); }
+      catch (error) {
+        const code = error instanceof ChangesSourceError ? error.code : 'GIT_UNAVAILABLE';
+        comparisonBaselineGap = { code, source: 'git/filesystem' as const, impact: 'comparison baseline could not be recorded at registration' };
+      }
+    } else comparisonBaselineGap = { code: 'BASELINE_NOT_RECORDED' as const, source: 'git/filesystem' as const,
+      impact: 'expected_worktree and fixed_point are both required to record a comparison baseline' };
+    if (old) {
+      const sameBaseline = old.comparison_baseline && comparisonBaseline
+        ? old.comparison_baseline.repository_id === comparisonBaseline.repository_id
+          && old.comparison_baseline.repository_instance_id === comparisonBaseline.repository_instance_id
+          && old.comparison_baseline.worktree_root === comparisonBaseline.worktree_root
+          && old.comparison_baseline.commit_oid === comparisonBaseline.commit_oid
+        : old.comparison_baseline === comparisonBaseline
+          && old.comparison_baseline_gap?.code === comparisonBaselineGap?.code;
+      if (!sameBaseline) throw new HarnessError('REGISTRATION_CONFLICT');
+    }
     const ticket = old ?? { id: randomUUID(), project_id: project.id, key: value.ticket_key,
-      title: value.title, reference: value.reference, main_conversation_id: randomUUID(), expected_worktree: value.expected_worktree ?? null };
+      title: value.title, reference: value.reference, main_conversation_id: randomUUID(), expected_worktree: value.expected_worktree ?? null,
+      comparison_baseline: comparisonBaseline, comparison_baseline_gap: comparisonBaselineGap };
     if (!old) this.write({ kind: 'registered', project, ticket });
     return { project_id: project.id, ticket_id: ticket.id, conversation_id: ticket.main_conversation_id, deduplicated: !!old };
   }
@@ -184,8 +208,10 @@ export class Harness {
   }
   overview() {
     return { projects: [...this.projects.values()].map(p => ({ ...p, tickets: [...this.tickets.values()].filter(t => t.project_id === p.id)
-      .map(ticket => ({ ...ticket, workflow: this.workflowHistory.summary(ticket.id) })) })),
-      recording: this.health(), workflow: unavailable, changes: unavailable, acceptance: unavailable, services: unavailable };
+      .map(ticket => ({ ...ticket, workflow: this.workflowHistory.summary(ticket.id),
+        changes: this.changes.summary(ticket) })) })),
+      recording: this.health(), workflow: unavailable,
+      changes: { state: 'available', source: 'per-ticket-git-filesystem-refresh' }, acceptance: unavailable, services: unavailable };
   }
   detail(id: string, after = 0) {
     const ticket = this.ticket(id);
@@ -198,13 +224,15 @@ export class Harness {
       r.data.kind === 'owned_task' && r.data.task.binding.ticket_id === id ||
       (r.data.kind === 'workflow_snapshot' || r.data.kind === 'workflow_observation') && r.data.workflow.ticket_id === id));
     const records = all.slice(0, 100);
+    const workflow = this.conversations.projectWorkflow(id, this.workflowHistory.detail(id));
+    const workflowFixedPoint = (workflow.current as { subject?: { fixed_point?: string | null } } | null)?.subject?.fixed_point ?? null;
     return { ticket, main_conversation: { conversation_id: ticket.main_conversation_id },
       child_conversations: this.conversations.summary(id), records,
       next_cursor: records.at(-1)?.cursor ?? after, has_more: all.length > records.length,
       recording: this.health(), computer_calls: this.computerCalls.status(id),
       owned_tasks: this.taskHistory.status(id),
       current: { state: this.health().state !== 'recording' || !this.checkedAt ? 'unknown' : 'observed', observed_at: this.checkedAt },
-      workflow: this.conversations.projectWorkflow(id, this.workflowHistory.detail(id)), changes: unavailable, source_gaps: [
+      workflow, changes: this.changes.view(ticket, this.bindings.values(), workflowFixedPoint), source_gaps: [
         '未提供的工具正文/重试细节及接入前缺失日志：unavailable / source-not-provided',
         '尚未出现的 thread、消息或结果：unknown / not-yet-observed',
         '旧源逐事件脱敏标志：unknown；记录不是未经处理的完整原文',
