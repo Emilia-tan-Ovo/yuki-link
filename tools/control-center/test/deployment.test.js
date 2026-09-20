@@ -155,7 +155,7 @@ test('real deployed YCA reports the target commit and YCA-002 contract; preparat
     const mcpSource = readFileSync(mcpFile, 'utf8');
     assert.match(mcpSource, /  return server;\r?\n}/);
     writeFileSync(mcpFile, mcpSource.replace(/  return server;\r?\n}/,
-      "  register('deployment_test_marker', 'Deployment lifecycle test marker.', {}, () => ({ marker: true }), true);\n  return server;\n}"));
+      "  register('observe', 'deployment_test_marker', 'Deployment lifecycle test marker.', {}, () => ({ marker: true }), true);\n  return server;\n}"));
     git(f.repo, 'add', '.'); git(f.repo, 'commit', '-m', 'next'); git(f.repo, 'push', 'origin', 'merged');
     const second = await prepareDeployment(options);
     assert.equal(second.tools.count, first.tools.count + 1); assert.notEqual(second.tools.sha256, first.tools.sha256);
