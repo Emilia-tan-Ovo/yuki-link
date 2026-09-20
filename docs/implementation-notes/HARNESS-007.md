@@ -98,3 +98,17 @@ Secondary seam 只在主 seam 难以定位时补充 `ChangesSource`：NUL-delimi
 - **Expansion triggers**：旧 journal 无法在 nullable/default schema 下 replay；当前 Git wrapper 无法安全表达 NUL paths/特殊文件；公开 MCP 登记不能原子固化 baseline；现有 content/path policy 与 untracked 预览发生安全冲突。只有触发时再按具体 symbol/fixture 扩读，不先扩大实现面。
 
 The current ticket is ready for implementation.
+
+## Implementation Handoff
+
+- 来源：`.local/HARNESS-007-ticket.md`、`docs/specs/yuki-harness-v0.md`、本 Implementation Notes；实现基线为 `a71817e43837f61e5e298ff14c6d30d7475594da`，Ticket fixed point 为 `b1e19f4e34b46306f342e42ba19adcc80809d6d7`。
+- 身份：worktree `C:\Users\KQ_Sh\Desktop\yuki-link\.local\worktrees\harness-007`；branch `codex/yuki-harness-v0-007`；本 session 未 commit，工作树只包含下列 HARNESS-007 实现与本 handoff。
+- 范围：`model.ts` 为登记与 legacy replay 增加 nullable immutable baseline/start observation；新增 `changes-source.ts` 与 `changes.ts`，以受限 Git/file refresh 组合累计净变化、commit/run 过程关联、ownership 未证明语义、freshness 与结构化 gap；`harness.ts`、`server.ts`、`mcp.js` 接入 detail/overview、HTML 和公开登记描述。未修改 Workflow source/model、Conversation 或 computer-call 语义。
+- 实际文件：`tools/codex-session-bridge/src/harness/{model,harness,changes-source,changes,server}.ts`、`tools/codex-session-bridge/src/mcp.js`、`tools/codex-session-bridge/test/harness-changes.test.ts`、`tools/codex-session-bridge/test/harness-workflow.test.ts`、本 Notes。
+- TDD：首次 `node --test test/harness-changes.test.ts` 退出 1，4/4 红；公开登记拒绝 `fixed_point`，legacy Ticket 无显式 baseline。实现后同命令退出 0，4/4 绿，覆盖 baseline/start dirty 与 untracked、commit 后累计不清零、restart/reopen、run association 不等于 ownership、freshness 恢复和 legacy replay。
+- 定向验证：`node --test test/harness*.test.ts` 退出 0，46/46；`npm.cmd run typecheck` 与 `git diff --check` 均退出 0。未运行 `npm test` / full suite，按 Ticket 交由 Emilia/YCA 外层执行。
+- Review policy：delegated，fresh Review pending；本 implementation session 未执行 Review/Acceptance/closeout。
+- Deferred / Review risk：请重点核对 Windows/Git NUL path 与 rename heuristic、2048 path/64 KiB content 安全上限、protected/special/unreadable untracked gap、diverged history、legacy nullable replay，以及 overview 每票实时 Git refresh 的成本。Changes 只证明当前净事实；run/commit/path ownership 均保持 `not-proven`。
+- Expansion trigger：未触发；兼容 schema 可 replay legacy journal，公开登记可在单条 `registered` record 固化 baseline，自有 Git wrapper 与现有 containment/protected 语义足以覆盖本票。
+- Commit：Owner 明确禁止 commit/push；当前结果为未提交工作树，不存在新的实现 SHA。
+- 下一步：Emilia/YCA 先执行外层 full suite 与实际 diff 核对，再从当前未提交字节启动 fresh delegated Review；不得把本 handoff 表述为 Review 或 Acceptance 已通过。

@@ -50,6 +50,8 @@ export function createHarnessServer(harness: Harness) {
             const findings = workflow.findings?.filter(value => value.status !== 'verified').length ?? 0;
             const reviews = workflow.reviews?.map(value => value.status).join('/') || 'none';
             const anomaly: string[] = [];
+            const changes = t.changes as { state: string; freshness: string; files: unknown[]; commits: unknown[]; evidence_gaps: Array<{ code: string }> };
+            if (changes.freshness !== 'current') anomaly.push('Changes ' + changes.freshness);
             if (['stale', 'mismatch'].includes(workflow.assessment?.state ?? '')) anomaly.push('applicability ' + workflow.assessment!.state);
             if (['failed', 'incomplete'].includes(workflow.acceptance?.status ?? '')) anomaly.push('Acceptance ' + workflow.acceptance!.status);
             for (const status of ['open', 'fixed', 'fixed-unverified']) {
@@ -62,10 +64,12 @@ export function createHarnessServer(harness: Harness) {
                 + (workflow.acceptance.accepted ? '（当前 accepted）' : '（未确认 accepted）')
                 + ' · Review ' + escape(reviews) + ' · 待处理/复核 finding ' + findings
                 + ' · closeout ' + escape(workflow.closeout?.status ?? 'unknown')
-                + ' · applicability ' + escape(workflow.assessment?.state ?? 'unknown') : ' · Workflow 尚未记录') + '</li>';
+                + ' · applicability ' + escape(workflow.assessment?.state ?? 'unknown') : ' · Workflow 尚未记录')
+              + ' · Changes ' + escape(changes.state) + ' / ' + escape(changes.freshness)
+              + ' · files ' + changes.files.length + ' · commits ' + changes.commits.length + '</li>';
           }).join('') + '</ul></section>').join('');
         return send(200, page('工程协作历史', '<p>只读观察 · <a href="/">刷新</a></p><aside>Recording: ' + escape(summary.recording.state)
-          + '<br>Changes / 服务状态：unavailable（尚未接入）</aside>'
+          + '<br>Changes：按 Ticket 固定基线刷新；服务状态：unavailable（尚未接入）</aside>'
           + (groups || '<p>尚未登记 Project / Ticket。由 Emilia 通过 YCA 显式登记。</p>')), true, true);
       }
       const conversationRoute = /^\/(api\/)?conversations\/([0-9a-f-]+)$/.exec(url.pathname);
@@ -144,10 +148,20 @@ export function createHarnessServer(harness: Harness) {
         + detail.child_conversations.map(child => '<li><a href="/conversations/' + child.conversation_id + '">'
           + escape(child.relation.kind === 'review' ? child.relation.review_id + ' · ' + child.relation.participant : child.relation.acceptance_id)
           + '</a> · isolation ' + escape(child.isolation.state) + '</li>').join('') + '</ul></aside>' : '';
+      const changes = detail.changes;
+      const changesPanel = '<aside' + (changes.freshness === 'current' ? '' : ' class="warning"') + '><strong>累计 Changes · '
+        + escape(changes.state) + ' / ' + escape(changes.freshness) + '</strong><br>baseline: '
+        + escape(changes.baseline?.commit_oid ?? '未记录') + '<br>current HEAD: ' + escape(changes.current_head ?? 'unknown')
+        + '<br>files: ' + changes.files.length + ' · commits: ' + changes.commits.length + ' · runs: ' + changes.runs.length
+        + '<details open><summary>文件净变化</summary><pre>' + escape(JSON.stringify(changes.files, null, 2)) + '</pre></details>'
+        + '<details><summary>commit / run 下钻</summary><pre>' + escape(JSON.stringify({ commits: changes.commits, runs: changes.runs }, null, 2)) + '</pre></details>'
+        + '<details><summary>时效、来源与 evidence gaps</summary><pre>'
+        + escape(JSON.stringify({ checked_at: changes.checked_at, sources: changes.sources, evidence_gaps: changes.evidence_gaps }, null, 2))
+        + '</pre></details></aside>';
       return send(200, page(detail.ticket.title, '<p>Conversation: ' + escape(detail.ticket.main_conversation_id)
         + '</p><p><a href="/tickets/' + detail.ticket.id + '">刷新历史</a></p><aside class="warning">Recording: '
-        + escape(detail.recording.state) + '<br>Changes：unavailable；Workflow 记录不自动执行或验收。<br>'
-        + detail.source_gaps.map(escape).join('<br>') + '</aside>' + workflowPanel + childPanel
+        + escape(detail.recording.state) + '<br>Workflow 记录不自动执行或验收。<br>'
+        + detail.source_gaps.map(escape).join('<br>') + '</aside>' + changesPanel + workflowPanel + childPanel
         + (detail.computer_calls.length ? '<aside>同步调用状态（历史观察，不代表当前进程状态；stdout/stderr 无跨流顺序保证）<pre>'
           + escape(JSON.stringify(detail.computer_calls, null, 2)) + '</pre></aside>' : '')
         + (detail.owned_tasks.length ? '<aside>受管任务：stdout/stderr 的 seq 表示已公开行发布顺序，非两管道实际写入全局顺序；本地 cursor 仅为保存顺序。脚本正文：source-not-provided。历史终态不代表当前进程状态。<pre>'
