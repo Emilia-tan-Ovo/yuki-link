@@ -81,6 +81,7 @@ export class ComputerCalls {
     try {
       const started = this.save({ ...context, stage: 'started', source_at: now(), outcome: 'not-yet-observed',
         capture: 'observed', input, result: null, error: null, integrity: sourceIntegrity('started', null, null) });
+      if (started === 'recording-failed') throw new HarnessError('RECORDING_FAILED');
       let result: unknown = null, error: unknown = null, isError = false;
       try { result = await action(); }
       catch (cause) { isError = true; error = publicError(cause); }
