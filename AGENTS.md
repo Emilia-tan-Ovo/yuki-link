@@ -27,7 +27,7 @@
 - 安全 fixture 可能故意包含 credential-like 文本并被 `filesystem_*` 拒绝；这类已知测试源码改用 PowerShell 精确行段读取/修改，不重复撞 `SENSITIVE_CONTENT`。
 - **重复 baseline 红项必须有 owner。** 同一 full-suite 失败连续出现在两张 Ticket，或在两个独立 baseline/full-suite 观测中重复出现时，不能继续只记“非本票 blocker”：若是确定性小修复，在下一 frontier 前做 maintenance；否则必须创建明确 follow-up Issue/owner/reference。没有 follow-up 的长期红项不得继续带入下一 Ticket。
 - 大型日志、Git history、测试输出、runtime JSONL 和长文件先由确定性工具筛选/压缩；模型默认只接收必要失败片段、结构化摘要和来源引用。不得把完整聊天、完整日志或整份历史重复灌入 fresh session。
-- **普通 Ticket raw input 成本目标：** ticket-design ≤1.5M、implementation ≤3M、primary Review ≤2M、finding fix ≤1M、focused re-review ≤0.7M，整票累计目标 ≤6M。任一单 run input >3M 或整票累计 input >6M 时立即标记 `cost anomaly`，在说明原因和收缩方案前不得启动下一次模型 run；整票累计 input 明显超过目标时继续视为 cost anomaly；允许大票合理超标，但必须说明为什么仍值得继续、下一步如何缩小输入和避免重复上下文。raw/cached/output usage 由 YCA durable run status 记录；这些数字是工程诊断指标，不等同于产品周额度的 1:1 token 计费。
+- **普通 Ticket raw input 成本参考目标：** ticket-design ≤1.5M、implementation ≤3M、primary Review ≤2M、finding fix ≤1M、focused re-review ≤0.7M，整票累计目标 ≤6M。以上均为诊断与优化目标，**不是硬上限，也不因超过固定数字自动禁止下一次模型 run**。阶段或整票明显高于目标、出现重复肥上下文/异常暴涨，或消耗与当前任务规模明显不相称时，标记 `cost anomaly`，在下一次模型调用前简短说明主要消耗来源、继续的必要性与收缩方案；复杂或大票可合理超标。只有出现明显失控或无效重复时才暂停扩展并先收缩，不以 3M/6M 等固定数字机械熔断。raw/cached/output usage 由 YCA durable run status 记录；这些数字是工程诊断指标，不等同于产品周额度的 1:1 token 计费。
 - checkpoint 在每个模型 run 终态后、以及启动下一个模型 run 前，更新本票 `model_usage`：run 数、input、cached input、output、当前模型/reasoning、anomaly 状态。无法取得 usage 时记 unknown，不允许模型自述补造。
 - Acceptance 默认由 Emilia 使用 Git、文件、命令、测试和 YCA 外部事实直接核对；只有 criteria 本身要求 Agent/session 行为时，才额外启动验收模型。
 - Owner 明确说“收尾”“别扩范围”“我要休息/睡觉”等同类表达时，立即 stop-expansion：禁止新增 scope、fixture、测试矩阵、reviewer、模型升级或旁支调查，只处理当前 blocker、checkpoint 和必要 closeout。
