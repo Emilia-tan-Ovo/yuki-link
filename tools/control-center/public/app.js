@@ -1,9 +1,36 @@
 let state, busy = false;
 const $ = s => document.querySelector(s);
 const messages = { ACTIVE_TASKS: '存在活动任务。停止或重启可能中断任务，任务不会自动重放。', ACTIVITY_UNKNOWN: '当前活动任务不可观测，不能默认空闲。', LEGACY_RUNTIME_LOCK: '发现未受管的旧锁，请先核验并备份处理。', DEPLOYMENT_CONFIRMATION_REQUIRED: '当前为观察模式，正式部署尚待授权。', STARTUP_CONFIRMATION_REQUIRED: '自启配置修改尚待授权。', OBSERVED_UNOWNED: '发现外部启动的实例，仅观察，不接管。', RECOVERY_BUDGET_EXHAUSTED: '10 分钟内已达恢复上限；核查原因后可手动重试。', DEPLOYMENT_NOT_CONFIGURED: '当前未配置受管 YCA deployment。', DEPLOYMENT_SOURCE_CHANGED: '检查与抓取期间远端分支发生变化，本次未切换版本，请重新检查。', DEPLOYMENT_CURRENT_UNKNOWN: '无法可靠确定当前 YCA release，拒绝隐式切换。', DEPLOYMENT_CURRENT_CHANGED: '准备更新期间当前 YCA release 已变化，本次停止。', DEPLOYMENT_SWITCH_UNVERIFIED: '新 release 启动后未通过 commit / 工具摘要核验，已尝试回退。', DEPLOYMENT_ROLLBACK_FAILED: '新版本切换失败且旧 release 未能自动恢复，请保留现场检查。', DEPLOYMENT_ROLLBACK_CONFLICT: '回退时发现并非本次候选的运行实例，已停止自动处理并保留现场。' };
+messages.OPERATION_RESULT_UNKNOWN = '操作结果未知；终态回执缺失或不匹配。请重新检测与核对事件，操作不会自动重试。';
+function operationOutcome(ok, receipt, operationId) {
+  if (receipt?.operation_id !== operationId || !['succeeded', 'failed'].includes(receipt.outcome)) return 'unknown';
+  if ((ok && receipt.outcome !== 'succeeded') || (!ok && receipt.outcome !== 'failed')) return 'unknown';
+  return receipt.outcome;
+}
 async function post(url, body = {}) {
-  const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': state.csrf }, body: JSON.stringify(body) });
-  const result = await r.json(); if (!r.ok) throw result; return result;
+  const correlated = ['/api/action', '/api/deployment'].includes(url);
+  const operationId = correlated ? crypto.randomUUID() : null;
+  if (correlated) body = { operation_id: operationId, ...body };
+  let r, result;
+  try {
+    r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': state.csrf }, body: JSON.stringify(body) });
+    result = await r.json();
+  } catch (error) {
+    if (correlated) throw { code: 'OPERATION_RESULT_UNKNOWN', outcome: 'unknown', operation_id: operationId };
+    throw error;
+  }
+  if (correlated) {
+    const outcome = operationOutcome(r.ok, result, operationId);
+    if (outcome === 'unknown') throw { code: 'OPERATION_RESULT_UNKNOWN', outcome, operation_id: operationId };
+    if (outcome === 'failed') throw result;
+    return result;
+  }
+  if (!r.ok) throw result;
+  return result;
+}
+function eventLine(event) {
+  if (event.operation_id) return `${event.at}  ${event.operation_id} / ${event.action} / ${event.target} / ${event.outcome}${event.code ? ' / ' + event.code : ''}`;
+  return `${event.at}  ${event.component} / ${event.action}${event.code ? ' / ' + event.code : ''}${event.exitCode !== null ? ' / exit=' + event.exitCode : ''}`;
 }
 async function refresh() {
   try {
@@ -29,7 +56,7 @@ async function refresh() {
     const relation = d?.remoteDiffers === true ? '远端版本与已选版本不同' : d?.remoteDiffers === false ? '远端版本与已选版本一致' : '远端关系未检查';
     const switchState = d?.restartRequired === true ? '已准备版本尚未切换' : d?.restartRequired === false ? '运行中版本与已选版本一致' : '切换状态未知';
     $('#tools').textContent = `运行中 YCA ${t.running?.count ?? '—'} 项 · SHA-256 ${t.running?.sha256 ?? '—'}\n运行中：${d?.running?.commit ?? '未运行'}\n已准备：${d?.target?.commit ?? '未配置'}\n远端：${remoteText}\n${relation} · ${switchState} · 部署核验：${d?.state ?? '未知'}\n最近人工确认：${t.confirmed?.at ?? '暂无'}${t.possibleRefresh ? ' · 可能需要刷新客户端定义' : ''}`;
-    $('#events').textContent = state.events.map(e => `${e.at}  ${e.component} / ${e.action}${e.code ? ' / ' + e.code : ''}${e.exitCode !== null ? ' / exit=' + e.exitCode : ''}`).join('\n') || '暂无事件';
+    $('#events').textContent = state.events.map(eventLine).join('\n') || '暂无事件';
     document.querySelectorAll('[data-action]').forEach(b => b.disabled = busy || state.observeOnly || Boolean(state.busy));
     $('#check-update').disabled = busy || Boolean(state.busy);
     $('#prepare-update').disabled = busy || state.observeOnly || Boolean(state.busy);

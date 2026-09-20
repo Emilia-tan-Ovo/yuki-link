@@ -31,8 +31,15 @@ export class Events {
       this.items = readFileSync(this.file, 'utf8').split('\n').slice(-81).flatMap(line => {
         try {
           const e = JSON.parse(line);
+          if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(e.operation_id ?? '')
+            && ['requested', 'succeeded', 'failed'].includes(e.outcome)
+            && /^[a-z][a-z0-9-]{1,39}$/.test(e.action ?? '') && ['yca', 'tunnel', 'all'].includes(e.target)) {
+            return [{ at: new Date(e.at).toISOString(), operation_id: e.operation_id, action: e.action, target: e.target,
+              outcome: e.outcome, code: /^[A-Z][A-Z0-9_]{1,79}$/.test(e.code ?? '') ? e.code : null }];
+          }
           if (!Number.isFinite(Date.parse(e.at)) || !['yca', 'tunnel', 'supervisor', 'all'].includes(e.component)
-            || !['process-exit', 'native-connect', 'ready', 'check-failed', 'started', 'stopped', 'start', 'stop', 'restart', 'retry', 'recovery-attempt', 'recovery-paused', 'recovery-failed', 'long-check-gap'].includes(e.action)) return [];
+            || !['process-exit', 'native-connect', 'ready', 'check-failed', 'started', 'stopped', 'start', 'stop', 'restart', 'retry', 'recovery-attempt', 'recovery-paused', 'recovery-failed', 'long-check-gap',
+              'deployment-checked', 'deployment-check-failed', 'deployment-prepared', 'update-stopped-old', 'deployment-switched', 'deployment-rolled-back', 'deployment-rollback-failed', 'deployment-update-failed'].includes(e.action)) return [];
           return [{ at: new Date(e.at).toISOString(), component: e.component, action: e.action, code: /^[A-Z][A-Z0-9_]{1,79}$/.test(e.code ?? '') ? e.code : null, exitCode: Number.isInteger(e.exitCode) ? e.exitCode : null }];
         } catch { return []; }
       });
@@ -44,6 +51,16 @@ export class Events {
     this.items.push(entry); this.items = this.items.slice(-80);
     if (existsSync(this.file) && statSync(this.file).size > 256 * 1024) renameSync(this.file, this.file + '.1');
     appendFileSync(this.file, JSON.stringify(entry) + '\n', 'utf8');
+  }
+  addOperation(operationId, action, target, outcome, code = null) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(operationId ?? '')
+      || !/^[a-z][a-z0-9-]{1,39}$/.test(action ?? '') || !['yca', 'tunnel', 'all'].includes(target)
+      || !['requested', 'succeeded', 'failed'].includes(outcome)) throw fail('INVALID_OPERATION');
+    const entry = { at: new Date().toISOString(), operation_id: operationId, action, target, outcome,
+      code: /^[A-Z][A-Z0-9_]{1,79}$/.test(code ?? '') ? code : null };
+    if (existsSync(this.file) && statSync(this.file).size > 256 * 1024) renameSync(this.file, this.file + '.1');
+    appendFileSync(this.file, JSON.stringify(entry) + '\n', 'utf8');
+    this.items.push(entry); this.items = this.items.slice(-80);
   }
 }
 export function run(executable, args, { cwd, env = process.env, timeout = 5000, input = '', limit = 256 * 1024 } = {}) {
