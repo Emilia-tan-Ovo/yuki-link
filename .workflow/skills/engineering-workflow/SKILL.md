@@ -77,6 +77,10 @@ implementation prompt 引用 Context Plan 与持久化来源，从 Core 开始�
 4. GitHub/外部系统动作的认证 source of truth；默认由 Emilia + YCA direct 执行机械写入，不让模型用额度试认证；
 5. 预计超过短同步窗口的命令改走 owned task；测试/日志仍由 YCA 保存原始输出，模型只收摘要/失败切片；
 6. 下一 model session 的模型/reasoning、权限默认与 `model_usage` anomaly 状态。
+7. fresh worktree 默认位于仓库 allowlist 内的 `.local/worktrees/<ticket-or-maintenance>`；Context Plan / prompt 的代码与测试入口使用完整 repo-relative path，不依赖调用时 cwd；
+8. 当前已知工具缺口及 fallback（例如宿主无 `rg` → PowerShell/Git）写入 checkpoint/preflight 结论；同一环境事实不得让每个模型 session 重新失败一次；
+9. YCA/Codex `request_id` 只在 protected payload 完全相同时复用；脚本、cwd 或参数变化即生成新 request_id；
+10. 机械命令若包含长 Markdown/JSON、反引号、regex、here-string 或多层 shell 字符串，先拆成文件/参数再调用；不要把格式转义问题交给模型试错。
 
 Preflight 失败时先修环境或记录 blocker，**不得启动模型来诊断一个确定性工具已经能发现的问题**。
 
@@ -91,6 +95,8 @@ Preflight 失败时先修环境或记录 blocker，**不得启动模型来诊断
 
 - 默认最多一条活跃 Codex 模型工作线。第二条模型线只有在能明确缩短关键路径且 Owner 明确批准后才能启动；“允许并发”只是上限，不是默认配置。
 - Git/status/diff、hash、checkpoint/closeout、GitHub Issue/PR/merge/close、full suite 执行、日志筛选/压缩等由 Emilia + YCA 确定性完成，不为方便启动模型。
+- 长 Markdown/JSON/PR body 使用 `filesystem_write` + `--body-file`/脚本文件；Git revision/range 作为独立参数或先构造单一变量；纯字符串匹配优先 `-SimpleMatch` / `.Contains()`；安全 fixture 被 `filesystem_*` 判为 `SENSITIVE_CONTENT` 时，改用 PowerShell 精确行段，不重复撞拒绝。
+- 同一 baseline/full-suite 红项连续出现在两张 Ticket，或两个独立观测都复现时，必须在下一 frontier 前升级为 maintenance 或明确 follow-up Issue；不能无限期以“非本票 blocker”携带。若根因是过时测试/fixture，优先修测试确定性；若确属环境限制，记录 owner、触发条件和后续验证入口。
 - 实现模型只运行直接驱动当前红→绿所需的最小定向测试与必要 typecheck；完整测试套件默认由 YCA 执行。若 full suite 失败，只把计数、退出码、失败 case 与必要上下文切片交给模型。
 - 大型日志、Git history、runtime JSONL、完整测试输出和长文件先经确定性工具筛选/压缩；fresh session 只接收结构化摘要、失败切片和来源引用。
 

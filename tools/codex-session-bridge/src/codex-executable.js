@@ -8,7 +8,8 @@ import { BridgeError } from './errors.js';
 const verified = new Map();
 const safeCode = code => ['ENOENT', 'EACCES', 'EPERM', 'EINVAL', 'ENOEXEC', 'ETIMEDOUT'].includes(code) ? code : 'ENOEXEC';
 
-export function resolveCodexExecutable(configured = 'codex', { env = process.env, platform = process.platform } = {}) {
+export function resolveCodexExecutable(configured = 'codex',
+  { env = process.env, platform = process.platform, probeExecutable = spawnSync } = {}) {
   const variable = name => Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
   const deadline = Date.now() + 4000;
   const attempted = new Set();
@@ -25,7 +26,7 @@ export function resolveCodexExecutable(configured = 'codex', { env = process.env
       const remaining = deadline - Date.now();
       if (remaining <= 0) return 'ETIMEDOUT';
       // No shell/shims or login/model call. Raw output is never returned.
-      const probe = spawnSync(file, ['--version'], { shell: false, windowsHide: true, env,
+      const probe = probeExecutable(file, ['--version'], { shell: false, windowsHide: true, env,
         timeout: Math.min(1500, remaining), maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
       if (probe.error || probe.status !== 0) return safeCode(probe.error?.code);
       if (verified.size >= 32) verified.clear();

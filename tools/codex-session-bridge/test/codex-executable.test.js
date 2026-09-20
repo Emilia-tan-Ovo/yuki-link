@@ -2,10 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
-import { mkdtempSync, mkdirSync, copyFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs';
 import { resolveCodexExecutable } from '../src/codex-executable.js';
 import { CodexExecutor } from '../src/executor.js';
 import { spawnDirect } from '../src/process.js';
+
+const deterministicProbe = file => {
+  const bytes = readFileSync(file);
+  return { status: bytes[0] === 0x4d && bytes[1] === 0x5a ? 0 : 1, error: null };
+};
 
 function fixture(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'codex-discovery-'));
@@ -14,7 +19,7 @@ function fixture(t) {
     const directory = path.join(root, 'OpenAI', 'Codex', 'bin', hash); mkdirSync(directory, { recursive: true });
     const executable = path.join(directory, 'codex.exe'); copyFileSync(process.execPath, executable); return executable;
   };
-  const options = { env: { LOCALAPPDATA: root, PATH: '' }, platform: 'win32' };
+  const options = { env: { LOCALAPPDATA: root, PATH: '' }, platform: 'win32', probeExecutable: deterministicProbe };
   return { root, install, resolve: configured => resolveCodexExecutable(configured, options) };
 }
 
@@ -66,10 +71,14 @@ test('catalog refresh and successive session launches rediscover hashes while ob
   // app-server is a Node fixture, so isolate its cwd in a child test process.
   const code = `import { ModelCatalog } from ${JSON.stringify(new URL('../src/catalog.js', import.meta.url).href)};
     import assert from 'node:assert/strict';
-    import { copyFileSync, rmSync, mkdirSync } from 'node:fs';
+    import { copyFileSync, readFileSync, rmSync, mkdirSync } from 'node:fs';
     import { resolveCodexExecutable } from ${JSON.stringify(new URL('../src/codex-executable.js', import.meta.url).href)};
+    const probeExecutable = file => {
+      const bytes = readFileSync(file);
+      return {status: bytes[0] === 0x4d && bytes[1] === 0x5a ? 0 : 1, error: null};
+    };
     const catalog = new ModelCatalog(${JSON.stringify(saved)}, { resolveExecutable: p => resolveCodexExecutable(p, {
-      platform:'win32', env:{LOCALAPPDATA:${JSON.stringify(f.root)},PATH:''}}) });
+      platform:'win32', env:{LOCALAPPDATA:${JSON.stringify(f.root)},PATH:''}, probeExecutable}) });
     const result = await catalog.list(true); assert.equal(result.user_agent, ${JSON.stringify(first)});
     mkdirSync(${JSON.stringify(path.join(f.root, 'OpenAI', 'Codex', 'bin', 'catalog-next'))});
     const next = ${JSON.stringify(path.join(f.root, 'OpenAI', 'Codex', 'bin', 'catalog-next', 'codex.exe'))};

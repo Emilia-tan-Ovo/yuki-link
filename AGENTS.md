@@ -18,8 +18,14 @@
 - **默认最多一条活跃 Codex 模型工作线。** “允许并发”只表示上限，不是默认行为；第二条模型线必须有明确关键路径收益，并在启动前取得 Owner 明确批准。YCA 的确定性工具调用不算模型并发。
 - Git/status/diff、hash、checkpoint/closeout、GitHub Issue/PR/merge/close、完整测试套件执行与大型日志提取等可由 Emilia + YCA 确定性完成的机械动作，不得为了方便启动模型。实现模型只运行直接驱动红→绿所需的最小定向测试；full suite 与长日志默认由 YCA 执行并只把摘要/失败切片交给模型。
 - **fresh worktree / fresh model session 启动前先做 0-token 环境 preflight。** Emilia + YCA 必须先核对 fixed point/HEAD、项目依赖是否就绪、当前任务需要的宿主工具是否真实存在、长任务是否应走 owned task、以及 GitHub 等外部动作应由哪一层执行。缺 `node_modules` 等依赖时先用项目既有确定性方式准备；不得把“让模型进去以后自己发现环境没准备”当正常流程。
+- fresh worktree 默认建立在仓库 allowlist 内的 `.local/worktrees/<ticket-or-maintenance>`；Context Plan / prompt 中代码与测试入口必须写完整 repo-relative path，不依赖隐含 cwd。
 - 不假设工具存在：当前宿主没有 `rg` 时直接使用 PowerShell/Git 等已知 fallback，不让每个 reviewer 先失败一次再改命令。GitHub 写入默认走已认证的 Emilia + YCA direct；只有确实需要 Repository Engineer 自己操作 GitHub 且其认证已经单独验证时才交给模型。
 - 避免巨型多层字符串编排：能用专用 filesystem/Git/task 工具就不用 JS→PowerShell→regex/here-string 一锅脚本；必须使用 PowerShell 修改受保护 workflow 文件时，拆成小而可回读的操作，每步用 diff/exit code 校验。
+- **机械命令输入格式固定化。** 长 Markdown/JSON/PR body 先用 `filesystem_write` 落临时文件，再让 `gh --body-file` / 脚本读取；不要把 Markdown 反引号、PowerShell here-string、JS template string 嵌在同一层调用里。
+- Git revision/range 作为独立参数或先构造单一变量传入；不要写会被 PowerShell 重新解释的 `$base..HEAD`。纯字符串查找优先 `-SimpleMatch` / `.Contains()`，不是必须时不要写 regex。
+- YCA/Codex `request_id` 是幂等键：只允许对**完全相同的受保护 payload**复用；payload、cwd、脚本或参数改变时必须生成新的 request_id，禁止“沿用旧名字碰碰运气”。
+- 安全 fixture 可能故意包含 credential-like 文本并被 `filesystem_*` 拒绝；这类已知测试源码改用 PowerShell 精确行段读取/修改，不重复撞 `SENSITIVE_CONTENT`。
+- **重复 baseline 红项必须有 owner。** 同一 full-suite 失败连续出现在两张 Ticket，或在两个独立 baseline/full-suite 观测中重复出现时，不能继续只记“非本票 blocker”：若是确定性小修复，在下一 frontier 前做 maintenance；否则必须创建明确 follow-up Issue/owner/reference。没有 follow-up 的长期红项不得继续带入下一 Ticket。
 - 大型日志、Git history、测试输出、runtime JSONL 和长文件先由确定性工具筛选/压缩；模型默认只接收必要失败片段、结构化摘要和来源引用。不得把完整聊天、完整日志或整份历史重复灌入 fresh session。
 - **普通 Ticket raw input 成本目标：** ticket-design ≤1.5M、implementation ≤3M、primary Review ≤2M、finding fix ≤1M、focused re-review ≤0.7M，整票累计目标 ≤6M。任一单 run input >3M 或整票累计 input >6M 时立即标记 `cost anomaly`，在说明原因和收缩方案前不得启动下一次模型 run；整票累计 input 明显超过目标时继续视为 cost anomaly；允许大票合理超标，但必须说明为什么仍值得继续、下一步如何缩小输入和避免重复上下文。raw/cached/output usage 由 YCA durable run status 记录；这些数字是工程诊断指标，不等同于产品周额度的 1:1 token 计费。
 - checkpoint 在每个模型 run 终态后、以及启动下一个模型 run 前，更新本票 `model_usage`：run 数、input、cached input、output、当前模型/reasoning、anomaly 状态。无法取得 usage 时记 unknown，不允许模型自述补造。
