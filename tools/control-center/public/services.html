@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Yuki Harness · 日常服务</title><link rel="stylesheet" href="/style.css"><script src="/harness/services.js" defer></script></head>
+<body><main><header><div class="eyebrow">YUKI HARNESS / DAILY SERVICES</div><h1>日常服务管理</h1><p>状态与动作均来自 Control Center / Supervisor；此页不建立第二套管理状态。</p></header>
+<p><a href="/">Control Center 高级维护</a></p>
+<section class="summary"><strong id="overall">正在读取本地证据…</strong><small id="checked">最近检测：—</small><small id="auto-recovery">自动恢复：—（只读）</small></section>
+<p id="notice" role="status"></p>
+<nav><button data-id="all" data-action="start">启动全部</button><button data-id="all" data-action="stop">停止全部</button><button data-id="all" data-action="restart">重启当前版本</button><button id="refresh">刷新当前状态</button></nav>
+<section class="services" aria-label="服务列表">
+<article id="yca"><div class="heading"><h2>YCA <small>电脑工具与 Bridge</small></h2><b class="status">待检测</b></div><p class="evidence"></p><pre class="versions"></pre><div class="actions"><button data-id="yca" data-action="start">启动已选版本</button><button data-id="yca" data-action="stop">停止</button><button data-id="yca" data-action="restart">仅重启当前版本</button><button data-deployment-action="update-restart">更新并重启</button></div><details><summary>当前观察详情</summary><pre class="details"></pre></details></article>
+<article id="tunnel"><div class="heading"><h2>Tunnel <small>官方 managed runtime</small></h2><b class="status">待检测</b></div><p class="evidence"></p><pre class="versions"></pre><div class="actions"><button data-id="tunnel" data-action="start">启动</button><button data-id="tunnel" data-action="stop">停止</button><button data-id="tunnel" data-action="restart">重启</button></div><details><summary>当前观察详情</summary><pre class="details"></pre></details></article>
+</section>
+<section><h2>最近操作</h2><pre id="operations">暂无操作</pre><small>requested 后没有 terminal 表示结果未知；当前状态仍以最新 snapshot 为准。</small></section>
+<footer>同源本机管理 · 不共享凭据 · 高级维护仍在 Control Center</footer></main></body></html>

@@ -29,10 +29,12 @@ const { values } = parseArgs({ options: {
   'control-instance': { type: 'string' },
   'control-root': { type: 'string', multiple: true },
   'harness-port': { type: 'string' },
+  'services-url': { type: 'string' },
 } });
 
 if (values.help) {
   console.log('--harness-port PORT (optional separate loopback read-only Harness UI; never tunnel this listener)');
+  console.log('--services-url URL (optional Control Center daily-services navigation; strict loopback URL only)');
   console.log('Yuki Computer Agent\n--transport stdio|http (default stdio)\n--port 7391 (HTTP binds only 127.0.0.1)\n--allow-cwd ABSOLUTE_PATH (repeatable; required; Codex cwd and filesystem write roots)\n--read-root ABSOLUTE_PATH (repeatable; optional additional read roots)\n--runtime ABSOLUTE_PATH (default tools/codex-session-bridge/runtime)\n--codex-bin EXECUTABLE (default codex)\n--pwsh-bin EXECUTABLE (default pwsh.exe on Windows)');
 } else {
   let store;
@@ -117,7 +119,7 @@ if (values.help) {
       console.error('Yuki Computer Agent ready on stdio');
     }
     if (harnessPort !== null) {
-      harnessServer = createHarnessServer(manager.harness);
+      harnessServer = createHarnessServer(manager.harness, values['services-url']);
       // UI availability is independent from execution and durable capture.
       harnessServer.on('error', () => console.error('HARNESS_UI_UNAVAILABLE: check the separate loopback port; background recording continues.'));
       harnessServer.listen(harnessPort, '127.0.0.1', () => console.error(`Yuki Harness ready at http://127.0.0.1:${harnessPort}/`));

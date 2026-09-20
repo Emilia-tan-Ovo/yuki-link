@@ -34,6 +34,86 @@ test('serialized repeated starts, dependency order, stop intent and manager rest
   assert.equal(restarted.snapshot().units.yca.desired, 'stopped');
 });
 
+test('service operations record requested and terminal outcomes that survive supervisor restart', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  const succeeded = '11111111-1111-4111-8111-111111111111';
+  await m.action('yca', 'start', false, { operationId: succeeded, action: 'start', target: 'yca' });
+  u.yca.running = false; u.yca.healthy = false; u.yca.failure = 'PATH_MISSING';
+  const failed = '22222222-2222-4222-8222-222222222222';
+  await assert.rejects(m.action('yca', 'start', false, { operationId: failed, action: 'start', target: 'yca' }), { code: 'PATH_MISSING' });
+  const restored = new Events(f.root).items.filter(event => event.operation_id);
+  assert.deepEqual(restored.map(({ operation_id, action, target, outcome, code }) => ({ operation_id, action, target, outcome, code })), [
+    { operation_id: succeeded, action: 'start', target: 'yca', outcome: 'requested', code: null },
+    { operation_id: succeeded, action: 'start', target: 'yca', outcome: 'succeeded', code: null },
+    { operation_id: failed, action: 'start', target: 'yca', outcome: 'requested', code: null },
+    { operation_id: failed, action: 'start', target: 'yca', outcome: 'failed', code: 'PATH_MISSING' },
+  ]);
+  u.yca.failure = null;
+  for (let index = 0; index < 40; index++) {
+    u.yca.running = false; u.yca.healthy = false;
+    const operationId = `aaaaaaaa-aaaa-4aaa-8aaa-${String(index).padStart(12, '0')}`;
+    await m.action('yca', 'start', false, { operationId, action: 'start', target: 'yca' });
+  }
+  assert.ok(m.snapshot().events.length <= 80);
+  assert.ok(new Events(f.root).items.length <= 80, 'bounded operation metadata must remain bounded after restart');
+});
+
+test('service side effect with final persistence failure remains requested and unknown', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  const operation = { operationId: '77777777-7777-4777-8777-777777777777', action: 'start', target: 'yca' };
+  const persist = m.persist.bind(m);
+  let writes = 0;
+  m.persist = () => { if (++writes === 2) throw fail('STATE_WRITE_FAILED'); persist(); };
+
+  await assert.rejects(m.action('yca', 'start', false, operation), error => error.operationOutcome === 'unknown');
+  assert.equal(u.yca.running, true, 'the service side effect already happened');
+  assert.deepEqual(new Events(f.root).items.filter(event => event.operation_id === operation.operationId).map(event => event.outcome), ['requested']);
+});
+
+test('terminal event persistence failure remains requested and unknown after service side effect', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  const operation = { operationId: '88888888-8888-4888-8888-888888888888', action: 'start', target: 'yca' };
+  const addOperation = m.events.addOperation.bind(m.events);
+  m.events.addOperation = (...args) => {
+    if (args[3] !== 'requested') throw fail('EVENT_WRITE_FAILED');
+    addOperation(...args);
+  };
+
+  await assert.rejects(m.action('yca', 'start', false, operation), error => error.operationOutcome === 'unknown');
+  assert.equal(u.yca.running, true, 'the service side effect already happened');
+  assert.deepEqual(new Events(f.root).items.filter(event => event.operation_id === operation.operationId).map(event => event.outcome), ['requested']);
+});
+
+test('deployment success is not terminal until final persistence completes', async t => {
+  const f = setup(t), { manager: m } = f;
+  const operation = { operationId: '99999999-9999-4999-8999-999999999999', action: 'prepare', target: 'yca' };
+  let prepared = false;
+  m.persist = () => { throw fail('STATE_WRITE_FAILED'); };
+
+  await assert.rejects(m.updateDeployment(async () => {
+    prepared = true;
+    return { commit: 'a'.repeat(40), branch: 'main', tools: { count: 1, sha256: 'b'.repeat(64) } };
+  }, { operation }), error => error.operationOutcome === 'unknown');
+  assert.equal(prepared, true, 'deployment preparation already happened');
+  assert.deepEqual(new Events(f.root).items.filter(event => event.operation_id === operation.operationId).map(event => event.outcome), ['requested']);
+});
+
+test('deployment operations keep correlated terminal outcomes in the Control Center event log', async t => {
+  const f = setup(t), m = f.manager;
+  const checked = { operationId: '44444444-4444-4444-8444-444444444444', action: 'check-remote', target: 'yca' };
+  await m.checkDeployment(async () => ({ branch: 'main', commit: 'a'.repeat(40) }), checked);
+  const update = { operationId: '55555555-5555-4555-8555-555555555555', action: 'update-and-restart', target: 'yca' };
+  await assert.rejects(m.updateDeployment(async () => { throw fail('DEPLOYMENT_GIT_FAILED'); }, { restart: true, operation: update }),
+    { code: 'DEPLOYMENT_GIT_FAILED' });
+  const restored = new Events(f.root).items.filter(event => event.operation_id);
+  assert.deepEqual(restored.map(event => [event.operation_id, event.action, event.outcome, event.code]), [
+    [checked.operationId, 'check-remote', 'requested', null],
+    [checked.operationId, 'check-remote', 'succeeded', null],
+    [update.operationId, 'update-and-restart', 'requested', null],
+    [update.operationId, 'update-and-restart', 'failed', 'DEPLOYMENT_GIT_FAILED'],
+  ]);
+});
+
 test('manual schema confirmation records the running service instead of adjacent supervisor source', async t => {
   const { manager: m } = setup(t);
   m.localTools = { count: 13, sha256: 'old-supervisor' };
@@ -168,12 +248,14 @@ test('prepared release stays pending across ordinary restart and switches only t
   assert.equal(snapshot.units.yca.deployment.running.commit, first);
   assert.equal(snapshot.tools.running.sha256, firstTools.sha256);
 
-  await m.updateDeployment(prepare, { restart: true });
+  const operation = { operationId: '66666666-6666-4666-8666-666666666666', action: 'update-and-restart', target: 'yca' };
+  await m.updateDeployment(prepare, { restart: true, operation });
   snapshot = m.snapshot();
   assert.equal(starts.at(-1).commit, second);
   assert.equal(snapshot.units.yca.deployment.running.commit, second);
   assert.equal(snapshot.units.yca.deployment.restartRequired, false);
   assert.equal(snapshot.tools.running.sha256, secondTools.sha256);
+  assert.deepEqual(snapshot.events.filter(event => event.operation_id === operation.operationId).map(event => event.outcome), ['requested', 'succeeded']);
 });
 
 test('update-restart rechecks activity after prepare and leaves current release running when work appears', async t => {

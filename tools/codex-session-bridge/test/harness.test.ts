@@ -44,6 +44,31 @@ async function browserFor(harness: Harness) {
     close: () => { server.close(); server.closeAllConnections(); } };
 }
 
+test('Harness renders only a validated loopback Control Center services link', async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'harness-services-link-'));
+  const noSession = () => { throw new Error('No source session in this UI fixture'); };
+  const harness = new Harness(root, { session: noSession, runs: () => [], events: () => [], attribution: noSession });
+  t.after(() => { harness.close(); rmSync(root, { recursive: true, force: true }); });
+  async function home(servicesUrl?: string) {
+    const server = createHarnessServer(harness, servicesUrl);
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const html = await response.text(); server.close(); server.closeAllConnections(); return html;
+  }
+  const controlCenter = http.createServer((_request, response) => response.writeHead(200).end('daily services'));
+  await new Promise<void>(resolve => controlCenter.listen(0, '127.0.0.1', resolve));
+  const servicesUrl = `http://127.0.0.1:${(controlCenter.address() as AddressInfo).port}/harness/services`;
+  const linked = await home(servicesUrl);
+  assert.match(linked, new RegExp('href="' + servicesUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '"[^>]*>日常服务管理'));
+  assert.ok(!linked.includes('/api/action'));
+  await new Promise<void>(resolve => controlCenter.close(() => resolve()));
+  assert.match(await home(servicesUrl), /日常服务管理：unavailable/);
+  assert.match(await home(), /日常服务管理：unavailable/);
+  const rejected = await home('http://evil.example/harness/services');
+  assert.match(rejected, /日常服务管理：unavailable/);
+  assert.ok(!rejected.includes('evil.example'));
+});
+
 test('malformed request-target returns 400 and Harness remains readable', { timeout: 5000 }, async t => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'harness-request-'));
   const store = new RuntimeStore(root);

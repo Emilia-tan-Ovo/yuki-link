@@ -6,6 +6,7 @@ const defaults = () => ({ version: 1, autoRecovery: false, confirmedTools: null,
   { desired: 'stopped', attempts: [], nextAt: null, blocked: null, stableSince: null, ownership: {} }])) });
 const permanent = new Set(['VERSION_UNSUPPORTED', 'PATH_MISSING', 'PORT_CONFLICT', 'LEGACY_RUNTIME_LOCK', 'ORPHAN_TASK_REVIEW', 'RUNTIME_LOCKED', 'OBSERVED_UNOWNED', 'TOPOLOGY_CHANGED', 'PROFILE_REVIEW_REQUIRED', 'PID_CONFLICT', 'NATIVE_RUNTIME_CONFLICT', 'STATE_UNREADABLE', 'ACTIVITY_UNKNOWN', 'AUTH_REQUIRED', 'STOP_TIMEOUT', 'OWNERSHIP_CHANGED']);
 for (const code of ['CODEX_EXECUTABLE_UNAVAILABLE', 'NODE_PATH_MISSING', 'YCA_ENTRY_PATH_MISSING', 'PWSH_PATH_MISSING']) permanent.add(code);
+const unknownOperation = error => Object.assign(error, { operationOutcome: 'unknown' });
 
 export class Supervisor {
   constructor({ stateFile, events, createUnits, clock = Date.now, observeOnly = false, startupMs = 30_000, intervalMs = 5000 }) {
@@ -17,6 +18,11 @@ export class Supervisor {
     this.deploymentLatest = null;
   }
   persist() { saveJson(this.stateFile, this.state); }
+  recordOperation(operation, outcome, code = null) {
+    if (!operation) return;
+    try { this.events.addOperation(operation.operationId, operation.action, operation.target, outcome, code); }
+    catch (error) { throw unknownOperation(error); }
+  }
   serial(fn) {
     const action = this.tail.then(fn); this.tail = action.catch(() => {}); return action;
   }
@@ -78,19 +84,29 @@ export class Supervisor {
     if (o.deployment?.state && o.deployment.state !== 'unmanaged') throw fail('DEPLOYMENT_CURRENT_UNKNOWN');
     return null;
   }
-  checkDeployment(check) { return this.serial(async () => {
-    if (typeof check !== 'function') throw fail('INVALID_ACTION');
+  checkDeployment(check, operation = null) { return this.serial(async () => {
+    this.recordOperation(operation, 'requested');
     this.busy = 'yca:update-check';
+    let failure = null;
     try {
+      if (typeof check !== 'function') throw fail('INVALID_ACTION');
       const latest = await check();
       this.deploymentLatest = { ...latest, checkedAt: new Date(this.clock()).toISOString(), error: null, stale: false };
       this.events.add('yca', 'deployment-checked');
-      await this.observe(); return this.snapshot();
+      await this.observe();
     } catch (e) {
       this.deploymentLatest = { ...(this.deploymentLatest ?? {}), checkedAt: new Date(this.clock()).toISOString(), error: e.code ?? 'DEPLOYMENT_CHECK_FAILED', stale: true };
-      this.events.add('yca', 'deployment-check-failed', e.code ?? 'DEPLOYMENT_CHECK_FAILED');
-      throw e;
+      try { this.events.add('yca', 'deployment-check-failed', e.code ?? 'DEPLOYMENT_CHECK_FAILED'); }
+      catch (eventError) { failure = unknownOperation(eventError); }
+      failure ??= e;
     } finally { this.busy = null; }
+    if (failure) {
+      if (failure.operationOutcome === 'unknown') throw failure;
+      this.recordOperation(operation, 'failed', failure.code ?? 'DEPLOYMENT_CHECK_FAILED');
+      throw failure;
+    }
+    this.recordOperation(operation, 'succeeded');
+    return this.snapshot();
   }); }
   async rollbackDeployment(previous, prepared, candidate, confirm) {
     await this.observe();
@@ -119,11 +135,13 @@ export class Supervisor {
         || (previous.toolsSha && running.tools?.sha256 !== previous.toolsSha)) throw fail('DEPLOYMENT_ROLLBACK_FAILED');
     this.events.add('yca', 'deployment-rolled-back');
   }
-  updateDeployment(prepare, { restart = false, confirm = false } = {}) { return this.serial(async () => {
-    if (this.observeOnly) throw fail('DEPLOYMENT_CONFIRMATION_REQUIRED');
-    if (typeof prepare !== 'function') throw fail('INVALID_ACTION');
+  updateDeployment(prepare, { restart = false, confirm = false, operation = null } = {}) { return this.serial(async () => {
+    this.recordOperation(operation, 'requested');
     let previous = null, prepared = null, candidate = null, rollbackEligible = false;
+    let failure = null;
     try {
+      if (this.observeOnly) throw fail('DEPLOYMENT_CONFIRMATION_REQUIRED');
+      if (typeof prepare !== 'function') throw fail('INVALID_ACTION');
       if (restart) {
         await this.guardImpact(confirm);
         const o = this.observations.yca;
@@ -137,38 +155,48 @@ export class Supervisor {
       this.deploymentLatest = { commit: prepared.commit, branch: prepared.branch, checkedAt: new Date(this.clock()).toISOString(), error: null, stale: false };
       this.events.add('yca', 'deployment-prepared');
       await this.observe();
-      if (!restart) return this.snapshot();
-
-      // Preparation can take time. Re-check activity, ownership, release and process identity immediately before stopping.
-      await this.guardImpact(confirm);
-      const current = this.currentYcaCommit(), o = this.observations.yca;
-      if (current !== previous.commit || (o?.running === true) !== previous.wasRunning
-          || (previous.wasRunning && ((o?.pid ?? null) !== previous.pid || (o?.created ?? null) !== previous.created))) throw fail('DEPLOYMENT_CURRENT_CHANGED');
-      const s = this.state.units.yca; s.desired = 'running'; s.blocked = null; s.nextAt = null; this.persist();
-      if (previous.wasRunning) {
-        this.busy = 'yca:update-stop'; await this.units.yca.stop(confirm); rollbackEligible = true; this.events.add('yca', 'update-stopped-old');
-      } else rollbackEligible = true;
-      candidate = { commit: prepared.commit, instance: randomUUID() };
-      this.busy = 'yca:update-start'; await this.observe(); await this.startOne('yca', { commit: prepared.commit, instance: candidate.instance });
-      await this.observe();
-      const running = this.observations.yca;
-      if (!running?.healthy || running.deployment?.running?.commit !== prepared.commit || running.tools?.sha256 !== prepared.tools?.sha256) throw fail('DEPLOYMENT_SWITCH_UNVERIFIED');
-      this.events.add('yca', 'deployment-switched');
-      return this.snapshot();
+      if (restart) {
+        // Preparation can take time. Re-check activity, ownership, release and process identity immediately before stopping.
+        await this.guardImpact(confirm);
+        const current = this.currentYcaCommit(), o = this.observations.yca;
+        if (current !== previous.commit || (o?.running === true) !== previous.wasRunning
+            || (previous.wasRunning && ((o?.pid ?? null) !== previous.pid || (o?.created ?? null) !== previous.created))) throw fail('DEPLOYMENT_CURRENT_CHANGED');
+        const s = this.state.units.yca; s.desired = 'running'; s.blocked = null; s.nextAt = null; this.persist();
+        if (previous.wasRunning) {
+          this.busy = 'yca:update-stop'; await this.units.yca.stop(confirm); rollbackEligible = true; this.events.add('yca', 'update-stopped-old');
+        } else rollbackEligible = true;
+        candidate = { commit: prepared.commit, instance: randomUUID() };
+        this.busy = 'yca:update-start'; await this.observe(); await this.startOne('yca', { commit: prepared.commit, instance: candidate.instance });
+        await this.observe();
+        const running = this.observations.yca;
+        if (!running?.healthy || running.deployment?.running?.commit !== prepared.commit || running.tools?.sha256 !== prepared.tools?.sha256) throw fail('DEPLOYMENT_SWITCH_UNVERIFIED');
+        this.events.add('yca', 'deployment-switched');
+      }
     } catch (e) {
       let rollbackError = null;
+      let reportingError = null;
       if (rollbackEligible && previous?.commit && prepared?.commit) {
         try { await this.rollbackDeployment(previous, prepared, candidate, confirm); }
         catch (rollback) {
           rollbackError = rollback;
           this.state.units.yca.blocked = rollback.code ?? 'DEPLOYMENT_ROLLBACK_FAILED';
-          this.events.add('yca', 'deployment-rollback-failed', rollback.code ?? 'DEPLOYMENT_ROLLBACK_FAILED');
+          try { this.events.add('yca', 'deployment-rollback-failed', rollback.code ?? 'DEPLOYMENT_ROLLBACK_FAILED'); }
+          catch (eventError) { reportingError = unknownOperation(eventError); }
         }
       }
-      this.events.add('yca', 'deployment-update-failed', e.code ?? 'ACTION_FAILED');
-      if (rollbackError) throw fail(rollbackError.code ?? 'DEPLOYMENT_ROLLBACK_FAILED');
-      throw e;
-    } finally { this.busy = null; this.persist(); await this.observe(); }
+      try { this.events.add('yca', 'deployment-update-failed', e.code ?? 'ACTION_FAILED'); }
+      catch (eventError) { reportingError ??= unknownOperation(eventError); }
+      failure = reportingError ?? (rollbackError ? fail(rollbackError.code ?? 'DEPLOYMENT_ROLLBACK_FAILED') : e);
+    }
+    try { this.busy = null; this.persist(); await this.observe(); }
+    catch (finalizationError) { throw unknownOperation(finalizationError); }
+    if (failure) {
+      if (failure.operationOutcome === 'unknown') throw failure;
+      this.recordOperation(operation, 'failed', failure.code ?? 'ACTION_FAILED');
+      throw failure;
+    }
+    this.recordOperation(operation, 'succeeded');
+    return this.snapshot();
   }); }
   async startOne(id, options = {}) {
     const s = this.state.units[id]; this.busy = `${id}:start`;
@@ -186,15 +214,20 @@ export class Supervisor {
       throw fail('STARTUP_TIMEOUT');
     } finally { this.busy = null; }
   }
-  action(id, action, confirm = false) {
+  action(id, action, confirm = false, operation = null) {
     if (![...ids, 'all'].includes(id) || !['start', 'stop', 'restart', 'retry'].includes(action)) return Promise.reject(fail('INVALID_ACTION'));
     return this.serial(async () => {
-      if (this.observeOnly) throw fail('DEPLOYMENT_CONFIRMATION_REQUIRED');
+      this.recordOperation(operation, 'requested');
+      if (this.observeOnly) {
+        this.recordOperation(operation, 'failed', 'DEPLOYMENT_CONFIRMATION_REQUIRED');
+        throw fail('DEPLOYMENT_CONFIRMATION_REQUIRED');
+      }
       const selected = id === 'all' ? ids : [id];
       const stopping = ['stop', 'restart'].includes(action);
       let restartCommit = null;
       // User stop intent is durable even when stopping is blocked by task safety.
       if (stopping) { for (const key of selected) { this.state.units[key].desired = 'stopped'; this.state.units[key].nextAt = null; } this.persist(); }
+      let failure = null;
       try {
         if (stopping) {
           await this.guardImpact(confirm);
@@ -215,8 +248,20 @@ export class Supervisor {
             await this.startOne(key, options); this.events.add(key, 'started');
           }
         }
-      } catch (e) { for (const key of selected) this.state.units[key].blocked = e.code ?? 'ACTION_FAILED'; this.events.add(id, action, e.code ?? 'ACTION_FAILED'); throw e; }
-      finally { this.busy = null; this.persist(); await this.observe(); }
+      } catch (e) {
+        for (const key of selected) this.state.units[key].blocked = e.code ?? 'ACTION_FAILED';
+        try { this.events.add(id, action, e.code ?? 'ACTION_FAILED'); }
+        catch (eventError) { failure = unknownOperation(eventError); }
+        failure ??= e;
+      }
+      try { this.busy = null; this.persist(); await this.observe(); }
+      catch (finalizationError) { throw unknownOperation(finalizationError); }
+      if (failure) {
+        if (failure.operationOutcome === 'unknown') throw failure;
+        this.recordOperation(operation, 'failed', failure.code ?? 'ACTION_FAILED');
+        throw failure;
+      }
+      this.recordOperation(operation, 'succeeded');
       return this.snapshot();
     });
   }

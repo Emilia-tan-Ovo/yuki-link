@@ -7,16 +7,35 @@ const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => 
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 }[c]!));
 const css = 'body{font:16px system-ui;margin:0;background:#f5f3fa;color:#262034}main{max-width:1040px;margin:3rem auto;padding:0 1.5rem}a{color:#6240a0}section,article,aside{background:white;border:1px solid #ded7ec;border-radius:12px;padding:1rem;margin:1rem 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}small{color:#645c70}.warning{border-left:4px solid #ad6b21}h1{font-size:28px}';
-const page = (title: string, body: string, csrf = '') => '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+const page = (title: string, body: string, csrf = '', services = '<span>日常服务管理：unavailable</span>') => '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
   + '<meta name="csrf-token" content="' + escape(csrf) + '"><title>' + escape(title) + '</title><link rel="stylesheet" href="/style.css"></head><body><main>'
-  + '<nav><a href="/">Yuki Harness · Projects</a></nav><h1>' + escape(title) + '</h1>' + body + '</main></body></html>';
+  + '<nav><a href="/">Yuki Harness · Projects</a> · ' + services + '</nav><h1>' + escape(title) + '</h1>' + body + '</main></body></html>';
 const equal = (value: string | undefined, secret: string) => {
   const bytes = Buffer.from(value ?? ''), expected = Buffer.from(secret);
   return bytes.length === expected.length && timingSafeEqual(bytes, expected);
 };
-export function createHarnessServer(harness: Harness) {
+function dailyServicesUrl(value: string | undefined) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port || url.username || url.password
+      || url.pathname !== '/harness/services' || url.search || url.hash) return null;
+    const port = Number(url.port);
+    return Number.isInteger(port) && port >= 1 && port <= 65535 ? url.href : null;
+  } catch { return null; }
+}
+async function reachableDailyServices(value: string | null) {
+  if (!value) return null;
+  try {
+    const response = await fetch(value, { redirect: 'error', signal: AbortSignal.timeout(500) });
+    await response.body?.cancel();
+    return response.status === 200 ? value : null;
+  } catch { return null; }
+}
+export function createHarnessServer(harness: Harness, servicesUrl?: string) {
   const session = randomBytes(32).toString('hex');
   const csrf = randomBytes(32).toString('hex');
+  const configuredServices = dailyServicesUrl(servicesUrl);
   return http.createServer(async (req, res) => {
     const origin = 'http://127.0.0.1:' + req.socket.localPort;
     const headers = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
@@ -92,6 +111,9 @@ export function createHarnessServer(harness: Harness) {
     }
     if (req.method !== 'GET') return send(405, { code: 'METHOD_NOT_ALLOWED' });
     try {
+      const services = await reachableDailyServices(configuredServices);
+      const servicesNavigation = services ? '<a href="' + escape(services) + '" rel="noreferrer">日常服务管理</a>'
+        : '<span>日常服务管理：unavailable</span>';
       // Explicit UI refresh asks for current facts. The independent background
       // collector is still responsible for capture while no browser is present.
       harness.scan(true);
@@ -126,8 +148,8 @@ export function createHarnessServer(harness: Harness) {
               + ' · files ' + changes.file_count + ' · commits ' + escape(changes.commit_count ?? 'unknown') + '</li>';
           }).join('') + '</ul></section>').join('');
         return send(200, page('工程协作历史', '<p>观察已有运行 · <a href="/">刷新</a></p><aside>Recording: ' + escape(summary.recording.state)
-          + '<br>Changes：按 Ticket 固定基线刷新；服务状态：unavailable（尚未接入）</aside>'
-          + (groups || '<p>尚未登记 Project / Ticket。由 Emilia 通过 YCA 显式登记。</p>'), csrf), true, true);
+          + '<br>Changes：按 Ticket 固定基线刷新；服务状态：' + (services ? '由 Control Center 提供' : 'unavailable') + '</aside>'
+          + (groups || '<p>尚未登记 Project / Ticket。由 Emilia 通过 YCA 显式登记。</p>'), csrf, servicesNavigation), true, true);
       }
       const conversationRoute = /^\/(api\/)?conversations\/([0-9a-f-]+)$/.exec(url.pathname);
       const route = /^\/(api\/)?tickets\/([0-9a-f-]+)$/.exec(url.pathname);
@@ -143,7 +165,7 @@ export function createHarnessServer(harness: Harness) {
         return send(200, page('子 Conversation', '<p><a href="/tickets/' + detail.ticket_id
           + '">返回 Ticket 主 Conversation</a></p><aside>relation: ' + escape(JSON.stringify(detail.relation))
           + '<br>isolation: ' + escape(detail.isolation.state) + '</aside>' + records
-          + (detail.has_more ? '<a href="?after=' + detail.next_cursor + '">后续记录</a>' : '')), true);
+          + (detail.has_more ? '<a href="?after=' + detail.next_cursor + '">后续记录</a>' : ''), '', servicesNavigation), true);
       }
       if (!route) return send(404, { code: 'NOT_FOUND' });
       const detail = harness.detail(route[2], Number(afterText));
@@ -242,7 +264,7 @@ export function createHarnessServer(harness: Harness) {
           + escape(JSON.stringify(detail.computer_calls, null, 2)) + '</pre></aside>' : '')
         + controlPanel + (detail.owned_tasks.length ? '<aside>受管任务：stdout/stderr 的 seq 表示已公开行发布顺序，非两管道实际写入全局顺序；本地 cursor 仅为保存顺序。脚本正文：source-not-provided。历史终态不代表当前进程状态。<pre>'
           + escape(JSON.stringify(detail.owned_tasks, null, 2)) + '</pre></aside>' : '') + records
-        + (detail.has_more ? '<a href="?after=' + detail.next_cursor + '">后续记录</a>' : ''), csrf), true);
+        + (detail.has_more ? '<a href="?after=' + detail.next_cursor + '">后续记录</a>' : ''), csrf, servicesNavigation), true);
     } catch (e) {
       const code = e instanceof HarnessError ? e.code : 'READ_FAILED';
       return send(code === 'TICKET_NOT_FOUND' || code === 'CONVERSATION_NOT_FOUND' ? 404 : code === 'INVALID_CURSOR' ? 400 : 503, { code });

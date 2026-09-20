@@ -71,6 +71,52 @@
 - 不做 SSE/WebSocket、跨进程代理、独立 Harness resident、长周期操作库、Event Store 迁移、autoRecovery/startup 管理或真实断网/待机压力验收；这些都不是 #49 的阻塞项。
 - GitHub tracker 的 Notes 同步由 Emilia/YCA 外层完成；本轮禁止外部写入。
 
+## Implementation Handoff（2026-09-20 replacement implementation）
+
+### 来源与身份
+
+- 来源：`.local/HARNESS-009-ticket.md`、本 Implementation Notes、`docs/specs/yuki-harness-v0.md` 的服务管理/动态状态/testing seam，以及 `tools/control-center/README.md` 的对应运行语义。
+- worktree：`C:\Users\KQ_Sh\Desktop\yuki-link\.local\worktrees\harness-009`；branch：`codex/yuki-harness-v0-009`。
+- fixed point：`a325873a2c15c75ce3ee8bf3a169deb795e757fc`；开始与当前观察 HEAD：`76c222b87027fb85de50e4702f3af3015c7fb7fa`。
+- 当前为未提交实现工作树；未读取 global Memory、`.workflow/history/**`、旧 HARNESS Review/Acceptance/closeout 或完整 Git history。
+
+### 实际范围与写集
+
+- Control Center 日常页：新增 `tools/control-center/public/services.html`、`services.js`，并在 `src/server.js` 提供同源 `/harness/services`。页面直接展示 Supervisor snapshot 的 observation freshness、running/healthy/owned/desired/activity、YCA running/selected/remote release、tunnel 分层证据及只读 autoRecovery；提供 start/stop/restart-current/update-and-restart，并保留完整 Control Center 高级维护入口。
+- 唯一管理路径：`src/{server,supervisor,main,units,common}.js` 只把动作转交既有 `Supervisor.action(...)` / `checkDeployment(...)` / `updateDeployment(...)`；没有新增第二套管理状态机、recovery 开关或 Harness service POST。
+- operation 追踪：`/api/action` 与 `/api/deployment` 严格要求一次性 UUID `operation_id`；Supervisor 在既有 bounded `events.jsonl` 写 requested 与 succeeded/failed terminal 元数据，兼容恢复 operation 及已有 deployment 事件。合法响应返回 correlated receipt；daily UI 对断连只显示 unknown，不自动重发。
+- Harness 导航：`tools/codex-session-bridge/src/{main.js,harness/server.ts}` 接收 Supervisor 注入的 URL；只允许精确 `http://127.0.0.1:<port>/harness/services`，以短超时只读探测决定渲染导航或 unavailable，不代理 POST，也不传 cookie/token/config path。Control Center 仅允许无 Origin 的 same-site GET 顶层 document 导航进入页面，API 安全检查保持不变。
+- 兼容调用方与文档：更新完整 Control Center `public/app.js` 生成 operation ID；更新 `tools/control-center/README.md`；更新 `test/{server,supervisor,manager-process}.test.js` 与 bridge `test/harness.test.ts`。`manager-process.test.js` 只同步新 HTTP 输入契约，本轮未执行其完整进程生命周期测试。
+
+### TDD 与验证
+
+- 红灯先固定并逐条转绿：daily route/receipt；Supervisor action requested/terminal + 重启恢复；Harness 严格 loopback 导航；严格 operation input/failed receipt；deployment terminal；daily UI 动作与只读 recovery；不可达链接 unavailable；跨端口顶层导航。
+- `node --check`：受影响 Control Center source/public JS 与 bridge `src/main.js`，exit 0。
+- `node --test tools/control-center/test/server.test.js`：3/3 pass，exit 0。
+- `node --test --test-name-pattern="service operations record|deployment operations keep|prepared release stays|update-restart rechecks|failed candidate start|failed remote check|pre-switch|rollback" tools/control-center/test/supervisor.test.js`：10/10 pass，exit 0。
+- 在 `tools/codex-session-bridge`：`node --test --test-name-pattern="validated loopback|malformed request-target" test/harness.test.ts`：2/2 pass，exit 0。
+- 在 `tools/codex-session-bridge`：`npm run typecheck`（`tsc --noEmit`），exit 0。
+- `git diff --check`：handoff 写入后再次通过，exit 0；仅有仓库现有 LF→CRLF 提示。
+- 按 Owner 指令未运行 full suite、Control Center 完整 manager-process 生命周期、真实服务停止/重启/更新、真实浏览器交互或 ChatGPT 端到端；因此本 handoff 只声明代码实现与定向自动化通过，不声明 Acceptance 或日常 stable。
+
+### Review policy、风险与 Commit
+
+- `review_policy: delegated`；接收方为外层 Emilia + YCA，fresh primary Review 尚未执行，当前不作 finding 数量或 Review 通过声明。
+- 已知未验证项：Supervisor→YCA 的真实进程参数装配仅由代码路径核对，未运行长时 manager-process 测试；daily UI 未做真实浏览器点击；正式服务 update/rollback 未在本机触发。
+- Owner 明确要求本 session 不 commit/push/review；当前没有新 commit，HEAD 仍为 `76c222b87027fb85de50e4702f3af3015c7fb7fa`。
+- 建议中文提交主题：`feat: 接入 Harness 日常服务管理页`
+
+### Outer validation 与 baseline follow-up（2026-09-20）
+
+- HARNESS-009 当前受审工作区**不修改** `tools/control-center/test/deployment.test.js`；该测试的二次 prepare `DEPLOYMENT_PROBE_FAILED` 已确认是默认基线可独立复现的旧 fixture 问题，并已单独登记 GitHub #68，本票不吞并该 maintenance。
+- 当前 #49 生产改动下，外层 Control Center full suite 的有效观测为 38/39，唯一稳定红项为上述 #68；同一红项定向复现，且 clean base 对照也复现，因此不归因于 #49。另一次并行 full-suite 的 Codex discovery 超时已隔离重跑 1/1 通过，不作为 #49 regression。
+- Bridge full suite：171 total / 170 pass / 0 fail / 1 existing opt-in local Skill read skip；bridge typecheck 通过；当前 subject 的 `git diff --check` 通过。
+- Reviewer/Acceptance 必须把 #68 作为已知 baseline evidence gap，不得把它误写成 HARNESS-009 已修复，也不得用“full suite 全绿”描述当前 #49 字节。
+
+### 下一步
+
+- 外层先以本 handoff、当前完整 diff 和上述测试证据启动 fresh delegated Review；Review 后再由 Emilia 执行 Acceptance 所需的确定性核对。不要把 HTTP receipt、定向测试或本 handoff 直接升级为 Acceptance 通过。
+
 ## Context Plan
 
 - **Core**：`.local/HARNESS-009-ticket.md`、本 Notes、`AGENTS.md`；`tools/control-center/src/{supervisor,server,main,units,common}.js`、`public/{index.html,app.js}`、`test/{server,supervisor}.test.js`；`tools/codex-session-bridge/src/{main.js,harness/server.ts,harness/runtime.ts}` 与 `test/harness.test.ts`。
@@ -79,3 +125,12 @@
 - **Expansion triggers**：只有既有 Supervisor interface 无法表达某个确认动作、operation terminal 无法在 Control Center 内可靠落盘，或参数注入迫使读取/传递凭据时扩大调查；否则不读取完整历史或引入新进程拓扑。
 
 The current ticket is ready for implementation.
+
+## Finding Fix Handoff（2026-09-20 primary Review v2）
+
+- `SPEC-001`：Supervisor 现在只在 service/deployment 的最终 persist + observe 完成后写 terminal event；terminal 写入或最终收尾失败会携带 `operationOutcome: unknown`，HTTP 返回同一 `operation_id` 的 `outcome: unknown`，不再合成 failed/succeeded。operation event 也改为成功 append 后才进入内存投影。
+- `SPEC-002`：daily `services.js` 与 advanced `app.js` 均保留本次生成的 `operation_id`，只接受 ID 严格匹配、合法 `succeeded | failed` 且与 HTTP status 一致的 receipt；其余情况显示/抛出 unknown，且不自动重试。
+- `SPEC-003`：advanced event 列表按 operation schema 显示 `operation_id / action / target / outcome / code`，旧 `component / action / code / exitCode` 显示保持兼容。
+- TDD/验证：新增 final persist、terminal writer、HTTP unknown 故障注入，以及 daily/advanced mismatch/missing receipt 与新旧 event display seam。定向结果：Supervisor 6/6、server 4/4、public UI 2/2；受影响 5 个 JS `node --check` 均通过；`git diff --check` 通过（仅既有 LF→CRLF 提示）。未运行 full suite。
+- 本轮实际写集：`tools/control-center/src/{supervisor,server,common}.js`、`tools/control-center/public/{services,app}.js`、`tools/control-center/test/{supervisor,server,public-ui}.test.js`、本文件。
+- 已知限制：未做真实浏览器点击、真实服务启停/更新或 full-suite 验收；#68 baseline note 保持原样，本轮不处理 #68。当前仍为未提交工作区，未 commit/push/review。

@@ -7,6 +7,7 @@ import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
+import { randomUUID } from 'node:crypto';
 import { saveJson, readJson, run, sleep, get } from '../src/common.js';
 
 async function port() { const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; }
@@ -46,6 +47,7 @@ test('actual supervisor process crash, duplicate opener and persisted stop with 
   const base = `http://127.0.0.1:${config.port}`;
   let p = launch(), session = await ready(base);
   const post = async (route, body) => {
+    if (route === '/api/action' || route === '/api/deployment') body = { operation_id: randomUUID(), ...body };
     const r = await fetch(base + route, { method: 'POST', headers: { cookie: session.cookie, origin: base, 'content-type': 'application/json', 'x-csrf-token': session.csrf }, body: JSON.stringify(body) });
     assert.equal(r.status, 200, await r.text());
   };

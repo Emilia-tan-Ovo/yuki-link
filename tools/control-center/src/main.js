@@ -35,18 +35,19 @@ try {
           account: '未检查（需授权使用已有账号）', inference: '未在此验证', at: new Date().toISOString() };
       } catch (error) { supervisor.codex = { cli: error.code === 'CODEX_EXECUTABLE_UNAVAILABLE' ? '配置路径失效，自动发现未找到可用 CLI' : 'CLI 启动检查失败', code: error.code, account: '未检查', inference: '未在此验证' }; }
     });
-  }, deploymentCheck: () => supervisor.checkDeployment(async () => {
+  }, deploymentCheck: operation => supervisor.checkDeployment(async () => {
     if (!c.yca.deploymentRoot) throw fail('DEPLOYMENT_NOT_CONFIGURED');
     return latestDeployment(c.yca.repo);
-  }), deploymentUpdate: (restart, confirm) => supervisor.updateDeployment(async () => {
+  }, operation), deploymentUpdate: (restart, confirm, operation) => supervisor.updateDeployment(async () => {
     if (!c.yca.deploymentRoot) throw fail('DEPLOYMENT_NOT_CONFIGURED');
     return prepareDeployment({ repo: c.yca.repo, root: c.yca.deploymentRoot, node: c.node });
-  }, { restart, confirm }) });
+  }, { restart, confirm, operation }) });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(c.port, '127.0.0.1', resolve); });
   claimStateDirectory(c.stateDir, c.port, configFile);
   supervisor = new Supervisor({ stateFile: path.join(c.stateDir, 'state.json'), events, observeOnly: c.observeOnly,
     createUnits: (state, persist) => ({
       yca: new YcaUnit({ ...c.yca, node: c.node, pwsh: c.pwsh, codex: c.codex,
+        servicesUrl: `http://127.0.0.1:${c.port}/harness/services`,
         controlRoots: [path.dirname(configFile), c.stateDir, ...(c.yca.deploymentRoot ? [c.yca.deploymentRoot] : [])] }, host, state.units.yca.ownership, persist, events),
       tunnel: new TunnelUnit({ ...c.tunnel, backupDir: c.stateDir }, host, state.units.tunnel.ownership, persist, events),
     }),

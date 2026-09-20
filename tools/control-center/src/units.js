@@ -81,6 +81,7 @@ export class YcaUnit {
     const args = [entry, '--transport', 'http', '--port', String(this.config.port), '--allow-cwd', this.config.repo,
       '--runtime', this.config.runtime, '--codex-bin', this.codexResolution.executable, '--pwsh-bin', this.config.pwsh,
       '--control-port', String(this.config.controlPort), '--control-instance', this.state.instance];
+    if (this.config.servicesUrl) args.push('--services-url', this.config.servicesUrl);
     // Older unmanaged YCA entries may not understand the deployment-era option.
     if (deployment) for (const root of this.config.controlRoots ?? []) args.push('--control-root', root);
     const child = spawn(this.config.node, args, { cwd, shell: false, windowsHide: true, detached: true,
