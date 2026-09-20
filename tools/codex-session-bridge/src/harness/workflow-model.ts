@@ -34,7 +34,7 @@ export const workflowReviewSchema = z.object({
   status: z.enum(['pending', 'passed', 'findings', 'incomplete']), subject_ref: text, subject_identity: hash.nullable().default(null),
   artifact_refs: z.array(text).max(64), standards: axisSchema, spec: axisSchema,
   finding_refs: z.array(findingRefSchema).max(128), isolated: z.union([z.boolean(), z.literal('unknown')]),
-  applicability: applicabilitySchema, reason: nullableText,
+  applicability: applicabilitySchema, reason: nullableText, execution_refs: z.array(text).max(32).optional(),
 }).strict();
 export const workflowFindingSchema = z.object({
   origin_review_id: text, finding_id: text,
@@ -94,6 +94,11 @@ export const workflowSnapshotSchema = z.object({
       ctx.addIssue({ code: 'custom', message: 'passed review has an incomplete axis' });
     }
     if (review.status === 'findings' && !review.finding_refs.length) ctx.addIssue({ code: 'custom', message: 'review findings missing' });
+    if ((review.execution_refs ?? []).some(value => !runtimeSet.has(value))) ctx.addIssue({ code: 'custom', message: 'review execution reference missing' });
+    if ((review.execution_refs ?? []).some(value => {
+      const reference = runtimeById.get(value);
+      return !reference || reference.kind !== 'codex-run' || !reference.session_id || !reference.run_id;
+    })) ctx.addIssue({ code: 'custom', message: 'review requires Codex session/run references' });
   }
   for (const finding of snapshot.findings) {
     if (!reviewSet.has(finding.origin_review_id)) ctx.addIssue({ code: 'custom', message: 'finding origin review missing' });

@@ -146,7 +146,7 @@ test('同 request 的 Ticket 身份不可改变，省略归属兼容旧行为且
   assert.equal((await f.call('task_start', { ...args, request_id: 'invalid', ticket_id: randomUUID() })).error.code, 'TICKET_NOT_FOUND');
   assert.equal(f.children.length, 2);
   const tools = (await f.tools()).tools;
-  assert.equal(tools.length, 21);
+  assert.equal(tools.length, 22);
   assert.ok(tools.find(tool => tool.name === 'task_start')!.inputSchema.properties?.ticket_id);
   await f.openUI();
   assert.equal(taskRecords(await f.detail(b.ticket_id)).length, 0);

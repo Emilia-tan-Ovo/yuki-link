@@ -4,6 +4,7 @@ import { Journal } from './journal.ts';
 import { ComputerCalls } from './computer-calls.ts';
 import { TaskCollector } from './task-collector.ts';
 import { WorkflowHistory } from './workflow.ts';
+import { ConversationHistory } from './conversations.ts';
 import { WorkflowSource } from './workflow-source.ts';
 import type { WorkflowSourceOptions } from './workflow-source.ts';
 import type { TaskSource } from './task-source.ts';
@@ -38,6 +39,7 @@ export class Harness {
   computerCalls: ComputerCalls;
   taskHistory: TaskCollector;
   workflowHistory: WorkflowHistory;
+  conversations: ConversationHistory;
   projects = new Map<string, Project>();
   tickets = new Map<string, Ticket>();
   bindings = new Map<string, Binding>();
@@ -55,12 +57,14 @@ export class Harness {
     this.computerCalls = new ComputerCalls(this.journal, id => this.ticket(id));
     this.taskHistory = new TaskCollector(this.journal, id => this.ticket(id), tasks);
     this.workflowHistory = new WorkflowHistory(this.journal, id => this.ticket(id), new WorkflowSource(source, workflowOptions));
+    this.conversations = new ConversationHistory(this.journal, source, this.workflowHistory, id => this.ticket(id), this.bindings);
   }
   private apply(record: RecordEntry) {
     const data = record.data;
     if (data.kind === 'registered') {
       this.projects.set(data.project.id, data.project); this.tickets.set(data.ticket.id, data.ticket);
     } else if (data.kind === 'attached') this.bindings.set(data.binding.id, data.binding);
+    else if (data.kind === 'child_conversation_associated') this.bindings.set(data.association.binding.id, data.association.binding);
     else if (data.kind === 'event') {
       const e = data.event;
       if (e.source_seq !== null) this.imported.add(e.run_id + ':' + e.source_seq);
@@ -85,6 +89,7 @@ export class Harness {
     return { project_id: project.id, ticket_id: ticket.id, conversation_id: ticket.main_conversation_id, deduplicated: !!old };
   }
   recordWorkflow(input: unknown) { return this.workflowHistory.record(input); }
+  associateChildConversation(input: unknown) { const result = this.conversations.associate(input); this.scan(true); return result; }
   attach(input: unknown) {
     const parsed = attachSchema.safeParse(input);
     if (!parsed.success) throw new HarnessError('INVALID_ATTACHMENT');
@@ -93,8 +98,11 @@ export class Harness {
     const runs = this.source.runs(session.id);
     if (value.run_id && !runs.some(r => r.id === value.run_id)) throw new HarnessError('ATTRIBUTION_MISMATCH', { reason: 'run-session-mismatch' });
     const others = [...this.bindings.values()].filter(b => b.session_id === session.id);
-    const conflict = others.find(b => b.ticket_id !== ticket.id && (!value.run_id || b.scope === 'session' || b.run_id === value.run_id));
-    if (conflict) throw new HarnessError('ATTRIBUTION_MISMATCH', { ticket_id: conflict.ticket_id, binding_id: conflict.id });
+    const conflict = others.find(b => (b.ticket_id !== ticket.id || b.conversation_id !== ticket.main_conversation_id)
+      && (!value.run_id || b.scope === 'session' || b.run_id === value.run_id));
+    if (conflict) throw new HarnessError(conflict.conversation_id === this.tickets.get(conflict.ticket_id)?.main_conversation_id
+      ? 'ATTRIBUTION_MISMATCH' : 'ATTRIBUTION_CONFLICT', { ticket_id: conflict.ticket_id, binding_id: conflict.id,
+      conversation_id: conflict.conversation_id });
     const old = others.find(b => b.ticket_id === ticket.id && b.run_id === (value.run_id ?? null));
     const binding: Binding = old ?? { id: randomUUID(), ticket_id: ticket.id, conversation_id: ticket.main_conversation_id,
       source_id: this.journal.sourceId, session_id: session.id, scope: value.run_id ? 'run' : 'session',
@@ -185,19 +193,22 @@ export class Harness {
     const all = this.journal.records.filter(r => r.cursor > after && (
       r.data.kind === 'registered' && r.data.ticket.id === id ||
       r.data.kind === 'attached' && r.data.binding.ticket_id === id ||
-      r.data.kind === 'event' && r.data.event.ticket_id === id ||
+      r.data.kind === 'event' && r.data.event.ticket_id === id && r.data.event.conversation_id === ticket.main_conversation_id ||
       r.data.kind === 'computer_call' && r.data.call.ticket_id === id ||
       r.data.kind === 'owned_task' && r.data.task.binding.ticket_id === id ||
       (r.data.kind === 'workflow_snapshot' || r.data.kind === 'workflow_observation') && r.data.workflow.ticket_id === id));
     const records = all.slice(0, 100);
-    return { ticket, records, next_cursor: records.at(-1)?.cursor ?? after, has_more: all.length > records.length,
+    return { ticket, main_conversation: { conversation_id: ticket.main_conversation_id },
+      child_conversations: this.conversations.summary(id), records,
+      next_cursor: records.at(-1)?.cursor ?? after, has_more: all.length > records.length,
       recording: this.health(), computer_calls: this.computerCalls.status(id),
       owned_tasks: this.taskHistory.status(id),
       current: { state: this.health().state !== 'recording' || !this.checkedAt ? 'unknown' : 'observed', observed_at: this.checkedAt },
-      workflow: this.workflowHistory.detail(id), changes: unavailable, source_gaps: [
+      workflow: this.conversations.projectWorkflow(id, this.workflowHistory.detail(id)), changes: unavailable, source_gaps: [
         '未提供的工具正文/重试细节及接入前缺失日志：unavailable / source-not-provided',
         '尚未出现的 thread、消息或结果：unknown / not-yet-observed',
         '旧源逐事件脱敏标志：unknown；记录不是未经处理的完整原文',
       ] };
   }
+  conversationDetail(id: string, after = 0) { return this.conversations.detail(id, after); }
 }

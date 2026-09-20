@@ -68,10 +68,23 @@ export function createHarnessServer(harness: Harness) {
           + '<br>Changes / 服务状态：unavailable（尚未接入）</aside>'
           + (groups || '<p>尚未登记 Project / Ticket。由 Emilia 通过 YCA 显式登记。</p>')), true, true);
       }
+      const conversationRoute = /^\/(api\/)?conversations\/([0-9a-f-]+)$/.exec(url.pathname);
       const route = /^\/(api\/)?tickets\/([0-9a-f-]+)$/.exec(url.pathname);
-      if (!route) return send(404, { code: 'NOT_FOUND' });
+      if (!conversationRoute && !route) return send(404, { code: 'NOT_FOUND' });
       const afterText = url.searchParams.get('after') ?? '0';
       if (!/^\d+$/.test(afterText)) throw new HarnessError('INVALID_CURSOR');
+      if (conversationRoute) {
+        const detail = harness.conversationDetail(conversationRoute[2], Number(afterText));
+        if (conversationRoute[1]) return send(200, detail);
+        const records = detail.records.map(record => '<article><strong>' + escape(record.data.kind)
+          + '</strong><small> · ' + escape(record.observed_at) + ' · cursor ' + record.cursor + '</small><pre>'
+          + escape(JSON.stringify(record.data, null, 2)) + '</pre></article>').join('');
+        return send(200, page('子 Conversation', '<p><a href="/tickets/' + detail.ticket_id
+          + '">返回 Ticket 主 Conversation</a></p><aside>relation: ' + escape(JSON.stringify(detail.relation))
+          + '<br>isolation: ' + escape(detail.isolation.state) + '</aside>' + records
+          + (detail.has_more ? '<a href="?after=' + detail.next_cursor + '">后续记录</a>' : '')), true);
+      }
+      if (!route) return send(404, { code: 'NOT_FOUND' });
       const detail = harness.detail(route[2], Number(afterText));
       if (route[1]) return send(200, detail);
       const records = detail.records.map(r => {
@@ -127,10 +140,14 @@ export function createHarnessServer(harness: Harness) {
         + '<br>Acceptance: ' + escape(workflow.acceptance.status) + ' · ' + escape(workflow.acceptance.reason ?? '未提供说明')
         + '<details><summary>Workflow 证据</summary><pre>' + escape(JSON.stringify(workflow, null, 2)) + '</pre></details></aside>'
         : '<aside>Workflow：尚未记录；run completed 不代表验收通过。</aside>';
+      const childPanel = detail.child_conversations.length ? '<aside><strong>子 Conversations</strong><ul>'
+        + detail.child_conversations.map(child => '<li><a href="/conversations/' + child.conversation_id + '">'
+          + escape(child.relation.kind === 'review' ? child.relation.review_id + ' · ' + child.relation.participant : child.relation.acceptance_id)
+          + '</a> · isolation ' + escape(child.isolation.state) + '</li>').join('') + '</ul></aside>' : '';
       return send(200, page(detail.ticket.title, '<p>Conversation: ' + escape(detail.ticket.main_conversation_id)
         + '</p><p><a href="/tickets/' + detail.ticket.id + '">刷新历史</a></p><aside class="warning">Recording: '
         + escape(detail.recording.state) + '<br>Changes：unavailable；Workflow 记录不自动执行或验收。<br>'
-        + detail.source_gaps.map(escape).join('<br>') + '</aside>' + workflowPanel
+        + detail.source_gaps.map(escape).join('<br>') + '</aside>' + workflowPanel + childPanel
         + (detail.computer_calls.length ? '<aside>同步调用状态（历史观察，不代表当前进程状态；stdout/stderr 无跨流顺序保证）<pre>'
           + escape(JSON.stringify(detail.computer_calls, null, 2)) + '</pre></aside>' : '')
         + (detail.owned_tasks.length ? '<aside>受管任务：stdout/stderr 的 seq 表示已公开行发布顺序，非两管道实际写入全局顺序；本地 cursor 仅为保存顺序。脚本正文：source-not-provided。历史终态不代表当前进程状态。<pre>'
@@ -138,7 +155,7 @@ export function createHarnessServer(harness: Harness) {
         + (detail.has_more ? '<a href="?after=' + detail.next_cursor + '">后续记录</a>' : '')), true);
     } catch (e) {
       const code = e instanceof HarnessError ? e.code : 'READ_FAILED';
-      return send(code === 'TICKET_NOT_FOUND' ? 404 : code === 'INVALID_CURSOR' ? 400 : 503, { code });
+      return send(code === 'TICKET_NOT_FOUND' || code === 'CONVERSATION_NOT_FOUND' ? 404 : code === 'INVALID_CURSOR' ? 400 : 503, { code });
     }
   });
 }
