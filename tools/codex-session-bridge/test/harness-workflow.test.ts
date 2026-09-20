@@ -459,6 +459,55 @@ test('accepted 要求当前 subject 的内容身份及覆盖它的终态 Review 
   assert.equal(summary.acceptance.accepted, false, 'focused verification must bind the repaired dirty identity');
 });
 
+test('无 finding 的 evidence Review 可通过 gate，但不能替代 finding 的 full origin', async t => {
+  const f = await fixture(); t.after(f.close);
+  const ticket = payload(await f.client.callTool({ name: 'harness_register_ticket', arguments: {
+    project_key: 'evidence-gate', project_name: 'evidence-gate', ticket_key: 'HARNESS-005', title: 'evidence gate',
+    reference: 'issue:45', expected_worktree: f.worktree,
+  } }));
+  checkpointPhase(f, 'acceptance');
+  const accepted = snapshot(f, 'acceptance');
+  const identity = subjectIdentity(accepted.subject);
+  const evidenceReview = { review_id: 'review-evidence', original_review_id: null, mode: 'evidence', status: 'passed',
+    subject_ref: 'implementation-1', subject_identity: identity, artifact_refs: [],
+    standards: { status: 'passed', evidence: ['standards-report'], reason: null },
+    spec: { status: 'not-applicable', evidence: [], reason: '仅验收证据归档' },
+    finding_refs: [], isolated: true, applicability: 'verified', reason: null };
+  accepted.reviews = [evidenceReview];
+  accepted.acceptance = { acceptance_id: 'acceptance-evidence', status: 'passed',
+    actor: { name: 'Emilia', method: 'deterministic' }, subject_ref: 'implementation-1',
+    criteria: [{ criteria_ref: '#51-AC1', status: 'pass', evidence: ['real-chain'], notes: null }],
+    evidence: ['real-chain'], evidence_refs: [], execution_refs: [], applicability: 'verified', reason: '逐项核对通过' };
+  assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot: accepted,
+  } })).workflow_revision, 1);
+  assert.equal((f.harness.workflowHistory.summary(ticket.ticket_id) as Wire).acceptance.accepted, true);
+
+  const evidenceWithFinding = snapshot(f, 'acceptance');
+  evidenceWithFinding.reviews = [
+    { ...evidenceReview, status: 'findings',
+      spec: { status: 'findings', evidence: ['SPEC-1'], reason: '发现问题' },
+      finding_refs: [{ origin_review_id: 'review-evidence', finding_id: 'SPEC-1' }] },
+    { review_id: 'review-focused', original_review_id: 'review-evidence', mode: 'focused', status: 'passed',
+      subject_ref: 'implementation-1', subject_identity: identity, artifact_refs: [],
+      standards: { status: 'not-applicable', evidence: [], reason: '原 Standards 结论未变' },
+      spec: { status: 'passed', evidence: ['focused-report'], reason: null },
+      finding_refs: [{ origin_review_id: 'review-evidence', finding_id: 'SPEC-1' }], isolated: true,
+      applicability: 'verified', reason: null },
+  ];
+  evidenceWithFinding.findings = [{ origin_review_id: 'review-evidence', finding_id: 'SPEC-1', status: 'verified', severity: 'P1',
+    summary: '已修复', subject_ref: 'implementation-1', subject_identity: identity,
+    verification_review_id: 'review-focused', artifact_refs: [], evidence: ['focused-report'],
+    applicability: 'verified', reason: null }];
+  evidenceWithFinding.acceptance = accepted.acceptance;
+  assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 1, schema_version: 1,
+    snapshot: evidenceWithFinding,
+  } })).workflow_revision, 2);
+  assert.equal((f.harness.workflowHistory.summary(ticket.ticket_id) as Wire).acceptance.accepted, false,
+    'evidence Review must not replace the full origin when findings exist');
+});
+
 test('首页突出 Workflow 异常且不误标正常 Ticket', async t => {
   const f = await fixture(); t.after(f.close);
   const ticket = payload(await f.client.callTool({ name: 'harness_register_ticket', arguments: {
