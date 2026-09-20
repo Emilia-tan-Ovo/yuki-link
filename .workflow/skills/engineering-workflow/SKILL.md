@@ -100,7 +100,7 @@ Preflight 失败时先修环境或记录 blocker，**不得启动模型来诊断
 - 实现模型只运行直接驱动当前红→绿所需的最小定向测试与必要 typecheck；完整测试套件默认由 YCA 执行。若 full suite 失败，只把计数、退出码、失败 case 与必要上下文切片交给模型。
 - 大型日志、Git history、runtime JSONL、完整测试输出和长文件先经确定性工具筛选/压缩；fresh session 只接收结构化摘要、失败切片和来源引用。
 
-#### 成本预算与熔断
+#### 成本预算与异常提醒
 
 以下 raw input token 只作为工程诊断预算，不等同于产品额度 1:1 计费：
 
@@ -111,10 +111,11 @@ Preflight 失败时先修环境或记录 blocker，**不得启动模型来诊断
 - focused re-review 目标 ≤ 0.7M；
 - 普通 Ticket 累计目标 ≤ 6M。
 
-每个模型 run 到达终态后，Emilia 从 YCA durable run status 读取并累加 input / cached input / output / model / reasoning / run 数到 checkpoint `model_usage`；无法取得时记 unknown，不能用模型自述代替。**启动任何下一次模型 run 前必须先检查该字段。**
+每个模型 run 到达终态后，Emilia 从 YCA durable run status 读取并累加 input / cached input / output / model / reasoning / run 数到 checkpoint `model_usage`；无法取得时记 unknown，不能用模型自述代替。启动下一次模型 run 前检查该字段，用于判断是否需要收缩上下文或调整路由，**不是固定 token 门禁**。
 
-- 任一单 run input > 3M，或整票累计 input > 6M：标记 `cost anomaly`，立即停止扩展；先向 Owner 简短说明烧在何处、为什么现有证据仍不足、接下来如何收缩。在 anomaly 解除前不得启动新的模型 run。
-- 整票累计 input 明显高于目标时继续保持 `cost anomaly`；允许复杂大票合理超标，但下一次模型调用前必须说明继续的必要性、预期收益与收缩方案，不以固定数字机械禁止推进。
+- 上述阶段目标与整票 6M 均为参考目标，不是硬上限；超过 3M/6M 本身不自动阻止下一次模型 run。
+- 阶段或整票明显高于目标、出现重复肥上下文/异常暴涨，或消耗与当前任务规模明显不相称时，标记 `cost anomaly`。下一次模型调用前简短说明主要消耗来源、继续的必要性与收缩方案；复杂大票可以合理超标。
+- 只有出现明显失控、无效重复或上下文明显失真时才暂停扩展并先收缩；不得把固定 token 数字当作机械熔断线。
 - cached input 单独记录，用来发现“肥 session 反复搬运上下文”；不得把 cached token 占比高解释成“所以成本没问题”。
 
 Acceptance **优先由 Emilia 使用确定性外部事实直接逐条核对 Ticket**。只有 Acceptance Criteria 本身要求观察 Agent 路由、session/thread continuity 或其他模型行为时，才启动额外 fresh acceptance agent；普通 Ticket 不为“证明工作流本身”生成场景矩阵。
