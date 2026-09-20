@@ -278,6 +278,20 @@ export class Supervisor {
     if (!tools) throw fail('SCHEMA_UNAVAILABLE');
     this.state.confirmedTools = { ...tools, at: new Date(this.clock()).toISOString(), source: '用户点击人工确认' }; this.persist();
   }); }
+  reconcileStartup() { return this.serial(async () => {
+    await this.observe();
+    const state = this.state.units.yca, observation = this.observations.yca;
+    if (state.desired !== 'running' || observation?.running !== false || observation.code) return this.snapshot();
+    const commit = state.ownership?.deployment?.commit ?? null;
+    try {
+      await this.startOne('yca', { recovery: true, commit });
+      this.events.add('yca', 'startup-reconciled');
+    } catch (error) {
+      this.events.add('yca', 'startup-reconciliation-failed', error.code ?? 'RECOVERY_FAILED');
+    }
+    await this.observe();
+    return this.snapshot();
+  }); }
   tick() { return this.serial(async () => {
     const at = this.clock();
     if (at - this.lastTick > this.intervalMs * 3) {

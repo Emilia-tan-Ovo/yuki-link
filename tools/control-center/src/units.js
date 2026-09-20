@@ -63,6 +63,7 @@ export class YcaUnit {
     for (const [name, file] of Object.entries({ NODE: this.config.node, YCA_ENTRY: entry, PWSH: this.config.pwsh })) if (!existsSync(file)) throw fail(`${name}_PATH_MISSING`);
     this.codexResolution = resolveCodexExecutable(this.config.codex);
     await this.host.free(this.config.port); await this.host.free(this.config.controlPort);
+    if (this.config.harnessPort !== undefined) await this.host.free(this.config.harnessPort);
     const lockFile = path.join(this.config.runtime, 'bridge.lock');
     if (existsSync(lockFile)) {
       const lock = readJson(lockFile);
@@ -82,6 +83,7 @@ export class YcaUnit {
       '--runtime', this.config.runtime, '--codex-bin', this.codexResolution.executable, '--pwsh-bin', this.config.pwsh,
       '--control-port', String(this.config.controlPort), '--control-instance', this.state.instance];
     if (this.config.servicesUrl) args.push('--services-url', this.config.servicesUrl);
+    if (this.config.harnessPort !== undefined) args.push('--harness-port', String(this.config.harnessPort));
     // Older unmanaged YCA entries may not understand the deployment-era option.
     if (deployment) for (const root of this.config.controlRoots ?? []) args.push('--control-root', root);
     const child = spawn(this.config.node, args, { cwd, shell: false, windowsHide: true, detached: true,

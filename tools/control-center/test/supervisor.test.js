@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Supervisor } from '../src/supervisor.js';
 import { Events, fail, claimStateDirectory } from '../src/common.js';
 import { tunnelHealth } from '../src/units.js';
+import { loadConfig } from '../src/config.js';
 
 function setup(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'yuki-cc-test-'));
@@ -13,7 +14,7 @@ function setup(t) {
   let time = Date.now();
   const units = Object.fromEntries(['yca', 'tunnel'].map(id => [id, {
     running: false, healthy: false, owned: true, activity: { codex: 0, computer: 0, requests: 0 }, starts: 0, stops: 0,
-    async observe() { return { running: this.running, healthy: this.healthy, owned: this.owned, activity: this.activity, controlPlane: { state: 'healthy' } }; },
+    async observe() { return { running: this.running, healthy: this.healthy, owned: this.owned, activity: this.activity, code: this.code, controlPlane: { state: 'healthy' } }; },
     async start() { this.starts++; if (this.failure) throw fail(this.failure); this.running = true; this.healthy = true; },
     async stop() { this.stops++; this.running = false; this.healthy = false; },
   }]));
@@ -21,6 +22,25 @@ function setup(t) {
   const manager = new Supervisor(options);
   return { manager, units, options, root, advance: ms => { time += ms; } };
 }
+
+test('optional Harness port keeps legacy config valid and participates in local port conflict validation', t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'yuki-cc-config-'));
+  t.after(() => { assert.ok(root.startsWith(path.join(os.tmpdir(), 'yuki-cc-config-'))); rmSync(root, { recursive: true, force: true }); });
+  const file = path.join(root, 'config.json');
+  const config = {
+    version: 1, observeOnly: true, allowStartupChanges: false, port: 7392, stateDir: path.join(root, 'state'),
+    node: process.execPath, pwsh: process.execPath, codex: process.execPath,
+    yca: { entry: process.execPath, cwd: root, repo: root, runtime: path.join(root, 'runtime'), port: 7391, controlPort: 7393 },
+    tunnel: { bin: process.execPath, alias: 'codex-session-bridge', profile: path.join(root, 'profile.json'),
+      stateRoot: path.join(root, 'tunnel'), target: 'http://127.0.0.1:7391/mcp' },
+  };
+  writeFileSync(file, JSON.stringify(config), 'utf8');
+  assert.equal(loadConfig(file).yca.harnessPort, undefined, 'existing config remains valid');
+  writeFileSync(file, JSON.stringify({ ...config, yca: { ...config.yca, harnessPort: 7394 } }), 'utf8');
+  assert.equal(loadConfig(file).yca.harnessPort, 7394);
+  writeFileSync(file, JSON.stringify({ ...config, yca: { ...config.yca, harnessPort: 7392 } }), 'utf8');
+  assert.throws(() => loadConfig(file), { code: 'PORT_CONFIG_INVALID' });
+});
 
 test('serialized repeated starts, dependency order, stop intent and manager restart', async t => {
   const f = setup(t), { manager: m, units: u } = f;
@@ -32,6 +52,42 @@ test('serialized repeated starts, dependency order, stop intent and manager rest
   f.advance(3_600_000); const restarted = new Supervisor(f.options); await restarted.tick();
   assert.equal(u.yca.starts, 1); assert.equal(u.tunnel.starts, 1);
   assert.equal(restarted.snapshot().units.yca.desired, 'stopped');
+});
+
+test('cold startup realizes only a reliably stopped persisted YCA intent', async t => {
+  const f = setup(t), { manager: initial, units } = f;
+  await initial.action('yca', 'start');
+  const commit = 'a'.repeat(40);
+  initial.state.units.yca.ownership.deployment = { commit };
+  initial.persist();
+  units.yca.running = false; units.yca.healthy = false;
+  const beforeTunnel = units.tunnel.starts;
+  let options;
+  units.yca.start = async function(input) { options = input; this.starts++; this.running = true; this.healthy = true; };
+  const restarted = new Supervisor(f.options);
+  await restarted.reconcileStartup();
+  assert.deepEqual(options, { recovery: true, commit });
+  assert.equal(restarted.state.units.yca.desired, 'running');
+  assert.equal(restarted.state.autoRecovery, false);
+  assert.equal(units.tunnel.starts, beforeTunnel);
+
+  units.yca.running = false; units.yca.healthy = false; options = undefined;
+  restarted.state.units.yca.desired = 'stopped'; restarted.persist();
+  await new Supervisor(f.options).reconcileStartup();
+  assert.equal(options, undefined, 'stopped intent is inert');
+
+  restarted.state.units.yca.desired = 'running'; restarted.persist();
+  units.yca.running = null;
+  await new Supervisor(f.options).reconcileStartup();
+  assert.equal(options, undefined, 'unknown observation is inert');
+
+  units.yca.running = true; units.yca.owned = false;
+  await new Supervisor(f.options).reconcileStartup();
+  assert.equal(options, undefined, 'unowned process is inert');
+
+  units.yca.running = false; units.yca.owned = true; units.yca.code = 'LEGACY_RUNTIME_LOCK';
+  await new Supervisor(f.options).reconcileStartup();
+  assert.equal(options, undefined, 'conflicting stopped observation is inert');
 });
 
 test('service operations record requested and terminal outcomes that survive supervisor restart', async t => {

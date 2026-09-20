@@ -226,6 +226,93 @@ test('restart and session switch preserve Conversation, grouping and explicit at
   assert.equal((await fetch(browser.base + '/api/tickets/' + randomUUID(), { headers: { cookie: browser.cookie } })).status, 404);
 });
 
+test('cold Runtime rebuild appends one read-only recovery observation and UI lifecycle does not advance history', async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'harness-recovery-'));
+  const store = new RuntimeStore(root);
+  const session = { id: randomUUID(), cwd: root, codex_thread_id: null, permissions: { sandbox_mode: 'read-only' } };
+  const run = { id: randomUUID(), session_id: session.id, created_at: new Date().toISOString(), model: 'fixture',
+    reasoning: 'low', status: 'completed', config_source: 'fixture', timeout_ms: null, exit_code: 0 };
+  let sideEffects = 0;
+  const source = {
+    session: () => session, runs: () => [run], events: () => [],
+    attribution: () => ({ state: 'matched', expected_worktree: root, observed: {
+      cwd: root, git: { branch: 'fixture', source: 'fixture' }, checkpoint: { ticket: 'HARNESS-010', source: 'fixture' },
+    }, mismatches: [], unknown: [], source: 'fixture' }),
+    start: () => { sideEffects++; }, send: () => { sideEffects++; }, task: () => { sideEffects++; },
+  };
+  let harness = new Harness(root, source);
+  harness.start(60_000);
+  const ticket = harness.register({ project_key: 'P', project_name: '恢复工程', ticket_key: 'HARNESS-010',
+    title: '冷启动恢复', reference: 'fixture:#50', expected_worktree: root });
+  const binding = harness.attach({ ticket_id: ticket.ticket_id, session_id: session.id });
+  harness.close();
+  const sourceId = harness.journal.sourceId, startupCursor = harness.journal.records.length;
+
+  harness = new Harness(root, source);
+  harness.start(60_000);
+  const recovered = harness.journal.records.filter(record => record.data.kind === 'event'
+    && record.data.event.kind === 'recovery.observed');
+  assert.equal(recovered.length, 1);
+  assert.equal(recovered[0].data.kind, 'event');
+  if (recovered[0].data.kind !== 'event') throw new Error('unreachable');
+  assert.equal(recovered[0].data.event.binding_id, binding.id);
+  assert.deepEqual(recovered[0].data.event.payload, {
+    journal: { source_id: sourceId, startup_cursor: startupCursor, source_high_water: [{ run_id: run.id, source_seq: null }] },
+    binding: { id: binding.id, ticket_id: ticket.ticket_id, conversation_id: ticket.conversation_id,
+      session_id: session.id, scope: 'session', run_id: null },
+    session: { state: 'observed', id: session.id, cwd: root, thread_id: null },
+    runs: [{ id: run.id, status: 'completed', exit_code: 0 }],
+    attribution: source.attribution(), gaps: [],
+  });
+  assert.equal(harness.journal.records.length, startupCursor + 1);
+  assert.equal(harness.journal.sourceId, sourceId);
+  assert.equal(sideEffects, 0, 'recovery never starts, sends or creates a task');
+
+  harness.start(60_000);
+  const afterRecovery = harness.journal.records.length;
+  let browser = await browserFor(harness);
+  await browser.get('/api/tickets/' + ticket.ticket_id); browser.close();
+  browser = await browserFor(harness);
+  await browser.get('/api/tickets/' + ticket.ticket_id); browser.close();
+  assert.equal(harness.journal.records.length, afterRecovery, 'opening, closing and reopening UI is read-only');
+  assert.equal(harness.journal.records.filter(record => record.data.kind === 'event'
+    && record.data.event.kind === 'recovery.observed').length, 1);
+
+  harness.close(); store.close();
+  assert.ok(root.startsWith(path.join(os.tmpdir(), 'harness-recovery-'))); rmSync(root, { recursive: true, force: true });
+});
+
+test('cold recovery persists fixed gaps when the bound source and local attribution are unavailable', t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'harness-recovery-gap-'));
+  const store = new RuntimeStore(root);
+  const session = { id: randomUUID(), cwd: root, codex_thread_id: null, permissions: {} };
+  const run = { id: randomUUID(), session_id: session.id, created_at: new Date().toISOString(), model: 'fixture',
+    reasoning: 'low', status: 'completed', config_source: 'fixture', timeout_ms: null, exit_code: 0 };
+  const available = { session: () => session, runs: () => [run], events: () => [], attribution: () => ({ state: 'matched' }) };
+  let harness = new Harness(root, available);
+  const ticket = harness.register({ project_key: 'P', project_name: '恢复缺口', ticket_key: 'HARNESS-010',
+    title: '缺失来源', reference: 'fixture:#50', expected_worktree: root });
+  harness.attach({ ticket_id: ticket.ticket_id, session_id: session.id }); harness.close();
+
+  const unavailable = {
+    session: () => { throw new Error('private source detail'); },
+    runs: () => { throw new Error('private run detail'); }, events: () => { throw new Error('private event detail'); },
+    attribution: () => ({ state: 'unknown', expected_worktree: root,
+      observed: { cwd: null, git: null, checkpoint: null }, mismatches: [], unknown: ['git', 'cwd-or-checkpoint'], source: 'fixture' }),
+  };
+  harness = new Harness(root, unavailable); harness.start(60_000);
+  const recovery = harness.journal.records.findLast(record => record.data.kind === 'event'
+    && record.data.event.kind === 'recovery.observed');
+  assert.ok(recovery && recovery.data.kind === 'event');
+  assert.deepEqual((recovery.data.event.payload as Wire).gaps, ['SESSION_UNAVAILABLE', 'RUN_UNAVAILABLE', 'ATTRIBUTION_UNAVAILABLE']);
+  assert.deepEqual((recovery.data.event.payload as Wire).journal.source_high_water, [{ run_id: run.id, source_seq: null }],
+    'persisted high-water identity remains visible when the current source is unavailable');
+  assert.ok(!JSON.stringify(recovery).includes('private source detail'));
+  assert.deepEqual((recovery.data.event.payload as Wire).attribution.observed, { cwd: null, git: null, checkpoint: null });
+  harness.close(); store.close();
+  assert.ok(root.startsWith(path.join(os.tmpdir(), 'harness-recovery-gap-'))); rmSync(root, { recursive: true, force: true });
+});
+
 test('recording failure cannot acknowledge new history; damaged tail preserves readable prefix', async t => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'harness-failure-'));
   const store = new RuntimeStore(root);

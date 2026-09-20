@@ -67,6 +67,27 @@ HARNESS-010 到此只验收登录启动、单 collector、恢复观察与门禁�
 - 真实 production `harnessPort` 数值、Scheduled Task 安装/启用及 desired state 准备属于动态环境配置，实施代码不硬编码；Acceptance 时重新探测并经 Owner 授权。
 - 不在本票增加任务输出跨进程持久化、自动 task 恢复、模型 session resume、Ticket 自动登记、第二套 Supervisor、额外 retry/stress 矩阵。
 
+## Implementation Handoff
+
+- `review_policy`: `delegated`；本 session 未执行 Review、commit、push 或 PR。
+- 实际写集：
+  - Control Center：`tools/control-center/src/config.js`、`src/units.js`、`src/supervisor.js`、`src/main.js`、`config.example.json`、`test/supervisor.test.js`、`test/yca-integration.test.js`。
+  - Harness：`tools/codex-session-bridge/src/harness/harness.ts`、`test/harness.test.ts`。
+  - 交接：本文件。`model.ts`、`Startup.ps1`、`Run-Supervisor.ps1` 未修改。
+- 实现结果：可选 `yca.harnessPort` 参与本地端口互斥校验并传为 `--harness-port`；Control Center 冷启动只对持久化 `desired=running` 且可靠观察为停止的 YCA 使用 pinned commit 做一次 recovery start，不改变 `desired` / `autoRecovery`，不触碰 tunnel；Harness 每次 Runtime 冷启动为每个持久化 Codex binding 追加一次只读 `recovery.observed`，保留 journal 启动 cursor、来源高水位和当前 session/run/attribution 或固定 gap，重复 `start()` 与 UI 生命周期不重复记录。
+- 红→绿证据：
+  - 配置红测先因重复 `harnessPort` 未拒绝而失败，接入可选第四端口校验后通过。
+  - 真实隔离 YCA 红测先以 `LOCAL_PROBE_FAILED` 证明 Harness listener 未传入，接通参数后 listener 可读且重复 start 仍为同一进程。
+  - startup reconciliation 红测先因 `reconcileStartup` 不存在而失败；实现后覆盖 running intent、pinned recovery release，以及 stopped / unknown / unowned / conflict 均不启动。
+  - Runtime rebuild 红测先观测到 0 条 recovery record；实现后每 binding 恰好一条，且无 start/send/task 副作用。来源不可用时的持久化 high-water 红测先为空，修正后保留既有 run identity 和固定 gap。
+- 定向验证：
+  - `tools/codex-session-bridge`: `npm run typecheck` → exit 0。
+  - `node --test test/harness.test.ts test/harness-tasks.test.ts test/harness-execution-gate.test.ts` → 28/28 通过；包含旧 task epoch `source-epoch-expired` 不重放、公共 recording gate fail-closed、恢复不重放。
+  - `tools/control-center`: `node --test test/supervisor.test.js test/yca-integration.test.js` → 29/29 通过；真实隔离 YCA 使用 Node 24.18.1，未调用模型或生产 tunnel。
+  - `node --check src/config.js src/units.js src/supervisor.js src/main.js`（逐文件）与 `git diff --check` → exit 0。
+- 已知限制 / 延后验收：未修改真实 production config、Scheduled Task 或服务，未执行注销/登录；真实 Windows 登录、生产 `harnessPort` 选择及日常稳定使用结论继续由 Owner-gated outer Acceptance 完成。完整 package suites 留给外层 YCA。
+- 建议提交主题：`feat: 增加 HARNESS-010 冷启动恢复观察`
+
 ## Expected Direct Write Set
 
 - Control Center：`tools/control-center/src/config.js`、`src/units.js`、`src/supervisor.js`、`src/main.js`、`config.example.json`，以及对应 `test/supervisor.test.js` / `test/yca-integration.test.js`（必要时最小触及 `test/manager-process.test.js`）。
