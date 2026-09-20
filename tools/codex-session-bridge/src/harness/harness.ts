@@ -36,6 +36,7 @@ const now = () => new Date().toISOString();
 const integrity = () => ({ source_redaction: 'unknown' as const, redacted: false, truncated: 'unknown' as const });
 const safe = (value: unknown) => JSON.parse(JSON.stringify(value, (_key, v) => typeof v === 'string' ? redact(v) : v));
 const unavailable = { state: 'unavailable', reason: 'source-not-provided' };
+const recoveryRunCap = 16;
 
 export class Harness {
   journal: Journal;
@@ -56,11 +57,14 @@ export class Harness {
   sourceFailure: string | null = null;
   checkedAt: string | null = null;
   timer: ReturnType<typeof setInterval> | null = null;
+  startupCursor = 0;
+  recoveryReconciled = false;
   constructor(runtime: string, source: Source, tasks?: TaskSource, workflowOptions: WorkflowSourceOptions = {},
     controlOptions: HarnessControlOptions = {}) {
     this.source = source;
     this.journal = new Journal(runtime);
     for (const record of this.journal.records) this.apply(record);
+    this.startupCursor = this.journal.records.length;
     this.computerCalls = new ComputerCalls(this.journal, id => this.ticket(id));
     this.taskHistory = new TaskCollector(this.journal, id => this.ticket(id), tasks);
     this.workflowHistory = new WorkflowHistory(this.journal, id => this.ticket(id), new WorkflowSource(source, workflowOptions));
@@ -150,6 +154,72 @@ export class Harness {
       binding_id: binding.id, session_id: binding.session_id, run_id: null, thread_id: null, source_seq: null, source_at: null,
       ...fields, payload, integrity: { ...integrity(), ...fields.integrity, redacted: original !== JSON.stringify(payload) } } });
   }
+  private recover() {
+    if (this.recoveryReconciled) return;
+    this.recoveryReconciled = true;
+    if (this.journal.failure) return;
+    for (const binding of this.bindings.values()) {
+      const gaps = new Set<string>();
+      let session: ReturnType<Source['session']> | null = null;
+      try { session = this.source.session(binding.session_id); }
+      catch { gaps.add('SESSION_UNAVAILABLE'); }
+      let runs: ReturnType<Source['runs']> = [];
+      try {
+        runs = this.source.runs(binding.session_id).filter(run => binding.scope === 'session' || run.id === binding.run_id);
+        if (!runs.length) gaps.add('RUN_UNAVAILABLE');
+      } catch { gaps.add('RUN_UNAVAILABLE'); }
+      const projectedRuns = [...runs].sort((left, right) => {
+        const time = Date.parse(right.created_at) - Date.parse(left.created_at);
+        return Number.isFinite(time) && time !== 0 ? time : right.id.localeCompare(left.id);
+      }).slice(0, recoveryRunCap);
+      for (const run of projectedRuns) {
+        try { this.source.events(run); }
+        catch { gaps.add('SOURCE_EVENTS_UNAVAILABLE'); }
+      }
+      let attribution: unknown = { state: 'unknown', source: 'current attribution unavailable' };
+      try {
+        attribution = this.source.attribution(this.ticket(binding.ticket_id), session ?? undefined);
+        const state = (attribution as { state?: string } | null)?.state;
+        if (state === 'attribution mismatch') gaps.add('ATTRIBUTION_CONFLICT');
+        else if (state !== 'matched') gaps.add('ATTRIBUTION_UNAVAILABLE');
+      } catch { gaps.add('ATTRIBUTION_UNAVAILABLE'); }
+      const highWater = new Map<string, { source_seq: number | null; last_cursor: number }>();
+      for (const record of this.journal.records) {
+        if (record.data.kind !== 'event' || record.data.event.binding_id !== binding.id || !record.data.event.run_id) continue;
+        const runId = record.data.event.run_id, sequence = record.data.event.source_seq;
+        const previous = highWater.get(runId);
+        highWater.set(runId, { source_seq: sequence === null ? previous?.source_seq ?? null
+          : previous?.source_seq === null || previous?.source_seq === undefined ? sequence : Math.max(previous.source_seq, sequence),
+          last_cursor: record.cursor });
+      }
+      for (const run of runs) if (!highWater.has(run.id)) highWater.set(run.id, { source_seq: null, last_cursor: 0 });
+      if (binding.run_id && !highWater.has(binding.run_id)) highWater.set(binding.run_id, { source_seq: null, last_cursor: 0 });
+      const selectedHighWaterIds = projectedRuns.map(run => run.id);
+      for (const [runId] of [...highWater].sort((left, right) => right[1].last_cursor - left[1].last_cursor
+        || right[0].localeCompare(left[0]))) {
+        if (selectedHighWaterIds.length >= recoveryRunCap) break;
+        if (!selectedHighWaterIds.includes(runId)) selectedHighWaterIds.push(runId);
+      }
+      const sourceHighWater = selectedHighWaterIds.map(run_id => ({ run_id, source_seq: highWater.get(run_id)?.source_seq ?? null }));
+      const projection = { run_cap: recoveryRunCap, current_runs_total: runs.length, current_runs_included: projectedRuns.length,
+        source_high_water_total: highWater.size, source_high_water_included: sourceHighWater.length,
+        truncated: runs.length > projectedRuns.length || highWater.size > sourceHighWater.length };
+      if (projection.truncated) gaps.add('RECOVERY_RUN_PROJECTION_TRUNCATED');
+      try {
+        this.event(binding, { kind: 'recovery.observed', run_id: binding.run_id,
+          payload: { journal: { source_id: this.journal.sourceId, startup_cursor: this.startupCursor, source_high_water: sourceHighWater },
+            binding: { id: binding.id, ticket_id: binding.ticket_id, conversation_id: binding.conversation_id,
+              session_id: binding.session_id, scope: binding.scope, run_id: binding.run_id },
+            session: session ? { state: 'observed', id: session.id, cwd: session.cwd, thread_id: session.codex_thread_id }
+              : { state: 'unavailable', id: binding.session_id, cwd: null, thread_id: null },
+            runs: projectedRuns.map(run => ({ id: run.id, status: run.status, exit_code: run.exit_code })),
+            projection, attribution, gaps: [...gaps] } });
+      } catch (error) {
+        if (this.journal.failure) return;
+        throw error;
+      }
+    }
+  }
   scan(refresh = false) {
     if (this.journal.failure) return;
     this.taskHistory.scan();
@@ -183,7 +253,7 @@ export class Harness {
     this.sourceFailure = failure ? 'SOURCE_UNAVAILABLE' : null;
     this.checkedAt = now();
   }
-  start(interval = 1000) { this.scan(true); this.timer ??= setInterval(() => this.scan(), interval); this.timer.unref(); }
+  start(interval = 1000) { this.recover(); this.scan(true); this.timer ??= setInterval(() => this.scan(), interval); this.timer.unref(); }
   close() { if (this.timer) clearInterval(this.timer); this.timer = null; this.scan(); this.taskHistory.close(); }
   health() {
     const computer = this.computerCalls.health();

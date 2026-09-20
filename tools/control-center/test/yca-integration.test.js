@@ -19,7 +19,7 @@ test('real isolated YCA: duplicate start, authenticated ownership, manager recov
   const workspace = path.join(root, 'workspace'); mkdirSync(workspace);
   const pwsh = process.env.CC_TEST_PWSH ?? (await run('pwsh.exe', ['-NoProfile', '-Command', '[Console]::Write((Get-Process -Id $PID).Path)'])).output.trim();
   const config = { node: process.execPath, pwsh, codex: process.execPath, entry: path.join(bridge, 'src/main.js'), cwd: bridge, repo: workspace,
-    runtime: path.join(root, 'runtime'), port: await port(), controlPort: await port() };
+    runtime: path.join(root, 'runtime'), port: await port(), controlPort: await port(), harnessPort: await port() };
   const host = new WindowsHost(pwsh), events = new Events(root), file = path.join(root, 'owned.json'); let state = {};
   const persist = () => saveJson(file, state); let unit = new YcaUnit(config, host, state, persist, events);
   t.after(async () => {
@@ -31,6 +31,7 @@ test('real isolated YCA: duplicate start, authenticated ownership, manager recov
   await unit.start(); let first = await until(async () => { const o = await unit.observe(); return o.healthy && o; });
   const firstInstance = state.instance;
   assert.equal(first.owned, true); assert.deepEqual(first.tools, await toolSummary());
+  assert.equal((await get(`http://127.0.0.1:${config.harnessPort}/`)).status, 200, 'configured Harness listener is readable');
   assert.match(first.deployment.running.commit, /^[a-f0-9]{40}$/);
   assert.equal(first.deployment.state, 'unmanaged');
   await unit.start(); assert.equal((await unit.observe()).pid, first.pid);

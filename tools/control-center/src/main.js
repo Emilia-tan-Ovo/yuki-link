@@ -55,7 +55,7 @@ try {
   supervisor.identity = { name: 'yuki-control-center', pid: process.pid, startedAt: new Date().toISOString(), instance: randomUUID(), configId: createHash('sha256').update(configFile.toLowerCase()).digest('hex') };
   supervisor.versions = { controlCenter: '0.1.0', node: process.version, yca: readJson(fileURLToPath(new URL('../../codex-session-bridge/package.json', import.meta.url))).version, tunnel: '未检查' };
   try { const version = await run(c.tunnel.bin, ['--version']); if (version.code === 0 && /^[\w.+() :\r\n-]{1,200}$/.test(version.output)) supervisor.versions.tunnel = version.output.trim(); } catch { /* Report unavailable, never infer installed version. */ }
-  await startup.refresh(); await supervisor.tick();
+  await startup.refresh(); await supervisor.reconcileStartup(); await supervisor.tick();
   let checking = false;
   timer = setInterval(async () => {
     if (checking) return; checking = true;
