@@ -19,7 +19,8 @@ export async function connectTasks(t, options = {}, cleanup = () => {}) {
   const calls = { model: 0 };
   const unavailable = () => { calls.model++; throw new Error('Model disabled in task tests'); };
   const manager = { closing: false, store: { state: { runs: {} } }, start: unavailable, send: unavailable,
-    catalog: { list: unavailable }, executor: { start: unavailable } };
+    catalog: { list: unavailable }, executor: { start: unavailable },
+    harness: { executionGate: () => ({ recording: { state: 'recording' }, evidence_gap: null }) } };
   const computer = new ComputerTools({ readRoots: [workspace], writeRoots: [workspace], runtime: path.join(root, 'runtime'), ...options });
   const server = createHttpServer(manager, computer);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

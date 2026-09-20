@@ -10,6 +10,23 @@ import type { TaskSource } from './task-source.ts';
 import { HarnessError, registrationSchema, attachSchema } from './model.ts';
 import type { Source, Project, Ticket, Binding, Event, Operation, RecordEntry } from './model.ts';
 
+export type HarnessExecutionCategory = 'record-only' | 'observe' | 'new-side-effect' | 'manage-existing';
+
+const unavailableRecording = {
+  state: 'unavailable', reason: 'harness-unavailable', source_id: null, observed_at: null, sources: {},
+};
+
+export function gateHarnessExecution(harness: { executionGate?: Harness['executionGate'] } | null | undefined,
+  category: HarnessExecutionCategory) {
+  if (typeof harness?.executionGate === 'function') return harness.executionGate(category);
+  if (category === 'record-only' || category === 'new-side-effect') {
+    throw new HarnessError('HARNESS_UNAVAILABLE', { category, recording: unavailableRecording });
+  }
+  return { recording: unavailableRecording, evidence_gap: {
+    state: 'unavailable', reason: unavailableRecording.reason, observed_at: null, source_id: null,
+  } };
+}
+
 const now = () => new Date().toISOString();
 const integrity = () => ({ source_redaction: 'unknown' as const, redacted: false, truncated: 'unknown' as const });
 const safe = (value: unknown) => JSON.parse(JSON.stringify(value, (_key, v) => typeof v === 'string' ? redact(v) : v));
@@ -138,6 +155,24 @@ export class Harness {
     return { state: this.journal.failure ? 'recording-failed' : this.sourceFailure || this.computerCalls.collectionFailure || this.taskHistory.collectionFailure ? 'collection-failed' : 'recording',
       reason: this.journal.failure ?? this.sourceFailure ?? computer.reason ?? tasks.reason, source_id: this.journal.sourceId,
       observed_at: this.checkedAt, sources: { computer, tasks, workflow } };
+  }
+  executionGate(category: HarnessExecutionCategory) {
+    const recording = this.health();
+    const rejected = category === 'new-side-effect' && recording.state !== 'recording'
+      || category === 'record-only' && recording.state === 'recording-failed';
+    if (rejected) {
+      const code = recording.state === 'recording-failed' ? 'RECORDING_FAILED' : 'COLLECTION_FAILED';
+      throw new HarnessError(code, { category, recording });
+    }
+    return {
+      recording,
+      evidence_gap: recording.state === 'recording' ? null : {
+        state: recording.state,
+        reason: recording.reason,
+        observed_at: recording.observed_at,
+        source_id: recording.source_id,
+      },
+    };
   }
   overview() {
     return { projects: [...this.projects.values()].map(p => ({ ...p, tickets: [...this.tickets.values()].filter(t => t.project_id === p.id)

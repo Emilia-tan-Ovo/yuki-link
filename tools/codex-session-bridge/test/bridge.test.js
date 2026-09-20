@@ -88,6 +88,7 @@ function setup(t, options = {}) {
   const permissionResolver = new FakePermissionResolver();
   const store = new RuntimeStore(runtime);
   const manager = new SessionManager({ store, catalog, executor, permissionResolver, allowedCwds: [cwd], ...options });
+  manager.harness = { executionGate: () => ({ recording: { state: 'recording' }, evidence_gap: null }), close() {} };
   t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
   const input = () => ({ cwd, request_id: randomUUID(), prompt: '你好\r\n"引号" $HOME `tick` C:\\中文 空格\\a.txt', sender: 'AI 助手' });
   return { root, cwd, runtime, catalog, executor, permissionResolver, store, manager, input };

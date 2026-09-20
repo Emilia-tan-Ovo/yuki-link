@@ -121,7 +121,7 @@ test('采集失败保存缺口但不改执行结果；刷新与重启不掩盖�
   assert.equal(restored.computer_calls[0].state, 'succeeded');
 });
 
-test('保存失败不改变真实成功、不推进游标；重启后悬空 started 明确 unknown', async t => {
+test('保存失败后拒绝新的文件写入且不推进游标；重启后悬空 started 明确 unknown', async t => {
   let journal = '', armed = false;
   const f = await fixture(t, { appendAudit: (_file: string, line: string) => {
     const audit = JSON.parse(line);
@@ -139,9 +139,18 @@ test('保存失败不改变真实成功、不推进游标；重启后悬空 star
   assert.equal(readFileSync(file, 'utf8'), '实际已写');
   const failed = await f.get('/api/tickets/' + ticket.ticket_id);
   assert.equal(failed.recording.state, 'recording-failed');
-  const next = await f.call('filesystem_write', { ticket_id: ticket.ticket_id, path: path.join(f.workspace, 'still-executes.txt'), content: 'gate 留后票' });
-  assert.equal(next.isError, false); assert.equal(next.changed, true);
-  assert.equal(next.harness_recording.started, 'recording-failed');
+  const blocked = path.join(f.workspace, 'must-not-execute.txt');
+  const next = await f.call('filesystem_write', { ticket_id: ticket.ticket_id, path: blocked, content: 'gate 已生效' });
+  assert.equal(next.isError, true); assert.equal(next.error.code, 'RECORDING_FAILED');
+  assert.equal(existsSync(blocked), false);
+  const destination = path.join(f.workspace, 'must-not-move.txt');
+  const move = await f.call('filesystem_move', { ticket_id: ticket.ticket_id, source: file, destination, expected_sha256: result.sha256 });
+  assert.equal(move.isError, true); assert.equal(move.error.code, 'RECORDING_FAILED');
+  assert.equal(existsSync(file), true); assert.equal(existsSync(destination), false);
+  const sentinel = path.join(f.workspace, 'must-not-spawn.txt');
+  const execute = await f.call('powershell_execute', { cwd: f.workspace, script: `Set-Content -LiteralPath '${sentinel}' -Value forbidden` });
+  assert.equal(execute.isError, true); assert.equal(execute.error.code, 'RECORDING_FAILED');
+  assert.equal(existsSync(sentinel), false, 'omitting ticket_id must not bypass the gate');
   assert.equal((await f.get('/api/tickets/' + ticket.ticket_id)).next_cursor, failed.next_cursor);
   rmdirSync(journal); renameSync(journal + '.saved', journal);
   await f.restart();

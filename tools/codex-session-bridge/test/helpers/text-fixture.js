@@ -22,6 +22,7 @@ export async function connectText(t) {
   const executor = new CodexExecutor('unused-codex', blocked);
   const store = new RuntimeStore(runtime);
   const manager = new SessionManager({ store, catalog: { list: blocked }, executor, allowedCwds: [workspace] });
+  manager.harness = { executionGate: () => ({ recording: { state: 'recording' }, evidence_gap: null }), close() {} };
   const guards = [t.mock.method(manager, 'start', blocked), t.mock.method(manager, 'send', blocked), t.mock.method(executor, 'start', blocked)];
   const computer = new ComputerTools({ readRoots: [workspace], writeRoots: [workspace], runtime });
   const server = createHttpServer(manager, computer);
