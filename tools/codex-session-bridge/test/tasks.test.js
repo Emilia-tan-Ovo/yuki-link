@@ -226,7 +226,7 @@ test('root exit with open pipes remains owned and never kills a stale root PID',
   const started = await call('task_start', { service_epoch, request_id: 'pipes', cwd: workspace, script: "'pipes'" });
   const unknown = await waitTask(call, started.task_id, s => s.status === 'unknown', 6500);
   assert.equal(unknown.root_state, 'exited');
-  assert.equal(unknown.completion_reason, 'stream_error');
+  assert.equal(unknown.completion_reason, null, 'root exit is immediately unknown; cleanup/stop supplies the later reason');
   assert.equal(unknown.output.pipes_closed, false);
   time += 3600000;
   assert.equal((await call('task_status', { task_id: started.task_id })).status, 'unknown');
