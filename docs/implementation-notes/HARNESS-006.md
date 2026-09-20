@@ -46,11 +46,11 @@
 - 受影响 Harness/Workflow/Conversation：`node --test test/harness.test.ts test/harness-workflow.test.ts test/harness-conversations.test.ts` → 最终 17/17 pass。
 - `npm run typecheck` → exit 0。
 - `git diff --check` / staged diff check → exit 0；仅有 Windows LF/CRLF 提示。
-- 第一次外层 full suite：145 tests / **137 pass / 7 fail / 1 skip**。其中 4 个失败是新增工具后的旧工具数量断言；其余为 executable-discovery / task-timing 区域。
+- 外层 full suite 在审核中断/恢复期间有多次确定性观测：本轮 durable YCA task 明确记录一次 **145 / 136 pass / 8 fail / 1 skip**，另一条重复外层证据链曾记录 **145 / 137 pass / 7 fail / 1 skip**。两次都包含 4 个新增工具后的旧工具数量断言失败，其余集中在 executable-discovery / task-timing；不把这些波动结果冒充唯一稳定 baseline。
 - 只机械同步 4 个工具数量断言后，相关定向复验 → **4/4 pass**。
 - 第二次外层 full suite：145 tests / **140 pass / 4 fail / 1 skip**。#46 Conversation/Workflow/Harness 路径及工具数量回归全部通过。
 - 第二次 full suite 剩余 4 个红项：3 个 `codex-executable.test.js` discovery/timeout + 1 个 `tasks.test.js` 的 `root exit with open pipes...`。
-- executable discovery 隔离复跑：`node --test test/codex-executable.test.js` → **2/4 pass、2/4 fail**；`valid explicit native executable...` 与 `missing installation...` 通过，`stale saved path...` 与 `catalog refresh...` 仍因 `CODEX_EXECUTABLE_UNAVAILABLE` / `ETIMEDOUT` 失败。相关生产/测试文件不在 #46 写集，因此保留为当前 baseline/environment 红项，不宣称已解决。
+- executable discovery 隔离复跑也出现环境/时序波动：本轮 YCA direct 一次 `node --test test/codex-executable.test.js` 明确 **4/4 pass**；另一条重复外层证据链记录 **2/4 pass、2/4 fail**（`CODEX_EXECUTABLE_UNAVAILABLE` / `ETIMEDOUT`）。相关生产/测试文件不在 #46 写集；因此结论是这些测试在当前环境下不稳定，而不是宣称它们已稳定通过或由 #46 引入回归。
 - task timing 隔离复跑：`root exit with open pipes remains owned and never kills a stale root PID` → **0/1 fail**（actual `null` / expected `stream_error`）。HARNESS-005 handoff/history 已记录该类 task timing 为本票前已知问题，本票不扩修。
 - HARNESS-005 既有证据同时记录：其 full suite 曾存在 executable discovery / task timing 脆弱项，executable discovery 隔离 baseline 可通过。
 
