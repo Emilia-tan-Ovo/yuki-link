@@ -65,15 +65,17 @@ export class ComputerCalls {
     return { state: mismatches.length ? 'attribution mismatch' : expected && Object.keys(observed).length ? 'matched' : 'unknown',
       expected_worktree: expected, observed, mismatches, source: 'registered Ticket / explicit call arguments', observed_at: now() };
   }
-  run(tool: ComputerTool, ticketId: string, input: Record<string, unknown>, action: () => unknown) {
+  run(tool: ComputerTool, ticketId: string, input: Record<string, unknown>, action: () => unknown,
+      failClosedOnRecordingFailure = false) {
     if (this.closing) throw new HarnessError('SHUTTING_DOWN');
     const ticket = this.ticket(ticketId); // Input/attribution error, never a recording gate.
-    const work = this.perform(tool, ticket, input, action);
+    const work = this.perform(tool, ticket, input, action, failClosedOnRecordingFailure);
     this.pending.add(work);
     void work.then(() => this.pending.delete(work), () => this.pending.delete(work));
     return work;
   }
-  private async perform(tool: ComputerTool, ticket: Ticket, input: Record<string, unknown>, action: () => unknown) {
+  private async perform(tool: ComputerTool, ticket: Ticket, input: Record<string, unknown>, action: () => unknown,
+      failClosedOnRecordingFailure: boolean) {
     const callId = randomUUID();
     const context = { call_id: callId, ticket_id: ticket.id, conversation_id: ticket.main_conversation_id,
       tool, source: 'yca-sync-public-result' as const, attribution: this.attribution(ticket, input) };
@@ -81,7 +83,7 @@ export class ComputerCalls {
     try {
       const started = this.save({ ...context, stage: 'started', source_at: now(), outcome: 'not-yet-observed',
         capture: 'observed', input, result: null, error: null, integrity: sourceIntegrity('started', null, null) });
-      if (started === 'recording-failed') throw new HarnessError('RECORDING_FAILED');
+      if (started === 'recording-failed' && failClosedOnRecordingFailure) throw new HarnessError('RECORDING_FAILED');
       let result: unknown = null, error: unknown = null, isError = false;
       try { result = await action(); }
       catch (cause) { isError = true; error = publicError(cause); }

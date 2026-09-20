@@ -38,7 +38,9 @@ export function createMcpServer(manager, computer) {
         if (synchronous && input.ticket_id !== undefined) {
           const { ticket_id, ...argumentsOnly } = input;
           if (typeof manager.harness?.computerCalls?.run === 'function') {
-            const recorded = await manager.harness.computerCalls.run(name, ticket_id, argumentsOnly, () => action(argumentsOnly, extra));
+            const recorded = await manager.harness.computerCalls.run(
+              name, ticket_id, argumentsOnly, () => action(argumentsOnly, extra), category === 'new-side-effect',
+            );
             result = recorded.response; isError = recorded.isError;
           } else result = await action(argumentsOnly, extra);
         } else result = await action(input, extra);
