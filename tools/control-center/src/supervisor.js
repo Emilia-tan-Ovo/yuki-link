@@ -280,6 +280,7 @@ export class Supervisor {
   }); }
   reconcileStartup() { return this.serial(async () => {
     await this.observe();
+    if (this.observeOnly) return this.snapshot();
     const state = this.state.units.yca, observation = this.observations.yca;
     if (state.desired !== 'running' || observation?.running !== false || observation.code) return this.snapshot();
     const commit = state.ownership?.deployment?.commit ?? null;

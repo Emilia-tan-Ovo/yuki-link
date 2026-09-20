@@ -262,6 +262,8 @@ test('cold Runtime rebuild appends one read-only recovery observation and UI lif
       session_id: session.id, scope: 'session', run_id: null },
     session: { state: 'observed', id: session.id, cwd: root, thread_id: null },
     runs: [{ id: run.id, status: 'completed', exit_code: 0 }],
+    projection: { run_cap: 16, current_runs_total: 1, current_runs_included: 1,
+      source_high_water_total: 1, source_high_water_included: 1, truncated: false },
     attribution: source.attribution(), gaps: [],
   });
   assert.equal(harness.journal.records.length, startupCursor + 1);
@@ -311,6 +313,59 @@ test('cold recovery persists fixed gaps when the bound source and local attribut
   assert.deepEqual((recovery.data.event.payload as Wire).attribution.observed, { cwd: null, git: null, checkpoint: null });
   harness.close(); store.close();
   assert.ok(root.startsWith(path.join(os.tmpdir(), 'harness-recovery-gap-'))); rmSync(root, { recursive: true, force: true });
+});
+
+test('cold recovery bounds run projection and records deterministic truncation metadata', t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'harness-recovery-bounded-'));
+  const store = new RuntimeStore(root);
+  const session = { id: randomUUID(), cwd: root, codex_thread_id: null, permissions: {} };
+  const runs = Array.from({ length: 21 }, (_, index) => ({
+    id: randomUUID(), session_id: session.id, created_at: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
+    model: 'fixture', reasoning: 'low', status: 'completed', config_source: 'fixture', timeout_ms: null, exit_code: 0,
+  }));
+  let harness: Harness;
+  let recoveryProbes = 0;
+  const source = {
+    session: () => session,
+    runs: () => runs,
+    events: (run: (typeof runs)[number]) => {
+      const recoveryWritten = harness?.journal.records.some(record => record.data.kind === 'event'
+        && record.data.event.kind === 'recovery.observed');
+      if (!recoveryWritten) recoveryProbes++;
+      return [{ seq: 0, at: run.created_at, session_id: session.id, run_id: run.id, type: 'fixture', data: { index: runs.indexOf(run) } }];
+    },
+    attribution: () => ({ state: 'matched' }),
+  };
+  harness = new Harness(root, source);
+  const ticket = harness.register({ project_key: 'P', project_name: '有界恢复', ticket_key: 'HARNESS-010',
+    title: '有界恢复投影', reference: 'fixture:#50', expected_worktree: root });
+  harness.attach({ ticket_id: ticket.ticket_id, session_id: session.id });
+  harness.close();
+
+  recoveryProbes = 0;
+  harness = new Harness(root, source);
+  harness.start(60_000);
+  const recovery = harness.journal.records.findLast(record => record.data.kind === 'event'
+    && record.data.event.kind === 'recovery.observed');
+  assert.ok(recovery && recovery.data.kind === 'event');
+  const observed = recovery.data.event.payload as Wire;
+  const expectedLatest = runs.slice(-16).reverse().map(run => run.id);
+  assert.equal(recoveryProbes, 16, 'recovery only probes events for the bounded projection');
+  assert.deepEqual(observed.runs.map((run: Wire) => run.id), expectedLatest);
+  assert.deepEqual(observed.journal.source_high_water.map((item: Wire) => item.run_id), expectedLatest);
+  assert.deepEqual(observed.projection, {
+    run_cap: 16,
+    current_runs_total: 21,
+    current_runs_included: 16,
+    source_high_water_total: 21,
+    source_high_water_included: 16,
+    truncated: true,
+  });
+  assert.ok(observed.gaps.includes('RECOVERY_RUN_PROJECTION_TRUNCATED'));
+  assert.ok(JSON.stringify(recovery).length < 12_000, 'single recovery event remains bounded');
+
+  harness.close(); store.close();
+  assert.ok(root.startsWith(path.join(os.tmpdir(), 'harness-recovery-bounded-'))); rmSync(root, { recursive: true, force: true });
 });
 
 test('recording failure cannot acknowledge new history; damaged tail preserves readable prefix', async t => {

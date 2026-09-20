@@ -39,7 +39,8 @@ export class Events {
           }
           if (!Number.isFinite(Date.parse(e.at)) || !['yca', 'tunnel', 'supervisor', 'all'].includes(e.component)
             || !['process-exit', 'native-connect', 'ready', 'check-failed', 'started', 'stopped', 'start', 'stop', 'restart', 'retry', 'recovery-attempt', 'recovery-paused', 'recovery-failed', 'long-check-gap',
-              'deployment-checked', 'deployment-check-failed', 'deployment-prepared', 'update-stopped-old', 'deployment-switched', 'deployment-rolled-back', 'deployment-rollback-failed', 'deployment-update-failed'].includes(e.action)) return [];
+              'deployment-checked', 'deployment-check-failed', 'deployment-prepared', 'update-stopped-old', 'deployment-switched', 'deployment-rolled-back', 'deployment-rollback-failed', 'deployment-update-failed',
+              'startup-reconciled', 'startup-reconciliation-failed'].includes(e.action)) return [];
           return [{ at: new Date(e.at).toISOString(), component: e.component, action: e.action, code: /^[A-Z][A-Z0-9_]{1,79}$/.test(e.code ?? '') ? e.code : null, exitCode: Number.isInteger(e.exitCode) ? e.exitCode : null }];
         } catch { return []; }
       });

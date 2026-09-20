@@ -90,6 +90,33 @@ test('cold startup realizes only a reliably stopped persisted YCA intent', async
   assert.equal(options, undefined, 'conflicting stopped observation is inert');
 });
 
+test('cold startup remains inert in observe-only mode', async t => {
+  const f = setup(t), { manager: initial, units } = f;
+  await initial.action('yca', 'start');
+  units.yca.running = false; units.yca.healthy = false;
+  const starts = units.yca.starts;
+
+  const observing = new Supervisor({ ...f.options, observeOnly: true });
+  await observing.reconcileStartup();
+
+  assert.equal(observing.state.units.yca.desired, 'running');
+  assert.equal(units.yca.starts, starts, 'observe-only cold start must not realize persisted intent');
+  assert.equal(units.tunnel.starts, 0);
+});
+
+test('startup reconciliation events survive bounded reload without accepting arbitrary actions', t => {
+  const f = setup(t);
+  f.options.events.add('yca', 'startup-reconciled');
+  f.options.events.add('yca', 'startup-reconciliation-failed', 'PATH_MISSING');
+  f.options.events.add('yca', 'arbitrary-startup-action');
+
+  const restored = new Events(f.root).items;
+  assert.deepEqual(restored.map(({ component, action, code }) => ({ component, action, code })), [
+    { component: 'yca', action: 'startup-reconciled', code: null },
+    { component: 'yca', action: 'startup-reconciliation-failed', code: 'PATH_MISSING' },
+  ]);
+});
+
 test('service operations record requested and terminal outcomes that survive supervisor restart', async t => {
   const f = setup(t), { manager: m, units: u } = f;
   const succeeded = '11111111-1111-4111-8111-111111111111';

@@ -100,3 +100,19 @@ HARNESS-010 到此只验收登录启动、单 collector、恢复观察与门禁�
 - **Related**：`tools/codex-session-bridge/src/{store,manager,mcp}.js`，用于确认 RuntimeStore ownership、无重放 recovery 和公共 execution gate；HARNESS-004 只使用现有 `gateHarnessExecution` 公开契约与 `harness-execution-gate.test.ts`，不读取旧票完整记录。
 - **Retrieval**：需要定位时检索 `desired`、`autoRecovery`、`YcaUnit.start`、`createHarnessRuntime`、`Harness.start`、`source_id`、`cursor`、`service_epoch`、`gateHarnessExecution`、`recovery.observed`。
 - **Expansion triggers**：只有在现有 `YcaUnit` 无法按 persisted desired 安全启动、Event interface 无法留下恢复 gap、或公共 MCP 可在 Harness 构造前开放时，才扩读相邻实现；不得读取 `.workflow/history/**`、完整旧 Review/Acceptance/closeout 或完整 Git history。
+
+## Finding Fix Handoff
+
+- `review_policy`: `delegated`；本 fresh finding-fix session 未执行 Review、commit、push 或 GitHub 写入。
+- 已修 findings：
+  - STD-001 / SPEC-001：`reconcileStartup()` 在任何启动副作用前对 `observeOnly=true` 保持 inert；持久化 `desired=running`、可靠 stopped observation 也不会启动 YCA，既有 desired / `autoRecovery` / tunnel 语义不变。
+  - STD-002 / SPEC-002：bounded Events reload whitelist 仅增加 `startup-reconciled` 与 `startup-reconciliation-failed`；真实 `add()` → `new Events(root)` round-trip 可恢复二者，任意 action 仍被丢弃。
+  - SPEC-003：每个 binding 的 `recovery.observed` 使用固定 `run_cap=16`；current runs 按 `created_at`、run id 确定性选择最新项，run-scoped binding 保留其唯一目标；`runs` 与 `source_high_water` 均最多 16 项。超限时写 `RECOVERY_RUN_PROJECTION_TRUNCATED`，并记录 current/high-water 的 total、included 与 `truncated`。recovery 的 `source.events` 预探测只检查投影内 run；journal 的真实 imported 去重集合与 source high-water 不被裁剪或推进，正常 `scan()` 导入语义不变。
+  - STD-003：Control Center README 已区分一次 cold-start YCA desired-state realization 与进程存续期 `autoRecovery` retry，明确 cold reconcile 不启动 tunnel，且 Harness 真实 Windows 登录仍待 outer Acceptance。
+- 红→绿证据：新增 observe-only cold-start 与 Events round-trip 用例先分别观测到 `starts=2` 和 reload `[]`，修复后通过；21-run recovery fixture 先观测到 21 次 recovery event probe，修复后固定为 16，并验证两个投影数组、truncation gap/metadata 与单条记录体积边界。
+- 定向验证：
+  - `tools/control-center`: `node --test test/supervisor.test.js` → 28/28 通过；`node --check src/supervisor.js` 与 `node --check src/common.js` → exit 0。
+  - `tools/codex-session-bridge`: `node --test test/harness.test.ts` → 8/8 通过；`npm run typecheck` → exit 0。
+  - 未运行 full suites；最终 `git diff --check` 结果见外层交接。
+- 实际写集：`tools/control-center/src/supervisor.js`、`src/common.js`、`test/supervisor.test.js`、`README.md`；`tools/codex-session-bridge/src/harness/harness.ts`、`test/harness.test.ts`；本文件。未修改 startup scripts、生产配置、Scheduled Task、tunnel policy、执行 gate 或 model/session/task interface。
+- 已知限制：未执行真实 Windows 注销/登录、生产服务或 tunnel 验收；未证明日常稳定使用。固定 cap 只约束 recovery evidence projection 与其 source-event 预探测，正常 collector `scan()` 仍按原契约导入完整来源历史。以上留给 delegated focused re-review 与 outer Acceptance，不扩到 #51。
