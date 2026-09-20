@@ -168,3 +168,11 @@ HARNESS-010 已完成真实 Windows 注销→登录 Acceptance 5/5，证明 UI �
 - **测试**：`node --test test/harness-workflow.test.ts` 最终 9/9 passed、exit 0；`npm run typecheck` passed、exit 0；`git diff --check` passed、exit 0（仅报告 Windows LF→CRLF working-copy warning）。
 - **Review policy**：`delegated`，接收方为上层 Emilia/YCA；本 session 不启动 Review，状态 pending。
 - **Commit / 下一步**：Owner 明确禁止 commit/push/PR，因此当前为未提交实现字节；上层应基于实际 diff 启动 fresh Review，再决定后续 Acceptance，不得把本 handoff 当作 Review 或 Acceptance 通过。
+
+## AC3 Fix Handoff
+
+- **范围与身份**：仅修最终 AC3 隔离实验确认的 intent-persistence blocker；fixed point `1451c1316bcf78c5796061c714d156e51ff007ef`，修复起点 HEAD `fa06d113ce5425f1c40b2b061c0518bea88f7942`。
+- **语义**：`ComputerCalls.perform()` 仅在 pre-execution `started` 保存返回 `recording-failed` 时于 `action()` 前抛出 `RECORDING_FAILED`。`collection-failed` 仍执行并保存真实结果；已记录 started、执行后才发生的 result 保存失败仍保留真实副作用结果。
+- **红→绿**：新增真实 MCP seam 回归，在登记 Ticket 后、`filesystem_write` 前把隔离 journal 替换为目录；旧实现返回成功并落盘 sentinel，新实现返回 `isError=true` / `RECORDING_FAILED` 且目标文件不存在。
+- **验证**：`node --test test/harness-computer.test.ts` 7/7 passed；`npm run typecheck` 与 `git diff --check` 见本次 fix session 最终交接。
+- **边界**：未执行 Review、Acceptance、GitHub、commit 或 push；后续由上层 fresh focused re-review 后再决定是否重跑隔离 AC3。

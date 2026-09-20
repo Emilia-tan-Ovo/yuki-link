@@ -121,6 +121,23 @@ test('采集失败保存缺口但不改执行结果；刷新与重启不掩盖�
   assert.equal(restored.computer_calls[0].state, 'succeeded');
 });
 
+test('started 无法保存时拒绝文件写入', async t => {
+  const f = await fixture(t), ticket = await f.register();
+  const journal = path.join(f.runtime, 'harness/history.jsonl');
+  const savedJournal = journal + '.saved';
+  const file = path.join(f.workspace, 'must-not-execute.txt');
+  renameSync(journal, savedJournal); mkdirSync(journal);
+  let result: Wire;
+  try {
+    result = await f.call('filesystem_write', { ticket_id: ticket.ticket_id, path: file, content: 'THIS MUST NEVER BE WRITTEN' });
+  } finally {
+    rmdirSync(journal); renameSync(savedJournal, journal);
+  }
+  assert.equal(result.isError, true);
+  assert.equal(result.error.code, 'RECORDING_FAILED');
+  assert.equal(existsSync(file), false);
+});
+
 test('保存失败后拒绝新的文件写入且不推进游标；重启后悬空 started 明确 unknown', async t => {
   let journal = '', armed = false;
   const f = await fixture(t, { appendAudit: (_file: string, line: string) => {
