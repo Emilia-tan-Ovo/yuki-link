@@ -4,7 +4,7 @@ import { HarnessError } from './model.ts';
 import type { Ticket, RecordEntry } from './model.ts';
 import type { Journal } from './journal.ts';
 import { protectedCopy } from './content-policy.ts';
-import { taskIdentitySchema, taskRecordSchema } from './task-model.ts';
+import { taskIdentitySchema, taskRecordSchema, taskSnapshotSchema } from './task-model.ts';
 import type { TaskBinding, TaskIdentity, TaskNotice, TaskRecord, TaskSnapshot } from './task-model.ts';
 import type { TaskSource } from './task-source.ts';
 
@@ -172,16 +172,45 @@ export class TaskCollector {
       accepted: [...this.journal.records].some(r => r.data.kind === 'owned_task' && r.data.task.binding.task_id === taskId && r.data.task.kind === 'accepted')
         ? 'recorded' : this.journal.failure ? 'recording-failed' : 'collection-failed' };
   }
+  target(ticketId: string, taskId: string) {
+    const binding = this.bindings.get(taskId);
+    if (!binding) throw new HarnessError('TASK_NOT_FOUND');
+    if (binding.ticket_id !== ticketId) throw new HarnessError('TASK_NOT_FOUND');
+    if (!this.source) throw new HarnessError('TASK_SOURCE_UNAVAILABLE');
+    if (binding.service_epoch !== this.source.epoch()) throw new HarnessError('TASK_EPOCH_EXPIRED');
+    return { binding, source: this.source };
+  }
+  currentStatus(ticketId: string) {
+    this.ticket(ticketId);
+    return [...this.bindings.values()].filter(binding => binding.ticket_id === ticketId).map(binding => {
+      const fallback = this.snapshots.get(binding.task_id) ?? null;
+      if (!this.source) return this.statusProjection(ticketId, binding, fallback, 'source-unavailable', null);
+      if (binding.service_epoch !== this.source.epoch()) {
+        return this.statusProjection(ticketId, binding, fallback, 'source-epoch-expired', null);
+      }
+      try {
+        const snapshot = taskSnapshotSchema.parse(protectedCopy(this.source.observation(binding.task_id).snapshot).value);
+        return this.statusProjection(ticketId, binding, snapshot, 'observed', now());
+      } catch {
+        return this.statusProjection(ticketId, binding, fallback, 'source-unavailable', null);
+      }
+    });
+  }
+  private statusProjection(ticketId: string, binding: TaskBinding, snapshot: TaskSnapshot | null,
+    sourceState: Availability, observedAt: string | null) {
+    const ticket = this.ticket(ticketId), expected = ticket.expected_worktree;
+    return { binding, snapshot, source_state: sourceState,
+      current: { state: sourceState === 'observed' && observedAt ? 'observed' as const : 'unknown' as const,
+        observed_at: observedAt },
+      attribution: { state: expected ? path.relative(expected, binding.cwd) === '' ? 'matched' : 'attribution mismatch' : 'unknown',
+        expected_worktree: expected, cwd: binding.cwd, source: 'registered Ticket / accepted task cwd' } };
+  }
   status(ticketId: string) {
     return [...this.bindings.values()].filter(b => b.ticket_id === ticketId).map(binding => {
       const snapshot = this.snapshots.get(binding.task_id) ?? null;
       const sourceState = this.availability.get(binding.task_id) ?? 'source-unavailable';
-      const ticket = this.ticket(ticketId), expected = ticket.expected_worktree;
-      return { binding, snapshot, source_state: sourceState,
-        current: { state: !this.journal.failure && sourceState === 'observed' && this.observed.has(binding.task_id) ? 'observed' : 'unknown',
-          observed_at: this.observed.get(binding.task_id) ?? null },
-        attribution: { state: expected ? path.relative(expected, binding.cwd) === '' ? 'matched' : 'attribution mismatch' : 'unknown',
-          expected_worktree: expected, cwd: binding.cwd, source: 'registered Ticket / accepted task cwd' } };
+      return this.statusProjection(ticketId, binding, snapshot, sourceState,
+        !this.journal.failure && sourceState === 'observed' ? this.observed.get(binding.task_id) ?? null : null);
     });
   }
   close() { this.scan(); this.unsubscribe?.(); this.unsubscribe = undefined; }

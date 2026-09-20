@@ -36,6 +36,7 @@ async function fixture(t: TestContext) {
     subscribe: (observer: any) => computer.tasks.subscribe(observer),
     observation: (id: string) => computer.tasks.observation(id),
     output: (args: any) => { if (failCollection) throw Error('source read failed'); return computer.tasks.output(args); },
+    stop: (args: any) => computer.tasks.stop(args),
   });
   const manager: any = { store, allowedCwds: [workspace], session() { throw Error('No model in task tests'); } };
   // The third argument is the production-owned task source, never an execution wrapper.
@@ -53,12 +54,14 @@ async function fixture(t: TestContext) {
     await client.connect(new StreamableHTTPClientTransport(url));
   }
   await connect();
-  let ui: ReturnType<typeof createHarnessServer> | undefined, base = '', cookie = '';
+  let ui: ReturnType<typeof createHarnessServer> | undefined, base = '', cookie = '', csrf = '';
   async function openUI() {
     ui = createHarnessServer(manager.harness);
     await new Promise<void>(resolve => ui!.listen(0, '127.0.0.1', resolve));
     base = `http://127.0.0.1:${(ui.address() as AddressInfo).port}`;
-    cookie = (await fetch(base)).headers.get('set-cookie')!.split(';')[0];
+    const home = await fetch(base);
+    cookie = home.headers.get('set-cookie')!.split(';')[0];
+    csrf = /name="csrf-token" content="([^"]+)"/.exec(await home.text())![1];
   }
   async function closeUI() {
     if (ui) { const server = ui; ui = undefined; await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }); }
@@ -72,7 +75,7 @@ async function fixture(t: TestContext) {
     const result = await client.callTool({ name, arguments: args });
     return { ...(result.structuredContent as Wire), isError: result.isError === true };
   };
-  return { workspace, runtime, children, call, openUI,
+  return { manager, workspace, runtime, children, call, openUI,
     tools: () => client.listTools(),
     advance: (ms: number) => { time += ms; },
     collectionFails: (fails: boolean) => { failCollection = fails; },
@@ -89,10 +92,95 @@ async function fixture(t: TestContext) {
     },
     detail: async (id: string): Promise<Wire> => (await fetch(base + '/api/tickets/' + id, { headers: { cookie } })).json(),
     page: async (id: string) => (await fetch(base + '/tickets/' + id, { headers: { cookie } })).text(),
+    post: async (route: string) => {
+      const response = await fetch(base + route, { method: 'POST', headers: { cookie, origin: base,
+        'content-type': 'application/json', 'x-csrf-token': csrf }, body: '{}' });
+      return { status: response.status, body: await response.json() as Wire };
+    },
+    postForm: async (route: string) => {
+      const response = await fetch(base + route, { method: 'POST', redirect: 'manual', headers: { cookie, origin: base,
+        'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf }) });
+      return { status: response.status, location: response.headers.get('location'), body: await response.json() as Wire };
+    },
     register: (key = 'HARNESS-003') => call('harness_register_ticket', { project_key: 'P', project_name: '任务工程', ticket_key: key, title: key, reference: 'fixture:' + key }),
   };
 }
 const taskRecords = (detail: Wire): Wire[] => detail.records.filter((r: Wire) => r.data.kind === 'owned_task').map((r: Wire) => r.data.task);
+test('Ticket HTTP control stops only the bound current-epoch owned task and waits for terminal source truth', async t => {
+  const f = await fixture(t), ticket = await f.register('HARNESS-008');
+  const other = await f.register('HARNESS-OTHER');
+  const { service_epoch } = await f.call('task_status');
+  const started = await f.call('task_start', { service_epoch, request_id: 'http-stop', ticket_id: ticket.ticket_id,
+    cwd: f.workspace, script: 'unused' });
+  await f.openUI();
+  const wrongTicket = await f.post(`/api/tickets/${other.ticket_id}/tasks/${encodeURIComponent(started.task_id)}/stop`);
+  assert.equal(wrongTicket.status, 404);
+  assert.equal((await f.call('task_status', { task_id: started.task_id })).status, 'running');
+  const receipt = await f.post(`/api/tickets/${ticket.ticket_id}/tasks/${encodeURIComponent(started.task_id)}/stop`);
+  assert.equal(receipt.status, 202);
+  assert.equal(receipt.body.outcome, 'requested');
+  assert.notEqual(receipt.body.execution.status, 'stopped');
+  assert.equal((await waitTask(f.call, started.task_id, (value: Wire) => value.status === 'stopped')).status, 'stopped');
+  const terminal = await f.detail(ticket.ticket_id);
+  assert.equal(terminal.controls.tasks[0].execution.status, 'stopped');
+  assert.equal(terminal.controls.tasks[0].manageable, false);
+});
+
+test('Ticket HTTP task control rejects a historical task from an older service epoch', async t => {
+  const f = await fixture(t), ticket = await f.register('HARNESS-008');
+  const { service_epoch } = await f.call('task_status');
+  const started = await f.call('task_start', { service_epoch, request_id: 'old-epoch', ticket_id: ticket.ticket_id,
+    cwd: f.workspace, script: 'unused' });
+  await f.openUI();
+  await f.rebuild(true);
+  const response = await f.post(`/api/tickets/${ticket.ticket_id}/tasks/${encodeURIComponent(started.task_id)}/stop`);
+  assert.equal(response.status, 409);
+  assert.equal(response.body.code, 'TASK_EPOCH_EXPIRED');
+});
+
+test('synchronous owned-task STOP_FAILED is a public API and form failure', async t => {
+  const f = await fixture(t), ticket = await f.register('HARNESS-008');
+  const { service_epoch } = await f.call('task_status');
+  const started = await f.call('task_start', { service_epoch, request_id: 'sync-stop-failure', ticket_id: ticket.ticket_id,
+    cwd: f.workspace, script: 'unused' });
+  const child = f.children[0];
+  child.endProcess(7, false);
+  await f.openUI();
+  const route = `/api/tickets/${ticket.ticket_id}/tasks/${encodeURIComponent(started.task_id)}/stop`;
+  try {
+    const api = await f.post(route);
+    assert.equal(api.status, 503);
+    assert.equal(api.body.outcome, 'request_failed');
+    assert.equal(api.body.execution.error.code, 'STOP_FAILED');
+    const form = await f.postForm(route);
+    assert.equal(form.status, 503);
+    assert.equal(form.location, null);
+    assert.equal(form.body.outcome, 'request_failed');
+  } finally { child.endProcess(7); }
+});
+
+test('recording-failed task refresh reads the terminal source without replaying stop', async t => {
+  const f = await fixture(t), ticket = await f.register('HARNESS-008');
+  const { service_epoch } = await f.call('task_status');
+  const started = await f.call('task_start', { service_epoch, request_id: 'degraded-refresh', ticket_id: ticket.ticket_id,
+    cwd: f.workspace, script: 'unused' });
+  await f.openUI();
+  const before = await f.detail(ticket.ticket_id);
+  f.manager.harness.journal.failure = 'JOURNAL_WRITE_FAILED';
+
+  const stopping = await f.post(`/api/tickets/${ticket.ticket_id}/tasks/${encodeURIComponent(started.task_id)}/stop`);
+  assert.equal(stopping.status, 202);
+  assert.equal(stopping.body.execution.status, 'stopping');
+  await waitTask(f.call, started.task_id, (value: Wire) => value.status === 'stopped');
+  const refreshed = await f.post(`/api/tickets/${ticket.ticket_id}/refresh`);
+  assert.equal(refreshed.status, 200);
+  assert.equal(refreshed.body.tasks[0].execution.status, 'stopped');
+  assert.equal(refreshed.body.tasks[0].observation.state, 'current');
+  assert.equal(refreshed.body.evidence_gap.state, 'recording-failed');
+  assert.equal((await f.detail(ticket.ticket_id)).next_cursor, before.next_cursor);
+  await f.post(`/api/tickets/${ticket.ticket_id}/refresh`);
+  assert.equal((await f.call('task_status', { task_id: started.task_id })).termination.attempts, 1);
+});
 test('root exit 早于 pipes close 时保存 unknown 与晚到输出，关闭后收敛', async t => {
   const f = await fixture(t), ticket = await f.register();
   const { service_epoch } = await f.call('task_status');

@@ -80,3 +80,32 @@ Secondary seam 只在主 seam 难以定位时补充现有 `bridge.test.js` exact
 - **Expansion triggers**：exact-run guard 无法在不改变 MCP 契约下实现；task binding 无法从现有 collector/source 精确核验；Windows opener 不能使用 canonical allowlisted path；POST 安全要求迫使改变现有 loopback 会话模型。仅触发时扩读对应模块，不先引入 HARNESS-009/010 或完整历史。
 
 The current ticket is ready for implementation.
+
+## Implementation Handoff（2026-09-20）
+
+- 来源：GitHub #48 的本地快照 `.local/HARNESS-008-ticket.md`、本文件 Implementation Decisions / TDD seam、fixed point `c801c879b64e97615d3e9575d667134ff62c11fb`；implementation start HEAD 为 `1b356610b297b884468ea4d16405005b825d71c0`。
+- 身份：worktree `C:\Users\KQ_Sh\Desktop\yuki-link\.local\worktrees\harness-008`，branch `codex/yuki-harness-v0-008`。本 session 按 Owner 要求未 commit；当前实现与测试字节均为未提交工作区内容。
+- 范围：新增 `src/harness/controls.ts` 的 Ticket-bound run/task/refresh/worktree 控制投影与 receipt；为 `CodexSource` / `TaskSource` 增加窄 current/exact-stop adapter；为 `SessionManager` 增加 `stopRun(sessionId, runId)` exact active-run guard，同时保留 `codex_stop_session(session_id)` 的旧公共契约；journal 增加兼容 `control_action` intent/result；loopback HTTP/UI 增加四个限定 POST、每实例 CSRF、Origin/session/content-type/body 上限、303 表单回跳及仅从 canonical `Ticket.expected_worktree` 打开的 folder opener。未修改 MCP 工具集合、Codex executor、OwnedTasks 状态机或 HARNESS-009/010/011 范围。
+- 行为边界：execution 与 observation 分开；stop request、HTTP 2xx 或 tree-kill 请求不冒充 terminal；active run 改变时返回冲突且不停止新 run；recording 降级仍执行 observe/manage-existing 并返回 `evidence_gap`，恢复后不重放；页面/API 没有创建、发送、resume 或 continue 能力。
+- TDD：首轮 `node --test test/harness-controls.test.ts` 在缺少 CSRF/POST/exact-stop seam 时红；实现后新增 public HTTP seam 覆盖不续跑、exact-run stop、observation unavailable 与 execution 分离、recording gap/no replay、canonical worktree、CSRF/Origin/session/content type、control record 重启可读。owned task seam覆盖错票、current epoch stop receipt、source terminal 收敛与旧 epoch 冲突。
+- 定向验证：
+  - `node --test --test-reporter=spec test/harness-controls.test.ts test/harness.test.ts test/harness-tasks.test.ts test/harness-execution-gate.test.ts`：exit 0，30/30 通过。
+  - `node --test --test-reporter=spec --test-name-pattern="stop" test/bridge.test.js`：exit 0，5/5 通过。
+  - `npm run typecheck`：exit 0。
+  - `git diff --check`：exit 0；仅有 Git 的 LF→CRLF 工作区提示。
+  - 按约定未运行 `npm test` / full suite；真实外层完整测试与 Acceptance 由 Emilia + YCA 执行。
+- Review policy：`delegated`，接收方 Emilia / `engineering-workflow`；本 implementation session 未调用 `review` / `code-review`，primary Review 为 pending，不能据此宣称零 finding 或 Acceptance 通过。
+- 当前未提交范围：`docs/implementation-notes/HARNESS-008.md`；`tools/codex-session-bridge/src/harness/{controls,codex-source,harness,model,runtime,server,task-collector,task-source}.ts`；`tools/codex-session-bridge/src/manager.js`；`tools/codex-session-bridge/test/{harness-controls,harness-tasks}.test.ts`。
+- Commit：未提交（Owner 明确交由外层机械 Git 操作）。建议提交主题：`feat: 增加已有运行的 Ticket 控制面`。
+- 下一步：Emilia 先以当前未提交字节为 review subject 启动 fresh primary Review；Review 后再由外层执行完整测试、Acceptance、commit/push 等后续授权内动作。Review 输入引用本 handoff、Ticket snapshot、fixed point/HEAD 与实际 diff，不传 implementation 聊天。
+
+## Fresh Finding Fix Handoff（2026-09-20）
+
+- 来源与身份：仅处理 `.local/workflow-state/HARNESS-008-review.md`（SHA-256 `9a47d73f09873bcd44d058869149998d690d6439ce31209128bdb228f97191c4`）列出的 4 条 finding；修复基线 subject digest `b4c64460060ec1bcb5e063c36e810a642d97e91e2ac8b82313c9a9e9dfae7491` 已由 Primary Review revalidate 为 matched。worktree、branch、fixed point 与 HEAD 仍分别为本文件上一 handoff 所列值、`codex/yuki-harness-v0-008`、`c801c879b64e97615d3e9575d667134ff62c11fb`、`1b356610b297b884468ea4d16405005b825d71c0`；本轮仍未 commit。
+- `STD-001 / SPEC-003`：**fixed，pending fresh focused verification**。`CodexSource.worktree` 每次 open 都重新走既有 `PathPolicy` canonical allowlist，确认目标当前仍是 directory，并用登记时 comparison baseline 核对 worktree root、repository common-dir 与 repository instance identity；普通文件/不可读目标稳定返回 `WORKTREE_UNAVAILABLE`，同路径替换为另一仓库稳定返回 `WORKTREE_MISMATCH`。保留 `explorer.exe` 参数数组、`shell:false`，未增加编辑器选择或服务管理。
+- `SPEC-001`：**fixed，pending fresh focused verification**。run `request_failed` 和 owned task 同步 `termination.error` / `tree_kill=failed` 统一成为公开 `request_failed`，JSON 与 form 均返回 503 结构化结果且 form 不再 303；`stopping` 仍为 202 accepted/in-progress，未冒充 terminal。未修改旧 MCP `codex_stop_session(session_id)` 契约，也未修改 OwnedTasks 状态机。
+- `SPEC-002`：**fixed，pending fresh focused verification**。recording-failed 时 control current/refresh 通过 `TaskCollector.currentStatus` 直接只读查询现有 `TaskSource.observation`，绕过 journal save/apply；公开 projection 只使用 `current` / `unavailable` / `unknown`，同时保留 recording `evidence_gap`。恢复或重复 refresh 不重放 stop/control。
+- TDD 红灯：worktree open 定向测试初次为 1 pass / 2 fail（文件替换实际 202、仓库身份替换实际 202）；run stop failure 与 task 同步 STOP_FAILED 初次各 0/1（实际 200 与 202）；recording-failed terminal refresh 初次 0/1（实际仍显示 `running`）。随后只做上述最小实现转绿。
+- 最终定向验证：`node --test test/harness-controls.test.ts test/harness-tasks.test.ts` exit 0，21/21；`npm.cmd run typecheck` exit 0；`git diff --check c801c879b64e97615d3e9575d667134ff62c11fb..HEAD`、`git diff --cached --check`、`git diff --check` 均 exit 0，仅有既存 LF→CRLF 工作区提示。按 Owner 指示未运行 `npm test` full suite。
+- 未触碰边界：未改 MCP 工具集合、Codex executor、OwnedTasks 停止/终态状态机、编辑器/服务管理、HARNESS-009/010/011；未执行 Review、Acceptance、commit、push 或 GitHub 写入。
+- Review policy：`delegated`，接收方 Emilia / `engineering-workflow`。下一步仅由上层针对这 4 条 finding 启动一次 fresh focused re-review；本 handoff 不声称 Review 或 Acceptance 通过。

@@ -234,6 +234,19 @@ export class SessionManager {
     return { ...this.accepted(run), stopped: run.status === 'stopped' };
   }
 
+  // Harness-only exact target guard. The public MCP stop(session_id) contract
+  // intentionally remains unchanged.
+  stopRun(sessionId, runId) {
+    const session = this.session(sessionId);
+    const run = this.run(runId);
+    if (run.session_id !== session.id) throw new BridgeError('ID_MISMATCH', 'run_id belongs to a different session.');
+    if (!ACTIVE.has(run.status)) return { outcome: 'already_terminal', ...this.accepted(run) };
+    if (session.active_run_id !== run.id) return { outcome: 'active_run_changed', ...this.accepted(run), active_run_id: session.active_run_id };
+    if (run.status === 'queued') this.finish(run, 'stopped');
+    else this.requestStop(run, 'stopped');
+    return { outcome: 'requested', ...this.accepted(run) };
+  }
+
   session(id) { const value = this.store.state.sessions[id]; if (!Object.hasOwn(this.store.state.sessions, id)) throw new BridgeError('SESSION_NOT_FOUND', 'Unknown bridge session ID.'); return value; }
   run(id) { const value = this.store.state.runs[id]; if (!Object.hasOwn(this.store.state.runs, id)) throw new BridgeError('RUN_NOT_FOUND', 'Unknown bridge run ID.'); return value; }
 

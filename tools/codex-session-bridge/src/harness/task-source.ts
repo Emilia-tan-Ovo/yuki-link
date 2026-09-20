@@ -9,6 +9,7 @@ export interface OwnedTaskReader {
   output(input: { task_id: string; cursor: number; limit: number }): {
     events: TaskLine[]; next_cursor: number; has_more: boolean;
   };
+  stop?(input: { task_id: string }): TaskSnapshot;
 }
 export class TaskSource {
   reader: OwnedTaskReader;
@@ -18,4 +19,8 @@ export class TaskSource {
   subscribe(observer: (identity: TaskIdentity, event: TaskNotice) => void) { return this.reader.subscribe(observer); }
   observation(id: string) { return this.reader.observation(id); }
   output(id: string, cursor: number) { return this.reader.output({ task_id: id, cursor, limit: 100 }); }
+  stop(id: string) {
+    if (!this.reader.stop) throw new Error('Task stop is unavailable');
+    return this.reader.stop({ task_id: id });
+  }
 }
