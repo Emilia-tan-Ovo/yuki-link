@@ -5,6 +5,7 @@ import { SANDBOX_MODE_VALUES, APPROVAL_POLICY_VALUES, APPROVAL_REVIEWER_VALUES }
 import { registrationSchema, attachSchema, HarnessError } from './harness/model.ts';
 import { gateHarnessExecution } from './harness/harness.ts';
 import { workflowRecordInputSchema } from './harness/workflow-model.ts';
+import { childAssociationSchema } from './harness/conversation-model.ts';
 
 export function createMcpServer(manager, computer) {
   const server = new McpServer({ name: 'yuki-computer-agent', version: '0.2.0' });
@@ -71,6 +72,11 @@ export function createMcpServer(manager, computer) {
     workflowRecordInputSchema, input => {
       if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
       return manager.harness.recordWorkflow(input);
+    });
+  register('record-only', 'harness_associate_child_conversation', 'Record an already-started Review or Acceptance Agent session/run as a Ticket child Conversation. This never starts, sends to, or resumes a model.',
+    childAssociationSchema, input => {
+      if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
+      return manager.harness.associateChildConversation(input);
     });
   register('observe', 'codex_list_models', 'Read the current local Codex model and reasoning catalog. No model inference is started.', {
     refresh: z.boolean().optional(),

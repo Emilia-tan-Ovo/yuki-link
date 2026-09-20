@@ -9,16 +9,16 @@ HTTP YCA 后台启动后独立采集显式关联的 Codex 历史，浏览器关�
 - `harness_register_ticket({project_key, project_name, ticket_key, title, reference, expected_worktree?})` 返回 project_id、ticket_id、conversation_id。项目 key 全局唯一，ticket key 在项目内唯一；相同输入幂等，不同内容报 REGISTRATION_CONFLICT。本票不提供修改、删除或重新归属。
 - `harness_attach({ticket_id, session_id, run_id?})`：传 run_id 仅收该 run；省略时明确收该 session 的所有已有及后续 runs。应先登记，使用既有 Codex 入口取得真实 ID，再 attach。后台补入已有 message.sent，不要求 UI 同时在线。不存在 session 沿用 SESSION_NOT_FOUND；run/session 不一致或与其他 Ticket 的归属重叠报 ATTRIBUTION_MISMATCH。
 - 每张 Ticket 的主 Conversation 身份长期保持。关联新 session 记录切换边界，旧记录保留原 binding；thread 身份仅来自实际事件，不修改原有 THREAD_MISMATCH 保护，也不触发续跑。
-- 首页按 Project 分组进入 Ticket；任务、回复、已暴露的命令输出和错误可读，原始来源记录可展开。页面只读刷新；JSON 视图为 GET /api/projects 与 GET /api/tickets/:id?after=cursor。先访问首页建立本机 SameSite/HttpOnly 会话；API/详情须同源 cookie。分页每次至多 100 条，next_cursor 仅表示本地接收顺序。
+- 首页按 Project 分组进入 Ticket；任务、回复、已暴露的命令输出和错误可读，原始来源记录可展开。页面只读刷新；JSON 视图为 GET /api/projects、GET /api/tickets/:id?after=cursor 与 GET /api/conversations/:id?after=cursor。先访问首页建立本机 SameSite/HttpOnly 会话；API/详情须同源 cookie。分页每次至多 100 条，next_cursor 仅表示本地接收顺序。
 - 当前 session cwd、Git root/branch 与明确工作目录下 `.local/workflow-state/<ticket_key>.md` 的 ticket/worktree/branch 字段只用于核对。登记 key 用 HARNESS-001 这类文件安全名称时可读取对应 checkpoint；无法读取为 unknown，冲突为 attribution mismatch，不改归属。attach、后台恢复与页面刷新时重新观察，记录时间见 observed_at；checkpoint 不提供 Workflow 完成状态。
 
 数据位于原 `--runtime` 下的 `harness/history.jsonl`，由原 RuntimeStore 独占生命周期保护，不改写旧 sessions.json/runs、不扫描 Codex 私有历史。记录 flush 后发布 cursor，重启重建索引并去重补齐；正文复制进 Harness，源离线仍能读已保存部分。默认无 TTL/自动清理；此版启动时重建内存索引，尚无大历史压测结论。
 
 持久化失败返回 RECORDING_FAILED，页面标记 recording-failed，导入不越过未保存记录。损坏/部分尾记录保留现场和已验证前缀，不自动丢弃或修复；修复存储并核验现场后由既有管理流程重启。source 读取失败单独显示 collection-failed；恢复观察不会重放工程任务。**本票未实现 #44 的全入口 recording gate**，因此不能把“记录健康”当成已经具备系统级副作用门禁的证明。
 
-事件沿用 bridge 的 best-effort 脱敏，新写入注明本次是否改写；旧源逐条脱敏情况为 unknown。OUTPUT_LIMIT 明确提示来源截断。未产生 run 的历史拒绝请求、来源未暴露的工具细节/重试、缺失旧日志均 unavailable；尚未收到的 thread/结果为 unknown。不获取隐藏推理，Provider 已公开文字也不是执行或验收证据。Workflow 记录见下方 #45；Changes 与服务状态仍 unavailable，控制按钮、自启、Review 子 Conversation 均属后续票。Owned Task 采集见下方 #43。
+事件沿用 bridge 的 best-effort 脱敏，新写入注明本次是否改写；旧源逐条脱敏情况为 unknown。OUTPUT_LIMIT 明确提示来源截断。未产生 run 的历史拒绝请求、来源未暴露的工具细节/重试、缺失旧日志均 unavailable；尚未收到的 thread/结果为 unknown。不获取隐藏推理，Provider 已公开文字也不是执行或验收证据。Workflow 记录见下方 #45，Review/Acceptance 子 Conversation 见下方 #46；Changes 与服务状态仍 unavailable，控制按钮与自启属后续票。Owned Task 采集见下方 #43。
 
-现有部署仍执行 `npm ci --ignore-scripts` 并运行 src/main.js；MCP 工具摘要包含三个 Harness 工具（完整 YCA 为 21 个）。这里说明候选源码能力，不表示常驻部署、ChatGPT 真实链路验收或日常稳定使用已经完成。
+现有部署仍执行 `npm ci --ignore-scripts` 并运行 src/main.js；MCP 工具摘要包含四个 Harness 工具（完整 YCA 为 22 个）。这里说明候选源码能力，不表示常驻部署、ChatGPT 真实链路验收或日常稳定使用已经完成。
 
 ### 同步电脑调用回看（HARNESS-002 / #42）
 
@@ -57,6 +57,17 @@ HTTP YCA 后台启动后独立采集显式关联的 Codex 历史，浏览器关�
 - 首页与 Ticket 页面展示 phase、两轴 Review/finding、逐 AC Acceptance、closeout 与 applicability。`run completed`、文件存在、Review 报告文字或 Acceptance Agent completed 都不会自动推出 accepted；只有明确 passed、逐 AC 证据、适用 subject 和 Review/finding 门槛同时成立才显示当前 accepted。
 - Workflow 使用原 `harness/history.jsonl` 的 source_id/event_id/cursor 与单 writer/flush 语义，重启重建 revision、request 幂等和最近事实观察；旧记录原样可读。页面仍为 GET-only，浏览器没有 Workflow 写入口。
 - 本票不创建 Review/Acceptance 子 Conversation（留 #46），不实现 Changes、recording gate、自动恢复/执行或服务管理。源码与 fixture 通过不表示 resident、真实浏览器链路、正式 Acceptance 或日常 stable 已完成。
+
+### Fresh Review 子 Conversation（HARNESS-006 / #46）
+
+`harness_associate_child_conversation({ticket_id, request_id, session_id, run_id, relation})` 只记录已经真实启动的 Review 或 Acceptance Agent execution。Review relation 明确给出 `review_id` 与实际存在的 `coordinator | standards | spec` participant；Acceptance relation 给出 `acceptance_id`。入口不启动、发送或续跑模型，也不改变 `harness_attach` 的 Ticket 主 Conversation 语义。
+
+- 当前 Workflow 必须存在相同稳定 identity，并指向与输入 session/run 相交的 `codex-run` runtime ref。Review 的 `participant_execution_refs` 显式绑定 participant 与 runtime ref；`standards` / `spec` 只能按该映射关联。旧快照的可选 `execution_refs` 仍可用于默认单 reviewer 的 `coordinator`，但不会据此伪造独立 participant。Acceptance 仅允许 `actor.method=agent`；Emilia deterministic Acceptance 不创建子 Conversation。
+- 同 Ticket/relation/participant 保持稳定子 Conversation；focused re-review 使用自己的 `review_id`，并从 Workflow 投影原 Review/finding 链。只有实际关联的 participant 才展示，不为 Standards/Spec 创建占位。
+- 子 Conversation 与首个或 replacement run binding 在单条 Journal operation flush 后发布；同 request_id 相同 payload 返回原回执，不同 payload 返回 `REQUEST_CONFLICT`。session/run 已属于主 Conversation、其他子 Conversation 或其他 Ticket 时返回 attribution conflict。重启从原 Journal 重建 relation、binding、幂等索引与导航。
+- Harness 使用 Workflow execution ref、真实 session/run、首次 run 与 thread.started 来源计算 isolation assessment。证据完整为 `verified`，来源不足为 `unknown`，发现 session/thread/run 复用或冲突为 `mismatch`；Workflow 报告的 `isolated` 单独展示，父子关系本身不作为 fresh 证明。
+- Ticket API/页面保留主 Conversation 历史并列出子 Conversation 导航；子详情只读取该 Conversation 已绑定 execution 的保存事件。页面延续 loopback Host/Origin、SameSite/HttpOnly cookie、CSP、no-store、escaping 与 GET-only 约束。
+- 本能力仍是候选源码实现；未执行 full suite、真实 ChatGPT/reviewer/Acceptance 链路或日常 stable 验收时，不得作更高等级声明。Changes、自动 reviewer 编排、非 Codex Provider、服务管理与自启不在本票。
 
 独立的前置开发工具，不属于 yuki-link 正式 ticket，也不依赖 `core/` 或 `providers/`。
 
@@ -107,6 +118,7 @@ Windows 常驻服务可以显式传入 `--codex-bin 'C:\path\to\codex.exe'`，�
 | `harness_register_ticket` | `project_key, project_name, ticket_key, title, reference, expected_worktree?` | 稳定 `project_id, ticket_id, conversation_id` |
 | `harness_attach` | `ticket_id, session_id, run_id?` | 显式 Codex 归属与 recording 状态 |
 | `harness_record_workflow` | `ticket_id, request_id, expected_revision, schema_version: 1, snapshot` | `workflow_revision, event_id, cursor, deduplicated, applicability, recording` |
+| `harness_associate_child_conversation` | `ticket_id, request_id, session_id, run_id, relation` | `conversation_id, parent_conversation_id, binding_id, isolation, event_id, cursor, deduplicated, recording` |
 | `codex_list_models` | `refresh?` | 本机模型、各自 reasoning 档位、查询时间 |
 | `codex_start_session` | `request_id, cwd, prompt, permissions?, sender?, model?, reasoning?, timeout_ms?` | `session_id, run_id, status, model, reasoning, permissions, timeout_ms, deduplicated` |
 | `codex_send_message` | `request_id, session_id, prompt, sender?, model?, reasoning?, timeout_ms?` | 同上；权限固定继承 session，不能在续聊中切换 |
