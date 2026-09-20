@@ -8,6 +8,13 @@ const unavailableSources = (checkedAt: string) => ({
   event_store: { state: 'observed' as const, observed_at: checkedAt },
 });
 
+const completeness = (gaps: EvidenceGap[]) => {
+  if (gaps.some(gap => gap.code === 'OBSERVATION_GAP' && gap.impact !== 'Changes are current net facts and do not reconstruct unobserved intermediate edits')) return 'unknown' as const;
+  if (gaps.some(gap => ['CONTENT_TRUNCATED', 'START_SNAPSHOT_INCOMPLETE', 'HISTORY_DIVERGED',
+    'UNTRACKED_CONTENT_UNAVAILABLE', 'BASELINE_WORKFLOW_MISMATCH'].includes(gap.code))) return 'incomplete' as const;
+  return 'complete' as const;
+};
+
 export class Changes {
   source: Source;
   facts: ChangesSource;
@@ -19,14 +26,15 @@ export class Changes {
       const gap = ticket.comparison_baseline_gap ?? { code: 'BASELINE_NOT_RECORDED' as const,
         source: 'git/filesystem' as const, impact: 'legacy Ticket has no recorded comparison baseline' };
       return { state: 'unavailable' as const, baseline: null, current_head: null, files: [], commits: [], runs: [],
-        freshness: 'unknown' as const, checked_at: checkedAt, sources: unavailableSources(checkedAt), evidence_gaps: [gap] };
+        freshness: 'unknown' as const, completeness: 'unknown' as const,
+        checked_at: checkedAt, sources: unavailableSources(checkedAt), evidence_gaps: [gap] };
     }
     let current;
     try { current = this.facts.inspect(ticket.comparison_baseline); }
     catch (error) {
       const code = error instanceof ChangesSourceError ? error.code : 'GIT_UNAVAILABLE';
       return { state: 'unavailable' as const, baseline: ticket.comparison_baseline, current_head: null,
-        files: [], commits: [], runs: [], freshness: 'unknown' as const, checked_at: checkedAt,
+        files: [], commits: [], runs: [], freshness: 'unknown' as const, completeness: 'unknown' as const, checked_at: checkedAt,
         sources: unavailableSources(checkedAt), evidence_gaps: [{ code, source: 'git', impact: 'current Changes cannot be verified' }] };
     }
     const relevant = [...bindings].filter(binding => binding.ticket_id === ticket.id);
@@ -65,7 +73,35 @@ export class Changes {
     gaps.push({ code: 'OBSERVATION_GAP', source: 'event-store',
       impact: 'Changes are current net facts and do not reconstruct unobserved intermediate edits' });
     return { state: 'available' as const, baseline: ticket.comparison_baseline, current_head: current.current_head,
-      files, commits, runs, freshness: 'current' as const, checked_at: current.checked_at,
+      files, commits, runs, freshness: 'current' as const, completeness: completeness(gaps), checked_at: current.checked_at,
       sources: { ...current.sources, event_store: { state: 'observed' as const, observed_at: checkedAt } }, evidence_gaps: gaps };
+  }
+
+
+  summary(ticket: Ticket) {
+    const checkedAt = new Date().toISOString();
+    if (!ticket.comparison_baseline) {
+      const gap = ticket.comparison_baseline_gap ?? { code: 'BASELINE_NOT_RECORDED' as const,
+        source: 'git/filesystem' as const, impact: 'legacy Ticket has no recorded comparison baseline' };
+      return { state: 'unavailable' as const, baseline: null, current_head: null, file_count: 0, file_count_limited: false,
+        commit_count: null, freshness: 'unknown' as const, completeness: 'unknown' as const, checked_at: checkedAt,
+        sources: unavailableSources(checkedAt), evidence_gaps: [gap] };
+    }
+    try {
+      const current = this.facts.summary(ticket.comparison_baseline);
+      const gaps: EvidenceGap[] = [...current.gaps];
+      if (ticket.comparison_baseline.start_observation.integrity !== 'complete') gaps.push({ code: 'START_SNAPSHOT_INCOMPLETE',
+        source: 'filesystem', impact: 'some start fingerprints were unavailable or truncated' });
+      return { state: 'available' as const, baseline: ticket.comparison_baseline, current_head: current.current_head,
+        file_count: current.file_count, file_count_limited: current.file_count_limited, commit_count: current.commit_count,
+        freshness: 'current' as const, completeness: completeness(gaps), checked_at: current.checked_at,
+        sources: { ...current.sources, event_store: { state: 'not-materialized' as const, observed_at: checkedAt } }, evidence_gaps: gaps };
+    } catch (error) {
+      const code = error instanceof ChangesSourceError ? error.code : 'GIT_UNAVAILABLE';
+      return { state: 'unavailable' as const, baseline: ticket.comparison_baseline, current_head: null,
+        file_count: 0, file_count_limited: false, commit_count: null, freshness: 'unknown' as const,
+        completeness: 'unknown' as const, checked_at: checkedAt, sources: unavailableSources(checkedAt),
+        evidence_gaps: [{ code, source: 'git', impact: 'current Changes summary cannot be verified' }] };
+    }
   }
 }

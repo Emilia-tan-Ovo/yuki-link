@@ -112,3 +112,22 @@ The current ticket is ready for implementation.
 - Expansion trigger：未触发；兼容 schema 可 replay legacy journal，公开登记可在单条 `registered` record 固化 baseline，自有 Git wrapper 与现有 containment/protected 语义足以覆盖本票。
 - Commit：Owner 明确禁止 commit/push；当前结果为未提交工作树，不存在新的实现 SHA。
 - 下一步：Emilia/YCA 先执行外层 full suite 与实际 diff 核对，再从当前未提交字节启动 fresh delegated Review；不得把本 handoff 表述为 Review 或 Acceptance 已通过。
+
+## Fresh Finding Fix Handoff
+
+- 修复基线：`51e33cb07538719327a9451676aebee4c1d7157d`；仅处理 Primary Review 的五条 finding，未执行 Review、Acceptance、commit 或 push。
+- `STD-001` fixed：Changes content policy 与 `PathPolicy.secretName` 对齐，并同时检查原始、规范化与 resolved path components；tracked/untracked 保护名、链接/特殊文件/硬链接均不读取、不哈希、不预览。`harness-changes.test.ts` 覆盖 tracked `.env.production` 与 untracked `select-key/credential.pem` 不泄露。
+- `STD-002` fixed：Ticket/Conversation route 不再先构建全局 overview；overview 改用有界、无正文读取的 summary，只返回计数/状态，不展开 previews、commit list 或 runs。定向测试证明 Ticket detail 只 materialize 目标 Ticket，Projects API 不暴露 drilldown。
+- `SPEC-001` fixed：新 baseline 持久化 canonical common-dir 的本机 filesystem instance identity；refresh 同时验证路径与实例，legacy 缺失字段保持兼容且不伪造。fixture 在相同路径替换 `.git`、保留 baseline commit 后得到 `REPOSITORY_MISMATCH`。
+- `SPEC-002` fixed：`merge-base --is-ancestor` 保留 status/error；0 为 ancestor，1 为真实 `HISTORY_DIVERGED`，fatal/timeout/spawn/其他状态转为 `GIT_UNAVAILABLE`。定向测试覆盖三种结果。
+- `SPEC-003` fixed：Changes 增加独立 `complete | incomplete | unknown` completeness；material gaps 影响完整性，纯 attribution/unavoidable observation semantics 不降级。首页与 Ticket detail 对 `current + incomplete/unknown` 显示 warning。
+- 定向证据：`node --test test/harness-changes.test.ts` 退出 0（9/9）；`node --test test/harness.test.ts` 退出 0（4/4）；`npm run typecheck` 退出 0；`git diff --check` 退出 0。未运行 full suite。
+
+
+### Outer validation supplement
+
+- Emilia/YCA 首轮 post-fix full suite 暴露 1 条直接回归：summary-only 因“未 materialize 详情”被错误标成 `completeness=unknown`，导致健康 Ticket 首页误报 warning。
+- 外层机械修复将 summary completeness 改为只由真实 evidence gaps 决定，并为 summary 增加不读取正文的受限 metadata 检查（protected/special/unreadable/64 KiB limit；tracked deletion 不误报）。
+- 定向回归 `harness-changes + harness-workflow + typecheck + diff-check` exit 0。
+- 最终外层 full suite：156 tests / 155 pass / 0 fail / 1 skip；typecheck exit 0；diff-check exit 0。
+- 该补充不新增 finding scope，不改变 Primary Review 的五个 finding ID；focused re-review 应把这段外层修复一并绑定到修后 subject。

@@ -39,9 +39,9 @@ export function createHarnessServer(harness: Harness) {
       // Explicit UI refresh asks for current facts. The independent background
       // collector is still responsible for capture while no browser is present.
       harness.scan(true);
-      const summary = harness.overview();
-      if (url.pathname === '/api/projects') return send(200, summary);
-      if (url.pathname === '/') {
+      if (url.pathname === '/api/projects' || url.pathname === '/') {
+        const summary = harness.overview();
+        if (url.pathname === '/api/projects') return send(200, summary);
         const groups = summary.projects.map(p => '<section><h2>' + escape(p.name) + '</h2><ul>' +
           p.tickets.map(t => {
             const workflow = t.workflow as { phase?: string; assessment?: { state: string }; reviews?: Array<{ status: string }>;
@@ -50,8 +50,9 @@ export function createHarnessServer(harness: Harness) {
             const findings = workflow.findings?.filter(value => value.status !== 'verified').length ?? 0;
             const reviews = workflow.reviews?.map(value => value.status).join('/') || 'none';
             const anomaly: string[] = [];
-            const changes = t.changes as { state: string; freshness: string; files: unknown[]; commits: unknown[]; evidence_gaps: Array<{ code: string }> };
+            const changes = t.changes as { state: string; freshness: string; completeness: string; file_count: number; commit_count: number | null; evidence_gaps: Array<{ code: string }> };
             if (changes.freshness !== 'current') anomaly.push('Changes ' + changes.freshness);
+            if (changes.completeness !== 'complete') anomaly.push('Changes completeness ' + changes.completeness);
             if (['stale', 'mismatch'].includes(workflow.assessment?.state ?? '')) anomaly.push('applicability ' + workflow.assessment!.state);
             if (['failed', 'incomplete'].includes(workflow.acceptance?.status ?? '')) anomaly.push('Acceptance ' + workflow.acceptance!.status);
             for (const status of ['open', 'fixed', 'fixed-unverified']) {
@@ -65,8 +66,8 @@ export function createHarnessServer(harness: Harness) {
                 + ' · Review ' + escape(reviews) + ' · 待处理/复核 finding ' + findings
                 + ' · closeout ' + escape(workflow.closeout?.status ?? 'unknown')
                 + ' · applicability ' + escape(workflow.assessment?.state ?? 'unknown') : ' · Workflow 尚未记录')
-              + ' · Changes ' + escape(changes.state) + ' / ' + escape(changes.freshness)
-              + ' · files ' + changes.files.length + ' · commits ' + changes.commits.length + '</li>';
+              + ' · Changes ' + escape(changes.freshness) + ' / ' + escape(changes.completeness)
+              + ' · files ' + changes.file_count + ' · commits ' + escape(changes.commit_count ?? 'unknown') + '</li>';
           }).join('') + '</ul></section>').join('');
         return send(200, page('工程协作历史', '<p>只读观察 · <a href="/">刷新</a></p><aside>Recording: ' + escape(summary.recording.state)
           + '<br>Changes：按 Ticket 固定基线刷新；服务状态：unavailable（尚未接入）</aside>'
@@ -149,8 +150,8 @@ export function createHarnessServer(harness: Harness) {
           + escape(child.relation.kind === 'review' ? child.relation.review_id + ' · ' + child.relation.participant : child.relation.acceptance_id)
           + '</a> · isolation ' + escape(child.isolation.state) + '</li>').join('') + '</ul></aside>' : '';
       const changes = detail.changes;
-      const changesPanel = '<aside' + (changes.freshness === 'current' ? '' : ' class="warning"') + '><strong>累计 Changes · '
-        + escape(changes.state) + ' / ' + escape(changes.freshness) + '</strong><br>baseline: '
+      const changesPanel = '<aside' + (changes.freshness === 'current' && changes.completeness === 'complete' ? '' : ' class="warning"') + '><strong>累计 Changes · '
+        + escape(changes.state) + ' / ' + escape(changes.freshness) + ' / 完整性 ' + escape(changes.completeness) + '</strong><br>baseline: '
         + escape(changes.baseline?.commit_oid ?? '未记录') + '<br>current HEAD: ' + escape(changes.current_head ?? 'unknown')
         + '<br>files: ' + changes.files.length + ' · commits: ' + changes.commits.length + ' · runs: ' + changes.runs.length
         + '<details open><summary>文件净变化</summary><pre>' + escape(JSON.stringify(changes.files, null, 2)) + '</pre></details>'

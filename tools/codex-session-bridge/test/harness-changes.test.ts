@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +10,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { createHttpServer } from '../src/http.js';
 import { Harness } from '../src/harness/harness.ts';
 import { createHarnessServer } from '../src/harness/server.ts';
+import { ChangesSource, ChangesSourceError } from '../src/harness/changes-source.ts';
 import type { AddressInfo } from 'node:net';
 import type { Source, SourceRun, SourceSession } from '../src/harness/model.ts';
 
@@ -152,4 +153,118 @@ test('legacy registered journal records replay without inventing a baseline', as
   assert.equal(detail.ticket.comparison_baseline, null);
   assert.equal(detail.changes.state, 'unavailable');
   assert.ok(detail.changes.evidence_gaps.some((gap: Wire) => gap.code === 'BASELINE_NOT_RECORDED'));
+});
+
+test('tracked and untracked protected names never expose content, hashes or previews', async t => {
+  const repo = repository(), runtime = mkdtempSync(path.join(os.tmpdir(), 'harness-changes-protected-'));
+  const f = await publicFixture(runtime, sourceFixture(repo.root).source);
+  t.after(async () => { await f.close(); rmSync(runtime, { recursive: true, force: true }); rmSync(repo.root, { recursive: true, force: true }); });
+  const ticket = await f.register({ project_key: 'Y', project_name: 'Yuki', ticket_key: 'HARNESS-007', title: '保护内容',
+    reference: 'issue:47', expected_worktree: repo.root, fixed_point: repo.fixedPoint });
+  const trackedSecret = 'tracked-secret-fixture-value', untrackedSecret = 'untracked-secret-fixture-value';
+  writeFileSync(path.join(repo.root, '.env.production'), trackedSecret, 'utf8');
+  git(repo.root, 'add', '.env.production'); git(repo.root, 'commit', '-qm', 'add protected tracked fixture');
+  mkdirSync(path.join(repo.root, 'select-key'));
+  writeFileSync(path.join(repo.root, 'select-key', 'credential.pem'), untrackedSecret, 'utf8');
+  const detail = await f.detail(ticket.ticket_id);
+  for (const name of ['.env.production', 'select-key/credential.pem']) {
+    const file = detail.changes.files.find((item: Wire) => item.path === name);
+    assert.equal(file.content.state, 'unavailable');
+    assert.equal(file.content.sha256, null);
+    assert.equal(file.content.preview, null);
+  }
+  assert.equal(detail.changes.freshness, 'current');
+  assert.equal(detail.changes.completeness, 'incomplete');
+  assert.ok(!JSON.stringify(detail).includes(trackedSecret));
+  assert.ok(!JSON.stringify(detail).includes(untrackedSecret));
+  assert.match(await f.page(ticket.ticket_id), /完整性[^<]*incomplete|incomplete[^<]*完整性/);
+});
+
+test('Ticket detail refreshes only its target while project overview stays summary-only', async t => {
+  const first = repository(), second = repository(), runtime = mkdtempSync(path.join(os.tmpdir(), 'harness-changes-summary-'));
+  const f = await publicFixture(runtime, sourceFixture(first.root).source);
+  t.after(async () => { await f.close(); rmSync(runtime, { recursive: true, force: true });
+    rmSync(first.root, { recursive: true, force: true }); rmSync(second.root, { recursive: true, force: true }); });
+  const target = await f.register({ project_key: 'Y', project_name: 'Yuki', ticket_key: 'TARGET', title: '目标',
+    reference: 'issue:47', expected_worktree: first.root, fixed_point: first.fixedPoint });
+  await f.register({ project_key: 'Y', project_name: 'Yuki', ticket_key: 'OTHER', title: '无关',
+    reference: 'issue:48', expected_worktree: second.root, fixed_point: second.fixedPoint });
+  const inspected: string[] = [];
+  const original = f.harness.changes.facts.inspect.bind(f.harness.changes.facts);
+  f.harness.changes.facts.inspect = baseline => { inspected.push(baseline.worktree_root); return original(baseline); };
+  await f.detail(target.ticket_id);
+  assert.deepEqual(inspected, [first.root]);
+
+  writeFileSync(path.join(first.root, 'summary-only.txt'), 'preview-must-not-leak', 'utf8');
+  git(first.root, 'add', 'summary-only.txt'); git(first.root, 'commit', '-qm', 'summary fixture');
+  const response = await fetch(`${f.base}/api/projects`, { headers: { cookie: f.cookie } });
+  assert.equal(response.status, 200);
+  const overview = await response.json() as Wire;
+  const changes = overview.projects[0].tickets.find((item: Wire) => item.id === target.ticket_id).changes;
+  assert.equal(changes.files, undefined);
+  assert.equal(changes.commits, undefined);
+  assert.equal(changes.runs, undefined);
+  assert.equal(typeof changes.file_count, 'number');
+  assert.equal(typeof changes.commit_count, 'number');
+  assert.ok(!JSON.stringify(overview).includes('preview-must-not-leak'));
+});
+
+test('same-path repository replacement is rejected even when the baseline commit still exists', async t => {
+  const repo = repository(), runtime = mkdtempSync(path.join(os.tmpdir(), 'harness-changes-replaced-'));
+  const f = await publicFixture(runtime, sourceFixture(repo.root).source);
+  t.after(async () => { await f.close(); rmSync(runtime, { recursive: true, force: true }); rmSync(repo.root, { recursive: true, force: true }); });
+  const ticket = await f.register({ project_key: 'Y', project_name: 'Yuki', ticket_key: 'HARNESS-007', title: '仓库替换',
+    reference: 'issue:47', expected_worktree: repo.root, fixed_point: repo.fixedPoint });
+  const before = await f.detail(ticket.ticket_id);
+  assert.equal(typeof before.ticket.comparison_baseline.repository_instance_id, 'string');
+  const originalGit = path.join(repo.root, '.git-original');
+  renameSync(path.join(repo.root, '.git'), originalGit);
+  git(repo.root, 'init', '-q');
+  git(repo.root, 'config', 'user.name', 'Harness Fixture');
+  git(repo.root, 'config', 'user.email', 'harness@example.invalid');
+  git(repo.root, 'fetch', '-q', originalGit, repo.fixedPoint);
+  git(repo.root, 'reset', '--hard', '-q', 'FETCH_HEAD');
+  const replaced = await f.detail(ticket.ticket_id);
+  assert.equal(replaced.changes.state, 'unavailable');
+  assert.equal(replaced.changes.completeness, 'unknown');
+  assert.ok(replaced.changes.evidence_gaps.some((gap: Wire) => gap.code === 'REPOSITORY_MISMATCH'));
+});
+
+test('merge-base distinguishes ancestry, real divergence and command failure', () => {
+  const repo = repository();
+  try {
+    const source = new ChangesSource(), baseline = source.capture(repo.root, repo.fixedPoint);
+    assert.ok(!source.inspect(baseline).gaps.some(gap => gap.code === 'HISTORY_DIVERGED'));
+    git(repo.root, 'checkout', '-q', '--orphan', 'unrelated');
+    git(repo.root, 'rm', '-q', '-rf', '.');
+    writeFileSync(path.join(repo.root, 'replacement.txt'), 'unrelated history\n', 'utf8');
+    git(repo.root, 'add', 'replacement.txt'); git(repo.root, 'commit', '-qm', 'unrelated');
+    assert.ok(source.inspect(baseline).gaps.some(gap => gap.code === 'HISTORY_DIVERGED'));
+
+    const failingSpawn = ((command: string, args: readonly string[], options: object) => {
+      if (args.includes('merge-base')) return { pid: 0, output: [], stdout: Buffer.alloc(0), stderr: Buffer.from('fatal fixture'),
+        status: 2, signal: null, error: undefined };
+      return spawnSync(command, args, options as never);
+    }) as unknown as typeof spawnSync;
+    const failing = new ChangesSource({ spawn: failingSpawn });
+    assert.throws(() => failing.inspect(baseline), error => error instanceof ChangesSourceError && error.code === 'GIT_UNAVAILABLE');
+  } finally { rmSync(repo.root, { recursive: true, force: true }); }
+});
+
+test('current Changes report and render material incompleteness independently from freshness', async t => {
+  const repo = repository(), runtime = mkdtempSync(path.join(os.tmpdir(), 'harness-changes-completeness-'));
+  const f = await publicFixture(runtime, sourceFixture(repo.root).source);
+  t.after(async () => { await f.close(); rmSync(runtime, { recursive: true, force: true }); rmSync(repo.root, { recursive: true, force: true }); });
+  const ticket = await f.register({ project_key: 'Y', project_name: 'Yuki', ticket_key: 'HARNESS-007', title: '完整性',
+    reference: 'issue:47', expected_worktree: repo.root, fixed_point: repo.fixedPoint });
+  writeFileSync(path.join(repo.root, 'large.txt'), Buffer.alloc(65 * 1024, 65));
+  const detail = await f.detail(ticket.ticket_id);
+  assert.equal(detail.changes.freshness, 'current');
+  assert.equal(detail.changes.completeness, 'incomplete');
+  const page = await f.page(ticket.ticket_id);
+  assert.match(page, /累计 Changes[^<]*current[^<]*incomplete/);
+  assert.match(page, /class="warning"/);
+  const home = await (await fetch(f.base)).text();
+  assert.match(home, /Changes current \/ (?:incomplete|unknown)/);
+  assert.match(home, /异常待处理/);
 });

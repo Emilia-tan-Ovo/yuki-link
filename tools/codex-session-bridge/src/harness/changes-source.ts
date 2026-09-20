@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { redact } from '../errors.js';
@@ -7,7 +7,8 @@ import type { BaselineGap, ComparisonBaseline } from './model.ts';
 
 const now = () => new Date().toISOString();
 const MAX_FILES = 2048;
-const protectedPart = /^(?:\.git|\.codex|\.agents|\.ssh|\.aws|\.azure|\.kube|runtime|secrets?|credentials?|.*(?:api[-_]?key|private[-_]?key|access[-_]?token|refresh[-_]?token).*)$/i;
+const protectedPart = /^(?:\.env(?:\..*)?|\.git|\.codex|\.agents|\.ssh|\.aws|\.azure|\.kube|\.npmrc|\.netrc|runtime|secrets?|credentials?|select-key|tunnel-client|auth\.json|.*(?:api[-_]?key|runtime[-_]?key|private[-_]?key|access[-_]?token|refresh[-_]?token).*|.*\.(?:key|pem|pfx|p12))$/i;
+const protectedPath = (value: string) => value.split(/[\\/]+/).filter(Boolean).some(part => protectedPart.test(part));
 const inside = (root: string, target: string) => {
   const relative = path.relative(root, target);
   return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
@@ -53,14 +54,18 @@ export class ChangesSourceError extends Error {
   constructor(code: BaselineGap['code']) { super(code); this.code = code; }
 }
 
-export interface ChangesSourceOptions { git?: () => string }
+export interface ChangesSourceOptions { git?: () => string; spawn?: typeof spawnSync }
 
 export class ChangesSource {
   git: () => string;
-  constructor(options: ChangesSourceOptions = {}) { this.git = options.git ?? (() => 'git'); }
+  spawn: typeof spawnSync;
+  constructor(options: ChangesSourceOptions = {}) {
+    this.git = options.git ?? (() => 'git');
+    this.spawn = options.spawn ?? spawnSync;
+  }
 
   private run(cwd: string, args: string[], maxBuffer = 4 * 1024 * 1024) {
-    const result = spawnSync(this.git(), ['--no-optional-locks', '-c', 'core.hooksPath=', '-c', 'core.fsmonitor=false',
+    const result = this.spawn(this.git(), ['--no-optional-locks', '-c', 'core.hooksPath=', '-c', 'core.fsmonitor=false',
       '-c', 'diff.external=', '-c', 'core.quotepath=false', ...args], {
       cwd, encoding: 'buffer', windowsHide: true, shell: false, timeout: 5000, maxBuffer,
     });
@@ -79,7 +84,10 @@ export class ChangesSource {
       if (error instanceof ChangesSourceError) throw error;
       throw new ChangesSourceError('GIT_UNAVAILABLE');
     }
-    return { root, repository };
+    try {
+      const info = statSync(repository);
+      return { root, repository, instance: `${info.dev}:${info.ino}:${info.birthtimeMs}` };
+    } catch { throw new ChangesSourceError('GIT_UNAVAILABLE'); }
   }
 
   private content(root: string, relative: string) {
@@ -88,7 +96,9 @@ export class ChangesSource {
       content: { state, size: null, sha256: null, preview: null, content_type: 'unknown' as const },
       gaps: [{ code, source: 'filesystem' as const, impact, path: relative }],
     });
-    if (!relative || path.isAbsolute(relative) || /[\x00-\x1f]/.test(relative)) return unavailable('UNTRACKED_CONTENT_UNAVAILABLE', 'unsafe path is not read');
+    if (!relative || path.isAbsolute(relative) || /[\x00-\x1f]/.test(relative) || protectedPath(relative)) {
+      return unavailable('UNTRACKED_CONTENT_UNAVAILABLE', 'unsafe or protected path is not read');
+    }
     const target = path.resolve(root, relative), parts = path.relative(root, target).split(path.sep);
     if (!inside(root, target) || parts.some(part => protectedPart.test(part))) return unavailable('UNTRACKED_CONTENT_UNAVAILABLE', 'protected path is not read');
     try {
@@ -99,7 +109,10 @@ export class ChangesSource {
           gaps: [{ code: 'CONTENT_TRUNCATED', source: 'filesystem' as const, impact: 'file exceeds the safe content limit', path: relative }] };
       }
       const resolved = realpathSync.native(target);
-      if (!inside(root, resolved)) return unavailable('UNTRACKED_CONTENT_UNAVAILABLE', 'resolved path escapes the worktree');
+      const resolvedRelative = path.relative(root, resolved);
+      if (!inside(root, resolved) || protectedPath(resolvedRelative)) {
+        return unavailable('UNTRACKED_CONTENT_UNAVAILABLE', 'resolved path escapes the worktree or is protected');
+      }
       const bytes = readFileSync(resolved), sha256 = createHash('sha256').update(bytes).digest('hex');
       const binary = bytes.includes(0);
       const preview = binary ? null : redact(bytes.toString('utf8').slice(0, 8192));
@@ -133,7 +146,8 @@ export class ChangesSource {
     try { oid = this.line(identity.root, ['rev-parse', '--verify', fixedPoint + '^{commit}']); }
     catch { throw new ChangesSourceError('BASELINE_COMMIT_UNAVAILABLE'); }
     const observedAt = now(), start = this.startEntries(identity.root);
-    return { repository_id: identity.repository, worktree_root: identity.root, commit_oid: oid, recorded_at: observedAt,
+    return { repository_id: identity.repository, repository_instance_id: identity.instance,
+      worktree_root: identity.root, commit_oid: oid, recorded_at: observedAt,
       adoption: 'at-registration', start_observation: { head: this.line(identity.root, ['rev-parse', 'HEAD']),
         entries: start.entries, integrity: start.integrity, observed_at: observedAt }, integrity: start.integrity };
   }
@@ -154,7 +168,8 @@ export class ChangesSource {
 
   inspect(baseline: ComparisonBaseline): CurrentChangesFacts {
     const checkedAt = now(), identity = this.identity(baseline.worktree_root);
-    if (!samePath(identity.root, baseline.worktree_root) || !samePath(identity.repository, baseline.repository_id)) {
+    if (!samePath(identity.root, baseline.worktree_root) || !samePath(identity.repository, baseline.repository_id)
+      || baseline.repository_instance_id !== undefined && identity.instance !== baseline.repository_instance_id) {
       throw new ChangesSourceError('REPOSITORY_MISMATCH');
     }
     try { this.run(identity.root, ['cat-file', '-e', baseline.commit_oid + '^{commit}']); }
@@ -183,9 +198,10 @@ export class ChangesSource {
     if (tracked.length + untracked.length > MAX_FILES) gaps.push({ code: 'CONTENT_TRUNCATED', source: 'git',
       impact: `file list is limited to ${MAX_FILES} entries` });
     let commits: CommitFact[] = [];
-    const ancestor = spawnSync(this.git(), ['--no-optional-locks', '-c', 'core.hooksPath=', 'merge-base', '--is-ancestor',
-      baseline.commit_oid, currentHead], { cwd: identity.root, windowsHide: true, shell: false, timeout: 5000 }).status === 0;
-    if (ancestor) {
+    const ancestor = this.spawn(this.git(), ['--no-optional-locks', '-c', 'core.hooksPath=', 'merge-base', '--is-ancestor',
+      baseline.commit_oid, currentHead], { cwd: identity.root, windowsHide: true, shell: false, timeout: 5000 });
+    if (ancestor.error || ancestor.status === null || ancestor.status > 1) throw new ChangesSourceError('GIT_UNAVAILABLE');
+    if (ancestor.status === 0) {
       const fields = splitZero(this.run(identity.root, ['log', '-z', '--format=%H%x00%aI%x00%s', baseline.commit_oid + '..' + currentHead, '--']));
       for (let index = 0; index + 2 < fields.length; index += 3) commits.push({ oid: fields[index]!, authored_at: fields[index + 1]!, subject: redact(fields[index + 2]!) });
     } else gaps.push({ code: 'HISTORY_DIVERGED', source: 'git', impact: 'commit drilldown is incomplete because baseline is not an ancestor of HEAD' });
@@ -193,5 +209,62 @@ export class ChangesSource {
     return { checked_at: checkedAt, current_head: currentHead, files, commits, gaps,
       sources: { git: { state: 'observed', observed_at: checkedAt },
         filesystem: { state: gaps.some(gap => gap.source === 'filesystem') ? 'incomplete' : 'observed', observed_at: checkedAt } } };
+  }
+
+  summary(baseline: ComparisonBaseline) {
+    const checkedAt = now(), identity = this.identity(baseline.worktree_root);
+    if (!samePath(identity.root, baseline.worktree_root) || !samePath(identity.repository, baseline.repository_id)
+      || baseline.repository_instance_id !== undefined && identity.instance !== baseline.repository_instance_id) {
+      throw new ChangesSourceError('REPOSITORY_MISMATCH');
+    }
+    try { this.run(identity.root, ['cat-file', '-e', baseline.commit_oid + '^{commit}']); }
+    catch { throw new ChangesSourceError('BASELINE_COMMIT_UNAVAILABLE'); }
+    const currentHead = this.line(identity.root, ['rev-parse', 'HEAD']);
+    const tracked = splitZero(this.run(identity.root, ['diff', '--name-only', '-z', baseline.commit_oid, '--'], 256 * 1024)).map(slash);
+    const deleted = new Set(splitZero(this.run(identity.root, ['diff', '--diff-filter=D', '--name-only', '-z', baseline.commit_oid, '--'], 256 * 1024)).map(slash));
+    const untracked = splitZero(this.run(identity.root, ['ls-files', '--others', '--exclude-standard', '-z', '--'], 256 * 1024)).map(slash);
+    const paths = [...new Set([...tracked, ...untracked])];
+    const gaps: EvidenceGap[] = [];
+    if (paths.length > MAX_FILES) gaps.push({ code: 'CONTENT_TRUNCATED', source: 'git', impact: `file count is limited to ${MAX_FILES} entries` });
+    for (const relative of paths.slice(0, MAX_FILES)) {
+      if (deleted.has(relative)) continue;
+      const unavailable = (code: string, impact: string) => gaps.push({ code, source: 'filesystem' as const, impact, path: relative });
+      if (!relative || path.isAbsolute(relative) || /[\x00-\x1f]/.test(relative) || protectedPath(relative)) {
+        unavailable('UNTRACKED_CONTENT_UNAVAILABLE', 'unsafe or protected content is not materialized in summary');
+        continue;
+      }
+      const target = path.resolve(identity.root, relative);
+      if (!inside(identity.root, target) || protectedPath(path.relative(identity.root, target))) {
+        unavailable('UNTRACKED_CONTENT_UNAVAILABLE', 'protected content is not materialized in summary');
+        continue;
+      }
+      try {
+        const stat = lstatSync(target);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+          unavailable('UNTRACKED_CONTENT_UNAVAILABLE', 'special content is not materialized in summary');
+          continue;
+        }
+        if (stat.size > 64 * 1024) {
+          unavailable('CONTENT_TRUNCATED', 'file exceeds the safe content limit');
+          continue;
+        }
+        const resolved = realpathSync.native(target);
+        if (!inside(identity.root, resolved) || protectedPath(path.relative(identity.root, resolved))) {
+          unavailable('UNTRACKED_CONTENT_UNAVAILABLE', 'resolved content is protected or escapes the worktree');
+        }
+      } catch {
+        unavailable('UNTRACKED_CONTENT_UNAVAILABLE', 'content metadata cannot be safely inspected');
+      }
+    }
+    const ancestor = this.spawn(this.git(), ['--no-optional-locks', '-c', 'core.hooksPath=', 'merge-base', '--is-ancestor',
+      baseline.commit_oid, currentHead], { cwd: identity.root, windowsHide: true, shell: false, timeout: 5000 });
+    if (ancestor.error || ancestor.status === null || ancestor.status > 1) throw new ChangesSourceError('GIT_UNAVAILABLE');
+    let commitCount: number | null = null;
+    if (ancestor.status === 0) commitCount = Number(this.line(identity.root, ['rev-list', '--count', baseline.commit_oid + '..' + currentHead]));
+    else gaps.push({ code: 'HISTORY_DIVERGED', source: 'git', impact: 'commit count is unavailable because baseline is not an ancestor of HEAD' });
+    return { checked_at: checkedAt, current_head: currentHead, file_count: Math.min(paths.length, MAX_FILES),
+      file_count_limited: paths.length > MAX_FILES, commit_count: commitCount, gaps,
+      sources: { git: { state: 'observed' as const, observed_at: checkedAt },
+        filesystem: { state: gaps.some(gap => gap.source === 'filesystem') ? 'incomplete' as const : 'observed' as const, observed_at: checkedAt } } };
   }
 }

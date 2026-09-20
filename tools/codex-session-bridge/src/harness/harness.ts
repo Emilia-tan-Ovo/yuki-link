@@ -99,6 +99,7 @@ export class Harness {
     if (old) {
       const sameBaseline = old.comparison_baseline && comparisonBaseline
         ? old.comparison_baseline.repository_id === comparisonBaseline.repository_id
+          && old.comparison_baseline.repository_instance_id === comparisonBaseline.repository_instance_id
           && old.comparison_baseline.worktree_root === comparisonBaseline.worktree_root
           && old.comparison_baseline.commit_oid === comparisonBaseline.commit_oid
         : old.comparison_baseline === comparisonBaseline
@@ -208,7 +209,7 @@ export class Harness {
   overview() {
     return { projects: [...this.projects.values()].map(p => ({ ...p, tickets: [...this.tickets.values()].filter(t => t.project_id === p.id)
       .map(ticket => ({ ...ticket, workflow: this.workflowHistory.summary(ticket.id),
-        changes: this.changes.view(ticket, this.bindings.values()) })) })),
+        changes: this.changes.summary(ticket) })) })),
       recording: this.health(), workflow: unavailable,
       changes: { state: 'available', source: 'per-ticket-git-filesystem-refresh' }, acceptance: unavailable, services: unavailable };
   }

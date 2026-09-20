@@ -18,7 +18,7 @@ const startObservationEntrySchema = z.object({
   state: z.enum(['observed', 'unavailable', 'truncated']), sha256: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
 }).strict();
 export const comparisonBaselineSchema = z.object({
-  repository_id: z.string().min(1), worktree_root: z.string().min(1),
+  repository_id: z.string().min(1), repository_instance_id: z.string().min(1).optional(), worktree_root: z.string().min(1),
   commit_oid: z.string().regex(/^[0-9a-f]{40,64}$/), recorded_at: text,
   adoption: z.enum(['at-registration', 'late']),
   start_observation: z.object({
