@@ -29,12 +29,16 @@ const axisSchema = z.object({
   evidence: z.array(text).max(128), reason: nullableText,
 }).strict();
 const findingRefSchema = z.object({ origin_review_id: text, finding_id: text }).strict();
+const reviewParticipantExecutionRefSchema = z.object({
+  participant: z.enum(['coordinator', 'standards', 'spec']), runtime_ref_id: text,
+}).strict();
 export const workflowReviewSchema = z.object({
   review_id: text, original_review_id: nullableText, mode: z.enum(['full', 'focused', 'evidence']),
   status: z.enum(['pending', 'passed', 'findings', 'incomplete']), subject_ref: text, subject_identity: hash.nullable().default(null),
   artifact_refs: z.array(text).max(64), standards: axisSchema, spec: axisSchema,
   finding_refs: z.array(findingRefSchema).max(128), isolated: z.union([z.boolean(), z.literal('unknown')]),
   applicability: applicabilitySchema, reason: nullableText, execution_refs: z.array(text).max(32).optional(),
+  participant_execution_refs: z.array(reviewParticipantExecutionRefSchema).max(3).optional(),
 }).strict();
 export const workflowFindingSchema = z.object({
   origin_review_id: text, finding_id: text,
@@ -99,6 +103,16 @@ export const workflowSnapshotSchema = z.object({
       const reference = runtimeById.get(value);
       return !reference || reference.kind !== 'codex-run' || !reference.session_id || !reference.run_id;
     })) ctx.addIssue({ code: 'custom', message: 'review requires Codex session/run references' });
+    const participantRefs = review.participant_execution_refs ?? [];
+    unique(participantRefs.map(value => value.participant), 'review participant');
+    unique(participantRefs.map(value => value.runtime_ref_id), 'review participant runtime_ref_id');
+    if (participantRefs.some(value => !runtimeSet.has(value.runtime_ref_id))) {
+      ctx.addIssue({ code: 'custom', message: 'review participant execution reference missing' });
+    }
+    if (participantRefs.some(value => {
+      const reference = runtimeById.get(value.runtime_ref_id);
+      return !reference || reference.kind !== 'codex-run' || !reference.session_id || !reference.run_id;
+    })) ctx.addIssue({ code: 'custom', message: 'review participant requires Codex session/run reference' });
   }
   for (const finding of snapshot.findings) {
     if (!reviewSet.has(finding.origin_review_id)) ctx.addIssue({ code: 'custom', message: 'finding origin review missing' });

@@ -62,7 +62,7 @@ HTTP YCA 后台启动后独立采集显式关联的 Codex 历史，浏览器关�
 
 `harness_associate_child_conversation({ticket_id, request_id, session_id, run_id, relation})` 只记录已经真实启动的 Review 或 Acceptance Agent execution。Review relation 明确给出 `review_id` 与实际存在的 `coordinator | standards | spec` participant；Acceptance relation 给出 `acceptance_id`。入口不启动、发送或续跑模型，也不改变 `harness_attach` 的 Ticket 主 Conversation 语义。
 
-- 当前 Workflow 必须存在相同稳定 identity，并通过 `execution_refs` 指向与输入 session/run 相交的 `codex-run` runtime ref。Review schema 的 `execution_refs` 为向后兼容可选来源；旧快照缺失时不能建立关联。Acceptance 仅允许 `actor.method=agent`；Emilia deterministic Acceptance 不创建子 Conversation。
+- 当前 Workflow 必须存在相同稳定 identity，并指向与输入 session/run 相交的 `codex-run` runtime ref。Review 的 `participant_execution_refs` 显式绑定 participant 与 runtime ref；`standards` / `spec` 只能按该映射关联。旧快照的可选 `execution_refs` 仍可用于默认单 reviewer 的 `coordinator`，但不会据此伪造独立 participant。Acceptance 仅允许 `actor.method=agent`；Emilia deterministic Acceptance 不创建子 Conversation。
 - 同 Ticket/relation/participant 保持稳定子 Conversation；focused re-review 使用自己的 `review_id`，并从 Workflow 投影原 Review/finding 链。只有实际关联的 participant 才展示，不为 Standards/Spec 创建占位。
 - 子 Conversation 与首个或 replacement run binding 在单条 Journal operation flush 后发布；同 request_id 相同 payload 返回原回执，不同 payload 返回 `REQUEST_CONFLICT`。session/run 已属于主 Conversation、其他子 Conversation 或其他 Ticket 时返回 attribution conflict。重启从原 Journal 重建 relation、binding、幂等索引与导航。
 - Harness 使用 Workflow execution ref、真实 session/run、首次 run 与 thread.started 来源计算 isolation assessment。证据完整为 `verified`，来源不足为 `unknown`，发现 session/thread/run 复用或冲突为 `mismatch`；Workflow 报告的 `isolated` 单独展示，父子关系本身不作为 fresh 证明。

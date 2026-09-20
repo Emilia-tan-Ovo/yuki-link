@@ -42,9 +42,12 @@ export class ConversationHistory {
     let refs: string[];
     if (input.relation.kind === 'review') {
       const reviewId = input.relation.review_id;
+      const participant = input.relation.participant;
       const review = current.reviews.find(value => value.review_id === reviewId);
       if (!review) throw new HarnessError('ATTRIBUTION_MISMATCH', { reason: 'review-not-observed' });
-      refs = review.execution_refs ?? [];
+      const participantRef = review.participant_execution_refs?.find(value => value.participant === participant);
+      refs = participantRef ? [participantRef.runtime_ref_id]
+        : participant === 'coordinator' ? review.execution_refs ?? [] : [];
     } else {
       const acceptance = current.acceptance;
       if (acceptance.acceptance_id !== input.relation.acceptance_id || acceptance.actor.method !== 'agent') {
@@ -59,7 +62,7 @@ export class ConversationHistory {
     if (!matched) throw new HarnessError('ATTRIBUTION_MISMATCH', { reason: 'workflow-execution-mismatch' });
     return current;
   }
-  private assess(input: ChildAssociation): IsolationAssessment {
+  private assess(input: ChildAssociation, conversationId: string): IsolationAssessment {
     const reasons: IsolationAssessment['reasons'] = [];
     let state: IsolationAssessment['state'] = 'verified';
     const add = (next: IsolationAssessment['state'], code: string, source: string) => {
@@ -79,6 +82,10 @@ export class ConversationHistory {
       const first = [...runs].sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id))[0];
       if (target && first?.id !== target.id) add('mismatch', 'SESSION_REUSED_BEFORE_BOUND_RUN', 'source.runs');
     } catch { add('unknown', 'RUN_SOURCE_UNAVAILABLE', 'source.runs'); }
+    if ([...this.bindings.values()].some(binding => binding.session_id === input.session_id
+      && binding.conversation_id !== conversationId)) {
+      add('mismatch', 'SESSION_BOUND_TO_OTHER_CONVERSATION', 'bindings');
+    }
     const run = runs.find(value => value.id === input.run_id);
     if (run) {
       try {
@@ -110,24 +117,32 @@ export class ConversationHistory {
     const session = this.source.session(input.session_id);
     const run = this.source.runs(session.id).find(value => value.id === input.run_id);
     if (!run || run.session_id !== session.id) throw new HarnessError('ATTRIBUTION_MISMATCH', { reason: 'run-session-mismatch' });
-    const conflict = [...this.bindings.values()].find(binding => binding.session_id === input.session_id
-      && (binding.scope === 'session' || binding.run_id === input.run_id));
     const key = relationKey(input.ticket_id, input.relation);
     const conversation = this.relations.get(key) ?? { conversation_id: randomUUID(), ticket_id: ticket.id,
       parent_conversation_id: ticket.main_conversation_id, relation: input.relation, created_at: now() };
+    const sessionBindings = [...this.bindings.values()].filter(binding => binding.session_id === input.session_id);
+    const conversationConflict = sessionBindings.find(binding => binding.conversation_id !== conversation.conversation_id);
+    if (conversationConflict) {
+      throw new HarnessError('ATTRIBUTION_CONFLICT', {
+        conversation_id: conversationConflict.conversation_id, binding_id: conversationConflict.id,
+      });
+    }
+    const conflict = sessionBindings.find(binding => binding.scope === 'session' || binding.run_id === input.run_id);
     if (conflict) {
-      if (conflict.conversation_id !== conversation.conversation_id) {
-        throw new HarnessError('ATTRIBUTION_CONFLICT', { conversation_id: conflict.conversation_id, binding_id: conflict.id });
-      }
       const existing = this.journal.records.find(record => record.data.kind === 'child_conversation_associated'
         && record.data.association.binding.id === conflict.id);
-      if (existing?.data.kind === 'child_conversation_associated') return this.receipt(existing.data.association, true);
+      if (existing?.data.kind === 'child_conversation_associated') {
+        const association = { ...existing.data.association, request_id: input.request_id, fingerprint };
+        const entry = this.journal.append({ kind: 'child_conversation_associated', association });
+        this.apply(entry);
+        return this.receipt(association, true);
+      }
     }
     const previous = [...this.bindings.values()].filter(binding => binding.conversation_id === conversation.conversation_id).at(-1);
     const binding: Binding = { id: randomUUID(), ticket_id: ticket.id, conversation_id: conversation.conversation_id,
       source_id: this.journal.sourceId, session_id: input.session_id, scope: 'run', run_id: input.run_id, attached_at: now() };
     const association: ChildConversationAssociationRecord = { request_id: input.request_id, fingerprint, conversation,
-      binding, previous_session_id: previous?.session_id ?? null, isolation: this.assess(input) };
+      binding, previous_session_id: previous?.session_id ?? null, isolation: this.assess(input, conversation.conversation_id) };
     const entry = this.journal.append({ kind: 'child_conversation_associated', association });
     this.bindings.set(binding.id, binding); this.apply(entry);
     return this.receipt(association, false);

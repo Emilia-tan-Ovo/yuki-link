@@ -194,6 +194,15 @@ test('association 请求幂等、归属冲突与 Journal 重启重建保持一�
     ...input, relation: { ...input.relation, participant: 'standards' },
   } }));
   assert.equal(changed.error.code, 'REQUEST_CONFLICT');
+  const aliasRequestId = randomUUID();
+  const aliasInput = { ...input, request_id: aliasRequestId };
+  const alias = payload(await f.client.callTool({ name: 'harness_associate_child_conversation', arguments: aliasInput }));
+  assert.equal(alias.deduplicated, true);
+  assert.equal(alias.cursor, first.cursor);
+  const changedAlias = payload(await f.client.callTool({ name: 'harness_associate_child_conversation', arguments: {
+    ...aliasInput, relation: { ...aliasInput.relation, participant: 'standards' },
+  } }));
+  assert.equal(changedAlias.error.code, 'REQUEST_CONFLICT');
   const mainConflict = payload(await f.client.callTool({ name: 'harness_attach', arguments: {
     ticket_id: ticket.ticket_id, session_id: f.session.id, run_id: f.run.id,
   } }));
@@ -205,6 +214,9 @@ test('association 请求幂等、归属冲突与 Journal 重启重建保持一�
     const afterRestart = restored.associateChildConversation(input);
     assert.equal(afterRestart.deduplicated, true);
     assert.equal(afterRestart.conversation_id, first.conversation_id);
+    assert.throws(() => restored.associateChildConversation({
+      ...aliasInput, relation: { ...aliasInput.relation, participant: 'standards' },
+    }), (error: unknown) => (error as { code?: string }).code === 'REQUEST_CONFLICT');
     assert.equal(restored.detail(ticket.ticket_id).child_conversations.length, 1);
     assert.match(JSON.stringify(restored.conversationDetail(first.conversation_id)), /fresh review evidence/);
   } finally { restored.close(); rmSync(f.runtime, { recursive: true, force: true }); }
@@ -239,7 +251,10 @@ test('隔离 assessment 对缺失来源返回 unknown，对 session/run 复用�
     project_key: 'yuki-link', project_name: 'yuki-link', ticket_key: 'HARNESS-006', title: 'Review 子会话', reference: 'issue:46',
   } }));
   const reviewId = 'review-full-1', snapshot = workflow(reviewId, f.session.id, f.run.id);
-  snapshot.reviews[0].execution_refs.push('standards-run', 'spec-run');
+  snapshot.reviews[0].participant_execution_refs = [
+    { participant: 'standards', runtime_ref_id: 'standards-run' },
+    { participant: 'spec', runtime_ref_id: 'spec-run' },
+  ];
   snapshot.runtime_refs.push(
     { runtime_ref_id: 'standards-run', kind: 'codex-run', session_id: unknown.session.id, run_id: unknown.run.id,
       task_id: null, call_id: null, expected_state: 'completed', source: 'bridge durable run' },
@@ -255,4 +270,93 @@ test('隔离 assessment 对缺失来源返回 unknown，对 session/run 复用�
   }));
   assert.equal((await associate(unknown, 'standards')).isolation.state, 'unknown');
   assert.equal((await associate(reused, 'spec')).isolation.state, 'mismatch');
+});
+
+test('独立 reviewer 只能按 Workflow 声明的 participant 关联 runtime ref', async t => {
+  const f = await fixture(); t.after(f.close);
+  const standards = f.addExecution('standards evidence');
+  const spec = f.addExecution('spec evidence');
+  const legacy = f.addExecution('legacy coordinator evidence');
+  const ticket = payload(await f.client.callTool({ name: 'harness_register_ticket', arguments: {
+    project_key: 'yuki-link', project_name: 'yuki-link', ticket_key: 'HARNESS-006', title: 'Review 子会话', reference: 'issue:46',
+  } }));
+  const reviewId = 'review-full-1', snapshot = workflow(reviewId, f.session.id, f.run.id);
+  snapshot.reviews[0].participant_execution_refs = [
+    { participant: 'standards', runtime_ref_id: 'standards-run' },
+    { participant: 'spec', runtime_ref_id: 'spec-run' },
+  ];
+  snapshot.reviews.push({ ...structuredClone(snapshot.reviews[0]), review_id: 'review-legacy',
+    execution_refs: ['legacy-run'], participant_execution_refs: undefined });
+  snapshot.runtime_refs.push(
+    { runtime_ref_id: 'standards-run', kind: 'codex-run', session_id: standards.session.id, run_id: standards.run.id,
+      task_id: null, call_id: null, expected_state: 'completed', source: 'bridge durable run' },
+    { runtime_ref_id: 'spec-run', kind: 'codex-run', session_id: spec.session.id, run_id: spec.run.id,
+      task_id: null, call_id: null, expected_state: 'completed', source: 'bridge durable run' },
+    { runtime_ref_id: 'legacy-run', kind: 'codex-run', session_id: legacy.session.id, run_id: legacy.run.id,
+      task_id: null, call_id: null, expected_state: 'completed', source: 'bridge durable run' },
+  );
+  assert.equal((await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot,
+  } })).isError, undefined);
+  const associate = async (execution: { session: SourceSession; run: SourceRun }, participant: 'coordinator' | 'standards' | 'spec',
+    targetReviewId = reviewId) =>
+    payload(await f.client.callTool({ name: 'harness_associate_child_conversation', arguments: {
+      ticket_id: ticket.ticket_id, request_id: randomUUID(), session_id: execution.session.id, run_id: execution.run.id,
+      relation: { kind: 'review', review_id: targetReviewId, participant },
+    } }));
+
+  assert.equal((await associate(spec, 'standards')).error.code, 'ATTRIBUTION_MISMATCH');
+  assert.equal((await associate(standards, 'spec')).error.code, 'ATTRIBUTION_MISMATCH');
+  assert.ok((await associate(standards, 'standards')).conversation_id);
+  assert.equal((await associate(legacy, 'standards', 'review-legacy')).error.code, 'ATTRIBUTION_MISMATCH');
+  assert.ok((await associate(legacy, 'coordinator', 'review-legacy')).conversation_id);
+});
+
+test('同一 session 不因绑定顺序而跨 child Conversation 复用', async t => {
+  const f = await fixture(); t.after(f.close);
+  const laterFirst = f.addExecution('later run bound first', { priorRun: true });
+  const earlierFirst = f.addExecution('earlier run bound first', { priorRun: true });
+  const continuation = f.addExecution('same conversation continuation', { priorRun: true });
+  const ticket = payload(await f.client.callTool({ name: 'harness_register_ticket', arguments: {
+    project_key: 'yuki-link', project_name: 'yuki-link', ticket_key: 'HARNESS-006', title: 'Review 子会话', reference: 'issue:46',
+  } }));
+  const snapshot = workflow('review-a', f.session.id, f.run.id);
+  const addReviewExecution = (reviewId: string, runtimeRefId: string, session: SourceSession, run: SourceRun) => {
+    snapshot.reviews.push({ ...structuredClone(snapshot.reviews[0]), review_id: reviewId, execution_refs: [runtimeRefId] });
+    snapshot.runtime_refs.push({ runtime_ref_id: runtimeRefId, kind: 'codex-run', session_id: session.id, run_id: run.id,
+      task_id: null, call_id: null, expected_state: 'completed', source: 'bridge durable run' });
+  };
+  const laterFirstPrior = f.source.runs(laterFirst.session.id)[0];
+  const earlierFirstPrior = f.source.runs(earlierFirst.session.id)[0];
+  addReviewExecution('review-b', 'later-current', laterFirst.session, laterFirst.run);
+  addReviewExecution('review-c', 'later-prior', laterFirst.session, laterFirstPrior);
+  addReviewExecution('review-d', 'earlier-prior', earlierFirst.session, earlierFirstPrior);
+  addReviewExecution('review-e', 'earlier-current', earlierFirst.session, earlierFirst.run);
+  const continuationPrior = f.source.runs(continuation.session.id)[0];
+  snapshot.reviews.push({ ...structuredClone(snapshot.reviews[0]), review_id: 'review-f',
+    execution_refs: ['continuation-prior', 'continuation-current'] });
+  snapshot.runtime_refs.push(
+    { runtime_ref_id: 'continuation-prior', kind: 'codex-run', session_id: continuation.session.id,
+      run_id: continuationPrior.id, task_id: null, call_id: null, expected_state: 'completed', source: 'bridge durable run' },
+    { runtime_ref_id: 'continuation-current', kind: 'codex-run', session_id: continuation.session.id,
+      run_id: continuation.run.id, task_id: null, call_id: null, expected_state: 'completed', source: 'bridge durable run' },
+  );
+  assert.equal((await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot,
+  } })).isError, undefined);
+  const associate = async (execution: { session: SourceSession; run: SourceRun }, reviewId: string) => payload(await f.client.callTool({
+    name: 'harness_associate_child_conversation', arguments: { ticket_id: ticket.ticket_id, request_id: randomUUID(),
+      session_id: execution.session.id, run_id: execution.run.id,
+      relation: { kind: 'review', review_id: reviewId, participant: 'coordinator' } },
+  }));
+
+  assert.ok((await associate(laterFirst, 'review-b')).conversation_id);
+  assert.equal((await associate({ session: laterFirst.session, run: laterFirstPrior }, 'review-c')).error.code,
+    'ATTRIBUTION_CONFLICT');
+  assert.ok((await associate({ session: earlierFirst.session, run: earlierFirstPrior }, 'review-d')).conversation_id);
+  assert.equal((await associate(earlierFirst, 'review-e')).error.code, 'ATTRIBUTION_CONFLICT');
+  const continuedFrom = await associate({ session: continuation.session, run: continuationPrior }, 'review-f');
+  const continuedTo = await associate(continuation, 'review-f');
+  assert.equal(continuedTo.conversation_id, continuedFrom.conversation_id);
+  assert.notEqual(continuedTo.binding_id, continuedFrom.binding_id);
 });
