@@ -8,14 +8,17 @@ import type { ReadingItem } from './conversation-reading';
 import { captureAnchor, mergePage, restoreAnchor } from './conversation-state';
 import type { ScrollAnchor } from './conversation-state';
 import { Badge, label } from './common';
+import { selectRevealMessageIds } from './message-reveal';
 
 export function Conversation({ id, initial, relation, refresh }: { id: string; initial?: ConversationPage; relation: ConversationLink; refresh: number }) {
   const [page, setPage] = useState<ConversationPage | null>(initial ?? null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const scroll = useRef<HTMLDivElement>(null), current = useRef(page), anchor = useRef<ScrollAnchor | null>(null);
   const bottom = useRef(true), loading = useRef(false), abort = useRef(new AbortController());
+  const consumedRevealIds = useRef(new Set<string>());
   const previousRows = useRef<ReadingItem[]>([]);
   const rows = useMemo(() => groupConversation(page?.items ?? [], previousRows.current), [page]);
   const [openMembers, setOpenMembers] = useState<Set<string>>(() => new Set());
+  const [revealIds, setRevealIds] = useState<Set<string>>(() => new Set());
   current.current = page;
   async function load(direction: 'before' | 'after') {
     if (loading.current) return;
@@ -29,6 +32,11 @@ export function Conversation({ id, initial, relation, refresh }: { id: string; i
       if (scroll.current) {
         bottom.current = !old || direction === 'after' && scroll.current.scrollHeight - scroll.current.scrollTop - scroll.current.clientHeight < 100;
         if (!bottom.current) anchor.current = captureAnchor(scroll.current);
+      }
+      const newlyRevealed = selectRevealMessageIds(old, next, direction, consumedRevealIds.current);
+      if (newlyRevealed.length > 0) {
+        for (const messageId of newlyRevealed) consumedRevealIds.current.add(messageId);
+        setRevealIds(ids => new Set([...ids, ...newlyRevealed]));
       }
       setPage(old ? mergePage(old, next, direction) : next); setError('');
     } catch (e) { if (!signal.aborted) setError(e instanceof Error ? e.message : '记录暂不可用'); }
@@ -56,7 +64,7 @@ export function Conversation({ id, initial, relation, refresh }: { id: string; i
       {page?.page.has_older && <div className="history-loader"><button className="text-button" disabled={busy} onClick={() => void load('before')}><History size={16} />{busy ? '正在读取…' : '加载更早的记录'}</button></div>}
       {error && <div className="notice warning" role="alert">{error}<button className="text-button" onClick={() => void load('after')}>重试</button></div>}
       {!page && !error && <div className="empty-state">正在读取持久化历史…</div>}
-      <DisclosureProvider>{rows.map(row => row.kind === 'item' ? <ConversationRow key={row.id} item={row.item} />
+      <DisclosureProvider>{rows.map(row => row.kind === 'item' ? <ConversationRow key={row.id} item={row.item} reveal={revealIds.has(row.item.id)} />
         : <AuxiliaryGroupRow key={row.id} group={row} open={groupIsOpen(row, openMembers)} onOpenChange={open => setOpenMembers(ids => setGroupOpen(row, ids, open))} />)}</DisclosureProvider>
       {page && page.items.length === 0 && <div className="empty-state"><History size={28} /><h2>这里还没有协作记录</h2><p>已有运行产生的可观察事实会出现在这里。</p></div>}
       {page && <div className="conversation-end"><span>已加载 {page.items.length} 条记录</span><button className="text-button" disabled={busy} onClick={() => void load('after')}><ArrowDown size={14} />{page.page.has_newer ? '加载后续记录' : '查看最新'}</button></div>}

@@ -10,7 +10,7 @@
 .conversation-tabs .tabs > button[data-state='active'] { border-bottom-color: var(--accent); }
 .conversation-history { padding-top: 18px; padding-bottom: 24px; }
 .conversation-scroll { overflow-anchor: none; }
-.conversation-item { margin-bottom: 25px; animation: item-appear 160ms ease-out; }
+.conversation-item { margin-bottom: 25px; }
 .conversation-item .message, .conversation-item .timeline-event, .conversation-item .tool { margin-bottom: 0; }
 .conversation-item .advanced { margin-top: 9px; margin-bottom: 0; border-top: 0; }
 .conversation-item .advanced > button { font-size: 11px; min-height: 24px; opacity: .75; }
@@ -24,6 +24,7 @@
 .avatar.role-engineer { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-border); }
 .avatar.role-coordinator { color: var(--success); background: var(--success-soft); }
 .prose { overflow-wrap: anywhere; }
+.prose-reveal .reveal-character { opacity: 0; animation: character-reveal 1ms linear forwards; animation-delay: calc(var(--reveal-index) * var(--reveal-step)); }
 .prose p { white-space: pre-wrap; }
 .prose h3 { font-size: 17px; margin: 20px 0 12px; font-weight: 600; }
 .prose pre { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; margin: 16px 0; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
@@ -70,8 +71,9 @@
 .workbench-content > .advanced { margin-left: 0; }.warning-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--warning); }
 .diff-heading .icon-button { margin-left: auto; }.diff-current strong { overflow: hidden; text-overflow: ellipsis; }.diff-scroll > .advanced { margin: 20px; }
 .diff-render .diff { table-layout: fixed; width: 100%; }.diff-render .diff-code { overflow: hidden; overflow-wrap: anywhere; white-space: pre-wrap; word-break: break-word; }
-@keyframes item-appear { from { opacity: .7; } to { opacity: 1; } }
+@keyframes character-reveal { to { opacity: 1; } }
 @media (max-width: 760px) { .live-ticket-heading { padding: 10px 20px 6px; }.live-ticket-heading h1 { font-size: 18px; }.conversation-tabs { padding: 0 20px; }.overview-page > h1 { font-size: 26px; } }
 @media (max-width: 480px) { .auxiliary-group { margin-left: 0; }.auxiliary-group-trigger, .auxiliary-member-trigger { min-height: 44px; } }
 @media (max-width: 480px) { .kind-tool > .tool, .integrity-note { margin-left: 0; }.message-meta time { display: none; }.conversation-tabs .tabs > button { padding-inline: 9px; }.overview-tickets { grid-template-columns: 1fr; } }
-@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  .prose-reveal .reveal-character { opacity: 1 !important; } }
