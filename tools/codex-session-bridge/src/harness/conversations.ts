@@ -13,6 +13,8 @@ const relationKey = (ticketId: string, relation: ChildAssociation['relation']) =
   + (relation.kind === 'review' ? relation.review_id + ':' + relation.participant : relation.acceptance_id);
 const assessmentPriority = { verified: 0, unknown: 1, mismatch: 2 } as const;
 
+export interface PageQuery { before?: number; after?: number; limit?: number }
+
 export class ConversationHistory {
   journal: Journal;
   source: Source;
@@ -190,14 +192,42 @@ export class ConversationHistory {
         .map(child => ({ conversation_id: child.conversation_id, isolation: child.isolation })) },
     } };
   }
-  detail(id: string, after = 0) {
+  page(id: string, query: PageQuery = {}) {
+    const { before, after, limit = 50 } = query;
+    const highWater = this.journal.records.at(-1)?.cursor ?? 0;
+    if (before !== undefined && after !== undefined || !Number.isSafeInteger(limit) || limit < 1 || limit > 100
+      || [before, after].some(value => value !== undefined && (!Number.isSafeInteger(value) || value < 0 || value > highWater))) {
+      throw new HarnessError('INVALID_CURSOR');
+    }
+    const child = this.conversations.get(id);
+    const registered = this.journal.records.find(record => record.data.kind === 'registered' && record.data.ticket.main_conversation_id === id);
+    const ticketId = child?.ticket_id ?? (registered?.data.kind === 'registered' ? registered.data.ticket.id : null);
+    if (!ticketId) throw new HarnessError('CONVERSATION_NOT_FOUND');
+    const all = this.journal.records.filter(({ data: d }) => {
+      if (d.kind === 'event') return d.event.conversation_id === id;
+      if (child) return d.kind === 'child_conversation_associated' && d.association.conversation.conversation_id === id;
+      switch (d.kind) {
+        case 'registered': return d.ticket.id === ticketId;
+        case 'attached': return d.binding.conversation_id === id;
+        case 'computer_call': return d.call.conversation_id === id;
+        case 'control_action': return d.control.ticket_id === ticketId;
+        case 'owned_task': return d.task.binding.ticket_id === ticketId;
+        case 'workflow_snapshot': case 'workflow_observation': return d.workflow.conversation_id === id;
+        default: return false;
+      }
+    });
+    const candidates = all.filter(record => (before === undefined || record.cursor < before) && (after === undefined || record.cursor > after));
+    const records = after === undefined ? candidates.slice(-limit) : candidates.slice(0, limit);
+    const first = records[0]?.cursor ?? null, last = records.at(-1)?.cursor ?? null;
+    return { records, first_cursor: first, last_cursor: last, high_water_cursor: highWater,
+      has_older: all.some(record => record.cursor < (first ?? before ?? after ?? 0)),
+      has_newer: all.some(record => record.cursor > (last ?? after ?? before ?? highWater)),
+      next_cursor: last ?? after ?? 0, has_more: after === undefined
+        ? all.some(record => record.cursor < (first ?? 0)) : all.some(record => record.cursor > (last ?? after)) };
+  }
+  detail(id: string, query: PageQuery | number = {}) {
     const conversation = this.conversations.get(id);
     if (!conversation) throw new HarnessError('CONVERSATION_NOT_FOUND');
-    if (!Number.isSafeInteger(after) || after < 0 || after > this.journal.records.length) throw new HarnessError('INVALID_CURSOR');
-    const all = this.journal.records.filter(record => record.cursor > after && (
-      record.data.kind === 'child_conversation_associated' && record.data.association.conversation.conversation_id === id
-      || record.data.kind === 'event' && record.data.event.conversation_id === id));
-    const records = all.slice(0, 100), summary = this.summaryFor(conversation);
-    return { ...summary, records, next_cursor: records.at(-1)?.cursor ?? after, has_more: all.length > records.length };
+    return { ...this.summaryFor(conversation), ...this.page(id, typeof query === 'number' ? { after: query, limit: 100 } : query) };
   }
 }

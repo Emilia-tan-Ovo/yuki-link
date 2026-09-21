@@ -11,6 +11,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { createHttpServer } from '../src/http.js';
 import { Harness } from '../src/harness/harness.ts';
 import { createHarnessServer } from '../src/harness/server.ts';
+import { Presentation } from '../src/harness/presentation.ts';
 
 type Wire = Record<string, any>;
 const payload = (result: Record<string, unknown>) => result.structuredContent as Wire;
@@ -91,6 +92,31 @@ function checkpointPhase(f: Awaited<ReturnType<typeof fixture>>, phase: string) 
   writeFileSync(f.checkpoint, current.replace(/^phase: .*$/m, `phase: ${phase}`), 'utf8');
 }
 
+test('finding projection preserves distinct Review ownership for duplicate finding IDs', async t => {
+  const f = await fixture(); t.after(f.close);
+  const ticket = f.harness.register({ project_key: 'p', project_name: 'p', ticket_key: 'HARNESS-005',
+    title: 'Review ownership', reference: 'issue:45', expected_worktree: f.worktree });
+  const current = snapshot(f);
+  current.reviews = ['review-a', 'review-b'].map(review_id => ({ review_id, original_review_id: null,
+    mode: 'full', status: 'findings', subject_ref: 'implementation-1', artifact_refs: [],
+    standards: { status: 'passed', evidence: ['standards-report'], reason: null },
+    spec: { status: 'findings', evidence: ['F1'], reason: '需要修复' },
+    finding_refs: [{ origin_review_id: review_id, finding_id: 'F1' }], isolated: true,
+    applicability: 'verified', reason: null }));
+  current.findings = ['review-a', 'review-b'].map(origin_review_id => ({ origin_review_id,
+    finding_id: 'F1', status: 'open', severity: 'P2', summary: '需要修复', subject_ref: 'implementation-1',
+    verification_review_id: null, artifact_refs: [], evidence: ['review-report'], applicability: 'verified', reason: null }));
+  const recorded = payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot: current,
+  } }));
+  assert.equal(recorded.workflow_revision, 1);
+  const presentation = new Presentation(f.harness), projected = presentation.ticket(ticket.ticket_id).workflow;
+  assert.deepEqual(projected.findings.map(f => [f.origin_review_id, f.id]), [['review-a', 'F1'], ['review-b', 'F1']]);
+  assert.equal(new Set(projected.findings.map(f => f.identity)).size, 2);
+  assert.ok(projected.findings.every(f => projected.reviews.some(r => r.id === f.origin_review_id)));
+  assert.deepEqual(presentation.ticket(ticket.ticket_id).workflow.findings, projected.findings);
+});
+
 test('公开 MCP 记录 Workflow 后，首页与 Ticket 可追溯真实阶段且不自动 accepted', async t => {
   const f = await fixture(); t.after(f.close);
   const ticket = payload(await f.client.callTool({ name: 'harness_register_ticket', arguments: {
@@ -119,9 +145,8 @@ test('公开 MCP 记录 Workflow 后，首页与 Ticket 可追溯真实阶段且
   assert.equal(detail.workflow.current.subject.subject_id, 'implementation-1');
   assert.equal(detail.workflow.current.assessment.state, 'verified');
   assert.ok(detail.records.some((record: Wire) => record.data.kind === 'workflow_snapshot'));
-  const page = await (await fetch(f.base + '/tickets/' + ticket.ticket_id, { headers: { cookie: f.cookie } })).text();
-  assert.match(page, /Workflow · review/);
-  assert.match(page, /尚未验收/);
+  const page = await (await fetch(f.base + '/api/ui/tickets/' + ticket.ticket_id, { headers: { cookie: f.cookie } })).json() as Wire;
+  assert.equal(page.workflow.phase, 'review'); assert.equal(page.workflow.accepted, false);
 
   const retry = payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
     ticket_id: ticket.ticket_id, request_id: requestId, expected_revision: null, schema_version: 1, snapshot: firstSnapshot,
@@ -517,13 +542,13 @@ test('首页突出 Workflow 异常且不误标正常 Ticket', async t => {
   assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
     ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot: snapshot(f),
   } })).workflow_revision, 1);
-  let home = await (await fetch(f.base + '/', { headers: { cookie: f.cookie } })).text();
-  assert.match(home, new RegExp('<li><a href="/tickets/' + ticket.ticket_id));
-  assert.doesNotMatch(home, new RegExp('<li class="warning"><a href="/tickets/' + ticket.ticket_id));
+  const homeTicket = async () => ((await (await fetch(f.base + '/api/ui/projects', { headers: { cookie: f.cookie } })).json()) as Wire).projects[0].tickets[0];
+  let home = await homeTicket();
+  assert.equal(home.id, ticket.ticket_id); assert.equal(home.attention, false);
 
   writeFileSync(path.join(f.worktree, 'tracked.txt'), 'changed\n', 'utf8');
-  home = await (await fetch(f.base + '/', { headers: { cookie: f.cookie } })).text();
-  assert.match(home, /异常待处理：applicability stale/);
+  f.harness.scan(true);
+  home = await homeTicket(); assert.equal(home.attention, true);
   writeFileSync(path.join(f.worktree, 'tracked.txt'), 'baseline\n', 'utf8');
 
   const open = snapshot(f);
@@ -540,9 +565,7 @@ test('首页突出 Workflow 异常且不误标正常 Ticket', async t => {
   assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
     ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 1, schema_version: 1, snapshot: open,
   } })).workflow_revision, 2);
-  home = await (await fetch(f.base + '/', { headers: { cookie: f.cookie } })).text();
-  assert.match(home, /异常待处理：Acceptance incomplete · finding open 1/);
-  assert.match(home, new RegExp('<li class="warning"><a href="/tickets/' + ticket.ticket_id));
+  home = await homeTicket(); assert.equal(home.attention, true); assert.equal(home.findings, 1); assert.equal(home.accepted, false);
 
   const fixed = snapshot(f);
   fixed.reviews = open.reviews;
@@ -551,6 +574,5 @@ test('首页突出 Workflow 异常且不误标正常 Ticket', async t => {
   assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
     ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 2, schema_version: 1, snapshot: fixed,
   } })).workflow_revision, 3);
-  home = await (await fetch(f.base + '/', { headers: { cookie: f.cookie } })).text();
-  assert.match(home, /异常待处理：Acceptance failed · finding fixed 1/);
+  home = await homeTicket(); assert.equal(home.attention, true); assert.equal(home.findings, 1); assert.equal(home.accepted, false);
 });

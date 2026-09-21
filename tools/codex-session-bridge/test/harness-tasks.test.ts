@@ -61,7 +61,7 @@ async function fixture(t: TestContext) {
     base = `http://127.0.0.1:${(ui.address() as AddressInfo).port}`;
     const home = await fetch(base);
     cookie = home.headers.get('set-cookie')!.split(';')[0];
-    csrf = /name="csrf-token" content="([^"]+)"/.exec(await home.text())![1];
+    csrf = (await (await fetch(base + '/api/session', { headers: { cookie } })).json() as { csrf: string }).csrf;
   }
   async function closeUI() {
     if (ui) { const server = ui; ui = undefined; await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }); }
@@ -91,7 +91,7 @@ async function fixture(t: TestContext) {
       manager.harness = createHarnessRuntime(manager, [], source()); await openUI();
     },
     detail: async (id: string): Promise<Wire> => (await fetch(base + '/api/tickets/' + id, { headers: { cookie } })).json(),
-    page: async (id: string) => (await fetch(base + '/tickets/' + id, { headers: { cookie } })).text(),
+    page: async (id: string) => (await fetch(base + '/api/ui/tickets/' + id, { headers: { cookie } })).text(),
     post: async (route: string) => {
       const response = await fetch(base + route, { method: 'POST', headers: { cookie, origin: base,
         'content-type': 'application/json', 'x-csrf-token': csrf }, body: '{}' });
@@ -189,6 +189,7 @@ test('root exit 早于 pipes close 时保存 unknown 与晚到输出，关闭后
   assert.equal((await f.call('task_status', { task_id: start.task_id })).status, 'running');
   child.stdout.write('退出前\n');
   child.endProcess(7, false);
+  f.manager.harness.scan(); // Collector, independent of opening the SPA.
   try {
     await f.openUI();
     const detail = await f.detail(ticket.ticket_id);
@@ -281,6 +282,7 @@ test('源过期与新 epoch 分开呈现，保存的输出和终态仍可读且�
   await f.openUI();
   f.advance(1800001);
   assert.equal((await f.call('task_status', { task_id: start.task_id })).error.code, 'TASK_EXPIRED');
+  f.manager.harness.scan();
   const expired = await f.detail(ticket.ticket_id);
   assert.equal(expired.owned_tasks[0].source_state, 'source-expired');
   assert.equal(expired.owned_tasks[0].snapshot.exit_code, 7);
@@ -309,12 +311,14 @@ test('一次来源读取失败保留独立采集缺口，重复刷新不重复�
   await f.call('task_start', { service_epoch, request_id: 'read-fail', ticket_id: ticket.ticket_id, cwd: f.workspace, script: 'unused' });
   f.children[0].stdout.write('已有公开行\n');
   f.collectionFails(true);
+  f.manager.harness.scan();
   await f.openUI();
   const failed = await f.detail(ticket.ticket_id);
   assert.equal(failed.recording.state, 'collection-failed');
   assert.equal(failed.owned_tasks[0].source_state, 'collection-failed');
   assert.equal((await f.detail(ticket.ticket_id)).next_cursor, failed.next_cursor);
   f.collectionFails(false);
+  f.manager.harness.scan();
   const recovered = await f.detail(ticket.ticket_id);
   assert.equal(recovered.owned_tasks[0].source_state, 'observed');
   assert.equal(recovered.recording.sources.tasks.state, 'collection-failed', 'past gap must remain visible');
@@ -394,8 +398,8 @@ test('MCP 受管任务在 UI 离线期间保存双流与停止事实，重建后
   assert.ok(!JSON.stringify(detail).includes(args.script));
   assert.match(JSON.stringify(detail), /source-not-provided/);
   const page = await f.page(ticket.ticket_id);
-  assert.match(page, /stdout/); assert.match(page, /stderr/); assert.match(page, /非两管道实际写入全局顺序/);
-  assert.match(page, /&lt;script&gt;/); assert.ok(!page.includes('<script>unsafe'));
+  assert.match(page, /stdout/); assert.match(page, /stderr/);
+  assert.match(page, /<script>unsafe/); // JSON stays text; React escapes it at render time.
   await f.rebuild();
   const restored = await f.detail(ticket.ticket_id);
   assert.deepEqual(taskRecords(restored).filter(r => r.kind === 'output').map(r => r.payload), output.events);

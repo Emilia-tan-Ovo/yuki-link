@@ -83,10 +83,9 @@ test('显式 Ticket 的同步输入和结果在 UI 未观察期间保存，重�
   assert.equal(calls[0].call_id, written.harness_recording.call_id);
   assert.equal(calls[1].call_id, calls[0].call_id);
   assert.equal(calls[0].session_id, undefined);
-  const page = await f.page('/tickets/' + ticket.ticket_id);
+  const page = await f.page('/api/ui/tickets/' + ticket.ticket_id);
   assert.match(page, /filesystem_write/);
-  assert.match(page, /&lt;script&gt;/);
-  assert.ok(!page.includes('<script>不能执行'));
+  assert.match(page, /<script>不能执行/); // DTO preserves literal text, never HTML.
   assert.equal((await f.get('/api/tickets/' + ticket.ticket_id)).next_cursor, detail.next_cursor);
 });
 

@@ -11,9 +11,17 @@ import { StreamableHTTPClientTransport } from '../../codex-session-bridge/node_m
 import { YcaUnit } from '../src/units.js';
 import { WindowsHost } from '../src/host.js';
 import { Events, run, sleep } from '../src/common.js';
-import { latestDeployment, prepareDeployment, readDeployment, selectDeployment } from '../src/deployment.js';
+import { latestDeployment, prepareDeployment, readDeployment, selectDeployment, verifyDeployment } from '../src/deployment.js';
 
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', windowsHide: true }).trim();
+const fixtureNpm = `const fs = require('node:fs');
+if (process.argv[2] === 'run' && process.argv[3] === 'build:ui') {
+  if (!fs.existsSync('installed.txt')) process.exit(9);
+  fs.mkdirSync('dist/harness-ui/.vite', {recursive:true}); fs.mkdirSync('dist/harness-ui/assets', {recursive:true});
+  fs.writeFileSync('dist/harness-ui/index.html', '<div id="root"></div>');
+  fs.writeFileSync('dist/harness-ui/assets/index-12345678.js', 'export {};');
+  fs.writeFileSync('dist/harness-ui/.vite/manifest.json', JSON.stringify({'index.html':{file:'assets/index-12345678.js',isEntry:true}}));
+} else fs.writeFileSync('installed.txt', 'dependencies ready');`;
 async function port() { const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; }
 async function until(fn) { const deadline = Date.now() + 20_000; do { const value = await fn(); if (value) return value; await sleep(200); } while (Date.now() < deadline); throw Error('Timed out'); }
 function fixture(t) {
@@ -22,7 +30,7 @@ function fixture(t) {
   const repo = path.join(directory, 'developer'); mkdirSync(repo);
   git(repo, 'init', '-b', 'merged'); git(repo, 'config', 'user.name', 'Test'); git(repo, 'config', 'user.email', 'test@example.invalid');
   const bridge = path.join(repo, 'tools/codex-session-bridge'); mkdirSync(path.join(bridge, 'src'), { recursive: true });
-  writeFileSync(path.join(repo, '.gitignore'), 'installed.txt\nnode_modules/\n');
+  writeFileSync(path.join(repo, '.gitignore'), 'installed.txt\nnode_modules/\ndist/\n');
   writeFileSync(path.join(bridge, 'package.json'), JSON.stringify({ type: 'module', dependencies: {} }));
   writeFileSync(path.join(bridge, 'package-lock.json'), '{}');
   writeFileSync(path.join(bridge, 'src/main.js'), '// merged entry\n');
@@ -32,7 +40,7 @@ function fixture(t) {
   const remote = path.join(directory, 'remote.git'); git(directory, 'clone', '--bare', repo, remote);
   git(repo, 'remote', 'add', 'origin', remote);
   const npmCli = path.join(directory, 'npm-cli.cjs');
-  writeFileSync(npmCli, `require('node:fs').writeFileSync('installed.txt', 'dependencies ready');`);
+  writeFileSync(npmCli, fixtureNpm);
   const root = path.join(directory, 'deployment');
   return { directory, repo, remote, root, bridge, npmCli, options: { repo, root, node: process.execPath, npmCli } };
 }
@@ -72,6 +80,29 @@ test('remote default branch changes create a new release and preserve the previo
   assert.equal((await readDeployment(f.root)).commit, first.commit);
 });
 
+test('UI production artifacts are built after dependencies and sealed against missing, changed or added bytes', async t => {
+  const f = fixture(t), prepared = await prepareDeployment(f.options);
+  assert.match(prepared.uiHash, /^[a-f0-9]{64}$/);
+  const artifact = path.join(prepared.cwd, 'dist/harness-ui/assets/index-12345678.js');
+  const original = readFileSync(artifact, 'utf8');
+  writeFileSync(artifact, 'tampered');
+  await assert.rejects(readDeployment(f.root), { code: 'DEPLOYMENT_UI_CHANGED' });
+  await assert.rejects(verifyDeployment(f.root), { code: 'DEPLOYMENT_UI_CHANGED' });
+  writeFileSync(artifact, original); assert.equal((await readDeployment(f.root)).uiHash, prepared.uiHash);
+  const extra = path.join(prepared.cwd, 'dist/harness-ui/assets/extra.js'); writeFileSync(extra, 'extra');
+  await assert.rejects(readDeployment(f.root), { code: 'DEPLOYMENT_UI_CHANGED' }); unlinkSync(extra);
+  unlinkSync(artifact); await assert.rejects(readDeployment(f.root), { code: 'DEPLOYMENT_UI_CHANGED' });
+});
+
+test('failed UI build cannot publish a release or change selection', async t => {
+  const f = fixture(t), first = await prepareDeployment(f.options);
+  writeFileSync(path.join(f.bridge, 'src/main.js'), '// next release\n');
+  git(f.repo, 'add', '.'); git(f.repo, 'commit', '-m', 'next'); git(f.repo, 'push', 'origin', 'merged');
+  writeFileSync(f.npmCli, "if (process.argv[2] === 'run') process.exit(1);");
+  await assert.rejects(prepareDeployment(f.options), { code: 'DEPLOYMENT_UI_BUILD_FAILED' });
+  assert.equal((await readDeployment(f.root)).commit, first.commit);
+});
+
 test('dependency failure preserves selection and can retry only the owned unpublished checkout', async t => {
   const f = fixture(t), first = await prepareDeployment(f.options);
   writeFileSync(path.join(f.bridge, 'src/main.js'), '// second release\n');
@@ -79,7 +110,7 @@ test('dependency failure preserves selection and can retry only the owned unpubl
   writeFileSync(f.npmCli, 'process.exit(1);');
   await assert.rejects(prepareDeployment(f.options), { code: 'DEPLOYMENT_DEPENDENCIES_FAILED' });
   assert.equal((await readDeployment(f.root)).commit, first.commit);
-  writeFileSync(f.npmCli, '// dependency recovery');
+  writeFileSync(f.npmCli, fixtureNpm);
   const second = await prepareDeployment(f.options);
   assert.notEqual(second.commit, first.commit);
 });
@@ -120,11 +151,12 @@ test('a replaced releases directory is refused before checkout writes outside th
   assert.deepEqual(readdirSync(outside), []);
 });
 
-test('real deployed YCA reports the target commit and YCA-002 contract; preparation leaves it running', { skip: process.platform !== 'win32', timeout: 90_000 }, async t => {
+test('real deployed YCA reports the target commit and YCA-002 contract; preparation leaves it running', { skip: process.platform !== 'win32', timeout: 180_000 }, async t => {
   const f = fixture(t);
   const actual = fileURLToPath(new URL('../../codex-session-bridge/', import.meta.url));
   cpSync(path.join(actual, 'src'), path.join(f.bridge, 'src'), { recursive: true });
-  for (const name of ['package.json', 'package-lock.json']) cpSync(path.join(actual, name), path.join(f.bridge, name));
+  for (const name of ['package.json', 'package-lock.json', 'vite.config.ts', 'tsconfig.ui.json']) cpSync(path.join(actual, name), path.join(f.bridge, name));
+  cpSync(path.join(actual, 'ui'), path.join(f.bridge, 'ui'), { recursive: true });
   git(f.repo, 'add', '.'); git(f.repo, 'commit', '-m', 'real YCA'); git(f.repo, 'push', 'origin', 'merged');
   const options = { ...f.options, npmCli: path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js') };
   const first = await prepareDeployment(options);

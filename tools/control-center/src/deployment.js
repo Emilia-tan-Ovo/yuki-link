@@ -1,12 +1,33 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync, lstatSync, realpathSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync, lstatSync, realpathSync, readdirSync } from 'node:fs';
 import { fail, readJson, saveJson, run } from './common.js';
 
 const bridgePath = 'tools/codex-session-bridge';
 const sha = value => /^[a-f0-9]{40}$/.test(value ?? '');
 const hash = file => createHash('sha256').update(readFileSync(file)).digest('hex');
+export function uiArtifactHash(cwd) {
+  const root = path.join(cwd, 'dist/harness-ui');
+  try {
+    noLinks(root);
+    const digest = createHash('sha256'), files = [];
+    function walk(directory) {
+      for (const name of readdirSync(directory).sort()) {
+        const file = path.join(directory, name), stat = lstatSync(file);
+        if (stat.isSymbolicLink()) throw fail('DEPLOYMENT_UI_CHANGED');
+        if (stat.isDirectory()) walk(file);
+        else if (stat.isFile() && stat.nlink === 1) files.push(file);
+        else throw fail('DEPLOYMENT_UI_CHANGED');
+      }
+    }
+    walk(root);
+    const relative = files.map(file => path.relative(root, file).replaceAll('\\', '/'));
+    if (!relative.includes('index.html') || !relative.includes('.vite/manifest.json') || !relative.some(p => p.startsWith('assets/'))) throw fail('DEPLOYMENT_UI_CHANGED');
+    for (let i = 0; i < files.length; i++) digest.update(relative[i] + '\0' + hash(files[i]) + '\n');
+    return digest.digest('hex');
+  } catch { throw fail('DEPLOYMENT_UI_CHANGED'); }
+}
 function noLinks(file) {
   for (let p = path.resolve(file); ; p = path.dirname(p)) {
     try { if (lstatSync(p).isSymbolicLink()) throw fail('DEPLOYMENT_LINK_REFUSED'); }
@@ -73,6 +94,7 @@ export async function readDeployment(root, commit) {
   const manifest = readJson(path.join(root, 'manifests', commit + '.json'));
   if (manifest.commit !== commit || manifest.entry !== path.join(cwd, 'src/main.js') || manifest.cwd !== cwd
       || manifest.lockHash !== hash(path.join(cwd, 'package-lock.json'))) throw fail('DEPLOYMENT_CHANGED');
+  if (!/^[a-f0-9]{64}$/.test(manifest.uiHash ?? '') || manifest.uiHash !== uiArtifactHash(cwd)) throw fail('DEPLOYMENT_UI_CHANGED');
   await cleanRelease(root, commit);
   return manifest;
 }
@@ -149,11 +171,12 @@ export async function prepareDeployment({ repo, root, node = process.execPath, n
       } else if (readJson(buildFile, {}).stage !== 'building') throw fail('DEPLOYMENT_INCOMPLETE');
       await cleanRelease(root, commit);
       await command(node, [npmCli, 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], cwd, 'DEPLOYMENT_DEPENDENCIES_FAILED');
+      await command(node, [npmCli, 'run', 'build:ui'], cwd, 'DEPLOYMENT_UI_BUILD_FAILED');
       const version = await command(node, ['--version'], cwd, 'DEPLOYMENT_NODE_UNSUPPORTED');
       const nodeMajor = Number(/^v(\d+)\./.exec(version)?.[1]);
       if (nodeMajor < 24 || !Number.isInteger(nodeMajor)) throw fail('DEPLOYMENT_NODE_UNSUPPORTED');
       manifest = { version: 1, commit, branch, cwd, entry: path.join(cwd, 'src/main.js'), lockHash: hash(path.join(cwd, 'package-lock.json')),
-        tools: await probe(node, cwd), nodeMajor };
+        tools: await probe(node, cwd), nodeMajor, uiHash: uiArtifactHash(cwd) };
       await cleanRelease(root, commit);
       saveJson(buildFile, { commit, stage: 'published' });
       saveJson(manifestFile, manifest);

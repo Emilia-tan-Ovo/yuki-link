@@ -2,7 +2,7 @@
 
 ## Harness 首条持久 Conversation（HARNESS-001 / #40）
 
-新增 Harness 模块使用 TypeScript，由 Node 24 原生类型擦除直接运行；不加 loader、不生成发布构建产物。开发依赖由本包 lockfile 锁定；`npm run typecheck` 独立检查新模块及产品测试，`npm test` 包含既有 JS 和新增 TS 测试。旧 JS 继续受支持。
+Harness 后端使用 TypeScript，由 Node 24 原生类型擦除直接运行，不加 loader；React 前端单独生成生产构建产物。开发依赖由本包 lockfile 锁定；`npm run typecheck` 检查后端及产品测试，`npm run typecheck:ui` 检查前端，`npm test` 先构建 UI 再运行既有 JS 和 TS 测试。旧 JS 继续受支持。
 
 HTTP YCA 后台启动后独立采集显式关联的 Codex 历史，浏览器关闭不影响记录。可在隔离启动参数中添加 `--harness-port 7394`，从 `http://127.0.0.1:7394/` 打开只读产品页。端口只是示例，必须与 MCP/诊断端口分离；不要把此 listener 配到 tunnel。UI 端口冲突只报告 UI 不可用，不终止后台记录或已有 run。未设置该参数仍可通过 MCP 登记/关联并记录。stdio 生命周期仍跟随客户端，常驻观察应使用已有 HTTP YCA。
 
@@ -18,7 +18,17 @@ HTTP YCA 后台启动后独立采集显式关联的 Codex 历史，浏览器关�
 
 事件沿用 bridge 的 best-effort 脱敏，新写入注明本次是否改写；旧源逐条脱敏情况为 unknown。OUTPUT_LIMIT 明确提示来源截断。未产生 run 的历史拒绝请求、来源未暴露的工具细节/重试、缺失旧日志均 unavailable；尚未收到的 thread/结果为 unknown。不获取隐藏推理，Provider 已公开文字也不是执行或验收证据。Workflow 记录见下方 #45，Review/Acceptance 子 Conversation 见下方 #46；Changes 与服务状态仍 unavailable，控制按钮与自启属后续票。Owned Task 采集见下方 #43。
 
-现有部署仍执行 `npm ci --ignore-scripts` 并运行 src/main.js；MCP 工具摘要包含四个 Harness 工具（完整 YCA 为 22 个）。这里说明候选源码能力，不表示常驻部署、ChatGPT 真实链路验收或日常稳定使用已经完成。
+部署执行 `npm ci --ignore-scripts` 后显式执行 `npm run build:ui`，仍运行 src/main.js；MCP 工具摘要包含四个 Harness 工具（完整 YCA 为 22 个）。这里说明候选源码能力，不表示常驻部署、ChatGPT 真实链路验收或日常稳定使用已经完成。
+
+### Conversation-first 工作台（HARNESS-012 / #76）
+
+`ui/` 为 package-local React/TypeScript 源码；Vite 产物位于 `dist/harness-ui/`。现有 loopback Harness listener 同源提供 `/`、`/tickets/:uuid`、`/conversations/:uuid` 与 manifest 中的 hashed assets，不需要第二个前端 server。缺失构建返回 `UI_BUILD_UNAVAILABLE`；Control Center deployment manifest 的 `uiHash` 校验整个产物树，缺失、修改或新增产物均使 release verification 失败。
+
+展示 API 位于 `/api/ui/projects`、`/api/ui/tickets/:uuid`、`/api/ui/conversations/:uuid`，只读 DTO 定义在 `src/harness/presentation-model.ts`；既有 `/api/projects` 等事实 API 保留。`GET /api/session` 提供 CSRF token、只读 Composer capability 和经核对的日常服务入口。普通 GET 不触发 collector 扫描；后台采集持续工作，Ticket 的刷新按钮仍调用既有显式 refresh 控制。
+
+主/子 Conversation 默认最新 50 条；`before` / `after` 是互斥的 exclusive cursor，`limit` 最大 100，响应始终升序。UI 向上加载保留首个可见记录的像素位置，向后追加不强行拉走历史阅读位置。未知事件与来源缺口在 Advanced 保留已保护的持久证据；前端不解释 provider payload，也不提供发送入口。
+
+Changes 按 Ticket 固定 baseline 比较；`GET /api/tickets/:ticketId/changes/files/:fileId/patch?revision=...` 只接受当前文件列表中的版本引用。文件身份或内容变化使旧引用返回 `stale`（409）；不可用来源返回 503。文本 patch 同时限制前后两侧各 64 KiB、完整 patch 128 KiB，不提供 partial patch；binary/deleted/protected/too-large/truncated 单独呈现。Split/Unified 阅读器保留长行在各自栏内换行的约束。所有 API/patch/index 为 no-store；hashed assets 为 immutable。真实浏览器 Acceptance 与代码/构建验证分别记录。
 
 ### 同步电脑调用回看（HARNESS-002 / #42）
 
@@ -339,6 +349,10 @@ Windows 停止只对 Bridge 持有的 ChildProcess 使用 `taskkill.exe /PID <pi
 ## 本地验证
 
 ```powershell
+npm.cmd run typecheck
+npm.cmd run typecheck:ui
+# 直接 node --test 定向运行前先准备生产静态资源；npm test 已包含此步骤。
+npm.cmd run build:ui
 npm.cmd test
 npm.cmd run test:live
 # YCA-006：显式联网/模型权限行为验收，只在受控临时 Git 仓库运行

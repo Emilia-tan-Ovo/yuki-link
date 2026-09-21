@@ -1,4 +1,5 @@
 import type { Binding, Source, Ticket } from './model.ts';
+import { HarnessError } from './model.ts';
 import { ChangesSource, ChangesSourceError } from './changes-source.ts';
 import type { EvidenceGap } from './changes-source.ts';
 
@@ -59,7 +60,7 @@ export class Changes {
       const entry = start.get(file.path) ?? (file.old_path ? start.get(file.old_path) : undefined);
       const startRelation = !entry ? 'observed-after-start'
         : entry.sha256 !== null && entry.sha256 === file.content.sha256 ? 'pre-existing-at-start' : 'pre-existing-overlap';
-      return { ...file, start_relation: startRelation, process_associations: associations,
+      return { ...file, ...this.facts.fileIdentity(ticket.id, ticket.comparison_baseline!, current.current_head, file), start_relation: startRelation, process_associations: associations,
         modification_ownership: 'not-proven', ownership_evidence: [] };
     });
     const commits = current.commits.map(commit => ({ ...commit, association: 'comparison-range',
@@ -77,6 +78,26 @@ export class Changes {
       sources: { ...current.sources, event_store: { state: 'observed' as const, observed_at: checkedAt } }, evidence_gaps: gaps };
   }
 
+
+  patch(ticket: Ticket, fileId: string, revision: string) {
+    if (!/^[a-f0-9]{64}$/.test(fileId) || !/^[a-f0-9]{64}$/.test(revision)) throw new HarnessError('INVALID_PATCH_REFERENCE');
+    const current = this.view(ticket, []);
+    const base = { file_id: fileId, revision, baseline: current.baseline?.commit_oid ?? null,
+      current_head: current.current_head, checked_at: current.checked_at, freshness: current.freshness };
+    const unavailable = (state: 'stale' | 'unavailable') => ({ ...base, state, patch: null,
+      freshness: state === 'stale' ? 'stale' as const : 'unknown' as const,
+      integrity: { redacted: false, complete: false, reason: state } });
+    if (current.state !== 'available' || !current.baseline) return unavailable('unavailable');
+    const file = current.files.find(file => file.file_id === fileId);
+    if (!file || file.revision !== revision) return unavailable('stale');
+    const content = this.facts.patch(current.baseline, file);
+    if (content.state === 'stale') return unavailable('stale');
+    // Reject changes during patch collection, as well as old references from a previous page.
+    const after = this.view(ticket, []);
+    if (after.state !== 'available') return unavailable('unavailable');
+    if (!after.files.some(file => file.file_id === fileId && file.revision === revision)) return unavailable('stale');
+    return { ...base, ...content };
+  }
 
   summary(ticket: Ticket) {
     const checkedAt = new Date().toISOString();

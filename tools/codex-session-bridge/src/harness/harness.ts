@@ -5,6 +5,7 @@ import { ComputerCalls } from './computer-calls.ts';
 import { TaskCollector } from './task-collector.ts';
 import { WorkflowHistory } from './workflow.ts';
 import { ConversationHistory } from './conversations.ts';
+import type { PageQuery } from './conversations.ts';
 import { WorkflowSource } from './workflow-source.ts';
 import { ChangesSource, ChangesSourceError } from './changes-source.ts';
 import { Changes } from './changes.ts';
@@ -289,23 +290,13 @@ export class Harness {
       recording: this.health(), workflow: unavailable,
       changes: { state: 'available', source: 'per-ticket-git-filesystem-refresh' }, acceptance: unavailable, services: unavailable };
   }
-  detail(id: string, after = 0) {
+  detail(id: string, query: PageQuery | number = {}) {
     const ticket = this.ticket(id);
-    if (!Number.isSafeInteger(after) || after < 0 || after > this.journal.records.length) throw new HarnessError('INVALID_CURSOR');
-    const all = this.journal.records.filter(r => r.cursor > after && (
-      r.data.kind === 'registered' && r.data.ticket.id === id ||
-      r.data.kind === 'attached' && r.data.binding.ticket_id === id ||
-      r.data.kind === 'event' && r.data.event.ticket_id === id && r.data.event.conversation_id === ticket.main_conversation_id ||
-      r.data.kind === 'computer_call' && r.data.call.ticket_id === id ||
-      r.data.kind === 'control_action' && r.data.control.ticket_id === id ||
-      r.data.kind === 'owned_task' && r.data.task.binding.ticket_id === id ||
-      (r.data.kind === 'workflow_snapshot' || r.data.kind === 'workflow_observation') && r.data.workflow.ticket_id === id));
-    const records = all.slice(0, 100);
+    const history = this.conversations.page(ticket.main_conversation_id, typeof query === 'number' ? { after: query, limit: 100 } : query);
     const workflow = this.conversations.projectWorkflow(id, this.workflowHistory.detail(id));
     const workflowFixedPoint = (workflow.current as { subject?: { fixed_point?: string | null } } | null)?.subject?.fixed_point ?? null;
     return { ticket, main_conversation: { conversation_id: ticket.main_conversation_id },
-      child_conversations: this.conversations.summary(id), records,
-      next_cursor: records.at(-1)?.cursor ?? after, has_more: all.length > records.length,
+      child_conversations: this.conversations.summary(id), ...history,
       recording: this.health(), computer_calls: this.computerCalls.status(id),
       owned_tasks: this.taskHistory.status(id), controls: this.controls.view(id, this.sourceFailure),
       current: { state: this.health().state !== 'recording' || !this.checkedAt ? 'unknown' : 'observed', observed_at: this.checkedAt },
@@ -315,7 +306,8 @@ export class Harness {
         '旧源逐事件脱敏标志：unknown；记录不是未经处理的完整原文',
       ] };
   }
-  conversationDetail(id: string, after = 0) { return this.conversations.detail(id, after); }
+  conversationDetail(id: string, query: PageQuery | number = {}) { return this.conversations.detail(id, query); }
+  filePatch(id: string, fileId: string, revision: string) { return this.changes.patch(this.ticket(id), fileId, revision); }
   refreshControls(id: string) { this.executionGate('observe'); return this.controls.refresh(id, () => this.scan(true), () => this.sourceFailure); }
   stopRun(id: string, runId: string) { this.executionGate('manage-existing'); return this.controls.stopRun(id, runId); }
   stopTask(id: string, taskId: string) { this.executionGate('manage-existing'); return this.controls.stopTask(id, taskId); }

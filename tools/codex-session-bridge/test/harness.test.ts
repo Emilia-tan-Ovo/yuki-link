@@ -53,20 +53,20 @@ test('Harness renders only a validated loopback Control Center services link', a
     const server = createHarnessServer(harness, servicesUrl);
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
-    const html = await response.text(); server.close(); server.closeAllConnections(); return html;
+    const cookie = response.headers.get('set-cookie')!.split(';')[0];
+    const session = await (await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/session`, { headers: { cookie } })).json() as { services_url: string | null };
+    server.close(); server.closeAllConnections(); return session.services_url;
   }
   const controlCenter = http.createServer((_request, response) => response.writeHead(200).end('daily services'));
   await new Promise<void>(resolve => controlCenter.listen(0, '127.0.0.1', resolve));
   const servicesUrl = `http://127.0.0.1:${(controlCenter.address() as AddressInfo).port}/harness/services`;
   const linked = await home(servicesUrl);
-  assert.match(linked, new RegExp('href="' + servicesUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '"[^>]*>日常服务管理'));
-  assert.ok(!linked.includes('/api/action'));
+  assert.equal(linked, servicesUrl);
   await new Promise<void>(resolve => controlCenter.close(() => resolve()));
-  assert.match(await home(servicesUrl), /日常服务管理：unavailable/);
-  assert.match(await home(), /日常服务管理：unavailable/);
+  assert.equal(await home(servicesUrl), null);
+  assert.equal(await home(), null);
   const rejected = await home('http://evil.example/harness/services');
-  assert.match(rejected, /日常服务管理：unavailable/);
-  assert.ok(!rejected.includes('evil.example'));
+  assert.equal(rejected, null);
 });
 
 test('malformed request-target returns 400 and Harness remains readable', { timeout: 5000 }, async t => {
@@ -145,11 +145,12 @@ test('Project → Ticket keeps the real bridge conversation while the UI is clos
   // The product listener is supplied by production composition in the green slice.
   const base = `http://127.0.0.1:${(ui.address() as AddressInfo).port}`;
   const home = await fetch(base); const cookie = home.headers.get('set-cookie')!.split(';')[0];
-  assert.match(await home.text(), /示例工程/);
-  const detail = await (await fetch(`${base}/tickets/${ticket.ticket_id}`, { headers: { cookie } })).text();
+  assert.match(await (await fetch(base + '/api/ui/projects', { headers: { cookie } })).text(), /示例工程/);
+  manager.harness.scan(); // Explicit collector observation; a GET no longer drives capture.
+  const detail = await (await fetch(`${base}/api/ui/tickets/${ticket.ticket_id}`, { headers: { cookie } })).text();
   assert.match(detail, /真实 bridge 任务/); assert.match(detail, /工具输出/);
   assert.match(detail, /可恢复错误/); assert.match(detail, /诊断内容/);
-  assert.match(detail, /回复 &lt;script&gt;/); assert.ok(!detail.includes('<script>bad()'));
+  assert.match(detail, /回复 <script>bad\(\)/); // DTO text is escaped by React, not server HTML.
   assert.ok(detail.includes(ticket.conversation_id));
   assert.match(detail, /collection-failed/);
 });
@@ -204,12 +205,13 @@ test('restart and session switch preserve Conversation, grouping and explicit at
   const later = (await tool('codex_start_session', { cwd: other, request_id: randomUUID(), prompt: '第二段任务' })).structuredContent;
   await tool('harness_attach', { ticket_id: ticket.ticket_id, session_id: later.session_id, run_id: later.run_id });
   await finish('第二段回复');
+  manager.harness.scan();
   const detail = await browser.get('/api/tickets/' + ticket.ticket_id);
   assert.equal(detail.ticket.main_conversation_id, ticket.conversation_id);
   assert.match(JSON.stringify(detail), /attribution mismatch/);
   assert.match(JSON.stringify(detail), /第二段回复/);
-  const page = await (await fetch(browser.base + '/tickets/' + ticket.ticket_id, { headers: { cookie: browser.cookie } })).text();
-  assert.match(page, /session 切换边界/);
+  const page = await (await fetch(browser.base + '/api/ui/tickets/' + ticket.ticket_id, { headers: { cookie: browser.cookie } })).text();
+  assert.match(page, /切换到新的工程会话/);
   const groups = await browser.get('/api/projects');
   assert.deepEqual(groups.projects.map((p: Wire) => [p.name, p.tickets.length]), [['工程 A', 1], ['工程 B', 1]]);
   assert.equal(groups.acceptance.state, 'unavailable');

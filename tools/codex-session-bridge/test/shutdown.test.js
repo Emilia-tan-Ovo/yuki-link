@@ -62,7 +62,12 @@ test('service shutdown closes raw idle HTTP sockets that are not counted as acti
       project_key: 'startup', project_name: '生产入口隔离样本', ticket_key: 'one', title: '登记', reference: 'fixture:one',
     } });
     assert.notEqual(registered.isError, true);
-    assert.match(await (await fetch(`http://127.0.0.1:${harnessPort}/`)).text(), /生产入口隔离样本/);
+    const home = await fetch(`http://127.0.0.1:${harnessPort}/`);
+    assert.equal(home.status, 200);
+    const cookie = home.headers.get('set-cookie').split(';')[0];
+    const projects = await fetch(`http://127.0.0.1:${harnessPort}/api/ui/projects`, { headers: { cookie } });
+    assert.equal(projects.status, 200);
+    assert.match(JSON.stringify(await projects.json()), /生产入口隔离样本/);
     assert.equal((await fetch(`http://127.0.0.1:${mcpPort}/api/projects`)).status, 404);
   } finally { await client.close(); }
   mcpSocket = net.connect({ host: '127.0.0.1', port: mcpPort });
@@ -145,8 +150,20 @@ test('computer STOP_FAILED still stops Codex while retaining writer and read-onl
   assert.equal(existsSync(path.join(runtime, 'bridge.lock')), true);
   assert.equal(child.exitCode, null, 'failure must not pretend normal service exit');
   const home = await fetch(ui + '/'), cookie = home.headers.get('set-cookie').split(';')[0];
-  const detail = await (await fetch(ui + '/api/tickets/' + ticket.ticket_id, { headers: { cookie } })).json();
-  assert.ok(detail.records.some(r => r.data.kind === 'event' && r.data.event.kind === 'run.stopped'));
+  // Ordinary GET is read-only; allow the background collector to publish the stop.
+  const observationDeadline = Date.now() + 5000;
+  let stoppedObserved = false;
+  do {
+    const response = await fetch(ui + '/api/tickets/' + ticket.ticket_id, {
+      headers: { cookie }, signal: AbortSignal.timeout(1000),
+    });
+    assert.equal(response.status, 200);
+    const detail = await response.json();
+    stoppedObserved = detail.records.some(r => r.data.kind === 'event' && r.data.event.kind === 'run.stopped');
+    if (stoppedObserved) break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } while (Date.now() < observationDeadline);
+  assert.ok(stoppedObserved, 'read-only observation must eventually expose run.stopped via the background collector');
 });
 
 test('shutdown persists synchronous and owned task results before releasing the runtime writer', { timeout: 20000 }, async t => {
