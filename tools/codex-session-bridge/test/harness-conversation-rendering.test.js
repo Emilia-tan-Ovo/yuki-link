@@ -30,6 +30,13 @@ test('execution details are absent from collapsed markup; expanding group expose
   assert.ok(!atomic.includes('Advanced')); assert.match(atomic, /aria-expanded="false"/);
   const narrative = renderToStaticMarkup(createElement(ConversationRow, { item: { ...item, auxiliary: undefined, kind: 'message', content: { text: 'HUMAN_NARRATIVE' } } }));
   assert.ok(narrative.includes('HUMAN_NARRATIVE'));
+  assert.ok(!narrative.includes('reveal-character'));
+  const revealed = renderToStaticMarkup(createElement(ConversationRow, {
+    item: { ...item, auxiliary: undefined, kind: 'message', content: { text: '中👩🏽‍💻 **bold** `code`' } }, reveal: true,
+  }));
+  assert.ok(revealed.includes('data-complete-text="中👩🏽‍💻 **bold** `code`"'));
+  assert.ok(revealed.includes('reveal-character'));
+  assert.ok(revealed.includes('<strong>')); assert.ok(revealed.includes('<code>'));
   for (const kind of ['lifecycle', 'workflow', 'control', 'task', 'unknown']) {
     const auxiliary = { ...item, id: kind, kind, auxiliary: undefined,
       content: { title: kind + ' title', text: kind + '_HIDDEN_BODY', status: 'observed' }, rawEvidence: { marker: kind + '_HIDDEN_RAW' } };
@@ -37,6 +44,7 @@ test('execution details are absent from collapsed markup; expanding group expose
     assert.ok(markup.includes(kind + ' title'));
     assert.ok(!markup.includes(kind + '_HIDDEN_BODY'));
     assert.ok(!markup.includes(kind + '_HIDDEN_RAW'));
+    assert.ok(!markup.includes('reveal-character'));
   }
   const page = { id: 'conversation', ticket_id: 'ticket', items: [], page: { first_cursor: null, last_cursor: null,
     high_water_cursor: 0, has_older: false, has_newer: false } };

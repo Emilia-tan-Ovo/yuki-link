@@ -1,28 +1,44 @@
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { ChevronRight, CircleCheck, Terminal } from 'lucide-react';
 import type { ConversationItem } from '../src/harness/presentation-model';
 import { Advanced, Badge, label, useDisclosure } from './common';
 import type { AuxiliaryGroup } from './conversation-reading';
+import { graphemes, revealStepMs } from './message-reveal';
 export { DisclosureProvider } from './common';
 
-function inline(text: string): ReactNode[] {
-  return text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).map((part, i) => part.startsWith('`')
+type RevealCursor = { index: number };
+function revealedText(text: string, reveal: boolean, cursor: RevealCursor): ReactNode {
+  if (!reveal) return text;
+  return graphemes(text).map(grapheme => {
+    const index = cursor.index++;
+    return <span className="reveal-character" style={{ '--reveal-index': index } as CSSProperties} key={index}>{grapheme}</span>;
+  });
+}
+function inline(text: string, reveal: boolean, cursor: RevealCursor): ReactNode[] {
+  if (!reveal) return text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).map((part, i) => part.startsWith('`')
     ? <code key={i}>{part.slice(1, -1)}</code> : part.startsWith('**') ? <strong key={i}>{part.slice(2, -2)}</strong> : part);
+  return text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).map((part, i) => part.startsWith('`')
+    ? <code key={i}>{revealedText(part.slice(1, -1), reveal, cursor)}</code>
+    : part.startsWith('**') ? <strong key={i}>{revealedText(part.slice(2, -2), reveal, cursor)}</strong>
+      : <span key={i}>{revealedText(part, reveal, cursor)}</span>);
 }
 // A deliberately small, escaped text renderer: no HTML execution or provider-specific syntax.
-function Prose({ text }: { text: string }) {
-  return <div className="prose">{text.split(/(```[^\n]*\n[\s\S]*?```)/g).map((block, index) => block.startsWith('```')
-    ? <pre key={index} tabIndex={0}><code>{block.slice(block.indexOf('\n') + 1, -3)}</code></pre>
+function Prose({ text, reveal = false }: { text: string; reveal?: boolean }) {
+  const cursor = { index: 0 };
+  const style = reveal ? { '--reveal-step': revealStepMs(graphemes(text).length) + 'ms' } as CSSProperties : undefined;
+  return <div className={'prose' + (reveal ? ' prose-reveal' : '')} data-complete-text={reveal ? text : undefined} style={style}>
+    {text.split(/(```[^\n]*\n[\s\S]*?```)/g).map((block, index) => block.startsWith('```')
+    ? <pre key={index} tabIndex={0}><code>{revealedText(block.slice(block.indexOf('\n') + 1, -3), reveal, cursor)}</code></pre>
     : block.split(/\n\s*\n/).filter(Boolean).map((p, i) => /^#{1,4} /.test(p)
-      ? <h3 key={index + ':' + i}>{inline(p.replace(/^#{1,4} /, ''))}</h3>
-      : <p key={index + ':' + i}>{inline(p)}</p>))}</div>;
+      ? <h3 key={index + ':' + i}>{inline(p.replace(/^#{1,4} /, ''), reveal, cursor)}</h3>
+      : <p key={index + ':' + i}>{inline(p, reveal, cursor)}</p>))}</div>;
 }
 type Of<K extends ConversationItem['kind']> = Extract<ConversationItem, { kind: K }>;
-function Message({ item }: { item: Of<'message'> }) {
+function Message({ item, reveal }: { item: Of<'message'>; reveal: boolean }) {
   return <article className="message"><div className={'avatar role-' + item.participant.role} aria-hidden="true">{item.participant.label.slice(0, 1)}</div><div className="message-body">
     <header className="message-meta"><strong>{item.participant.label}</strong><span>{[item.participant.provider, item.participant.model].filter(Boolean).join(' · ') || '协作消息'}</span><time dateTime={item.timestamp}>{new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></header>
-    <Prose text={item.content.text} /></div></article>;
+    <Prose text={item.content.text} reveal={reveal} /></div></article>;
 }
 function Tool({ item }: { item: Of<'tool'> }) {
   const disclosure = useDisclosure(item.id + ':tool');
@@ -48,9 +64,9 @@ function AuxiliaryRecord({ item }: { item: Exclude<ConversationItem, Of<'message
     <Collapsible.Content className="auxiliary-record-content"><Evidence item={item} /></Collapsible.Content>
   </Collapsible.Root>;
 }
-export function ConversationRow({ item }: { item: ConversationItem }) {
+export function ConversationRow({ item, reveal = false }: { item: ConversationItem; reveal?: boolean }) {
   return <div className={'conversation-item kind-' + item.kind} data-item-id={item.id}>
-    {item.kind === 'message' ? <><Message item={item} /><Advanced disclosureId={item.id + ':advanced'} value={{ cursor: item.cursor, integrity: item.integrity, sourceRefs: item.sourceRefs, record: item.rawEvidence }} /></>
+    {item.kind === 'message' ? <><Message item={item} reveal={reveal} /><Advanced disclosureId={item.id + ':advanced'} value={{ cursor: item.cursor, integrity: item.integrity, sourceRefs: item.sourceRefs, record: item.rawEvidence }} /></>
       : <AuxiliaryRecord item={item} />}
   </div>;
 }
