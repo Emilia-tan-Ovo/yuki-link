@@ -40,7 +40,14 @@ test('Control Center starts and restarts YCA after saved Desktop hash disappears
   });
   const first = install('first-hash');
   const start = async expected => {
-    await unit.start();
+    const startDeadline = Date.now() + 20_000;
+    for (;;) {
+      try { await unit.start(); break; }
+      catch (error) {
+        if (error?.code !== 'CODEX_EXECUTABLE_UNAVAILABLE' || error?.details?.spawn_code !== 'ETIMEDOUT' || Date.now() >= startDeadline) throw error;
+        await sleep(200);
+      }
+    }
     const deadline = Date.now() + 20_000;
     while (!(await unit.observe()).healthy) { assert.ok(Date.now() < deadline); await sleep(200); }
     assert.equal(unit.codexResolution.executable, expected);

@@ -151,7 +151,7 @@ test('a replaced releases directory is refused before checkout writes outside th
   assert.deepEqual(readdirSync(outside), []);
 });
 
-test('real deployed YCA reports the target commit and YCA-002 contract; preparation leaves it running', { skip: process.platform !== 'win32', timeout: 90_000 }, async t => {
+test('real deployed YCA reports the target commit and YCA-002 contract; preparation leaves it running', { skip: process.platform !== 'win32', timeout: 180_000 }, async t => {
   const f = fixture(t);
   const actual = fileURLToPath(new URL('../../codex-session-bridge/', import.meta.url));
   cpSync(path.join(actual, 'src'), path.join(f.bridge, 'src'), { recursive: true });

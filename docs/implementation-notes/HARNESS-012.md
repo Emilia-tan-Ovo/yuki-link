@@ -109,3 +109,11 @@ Implementation frontier 已收敛，无设计 blocker。Implementation 必须使
 - 旧发布 manifest 缺少 `uiHash` 会被拒绝；这是本票要求的 artifact verification 门禁，不会自动改写旧 release。
 - 本地提交主题：`feat: 产品化 Harness Conversation 工作台`。提交后的精确 SHA、工作树状态、产物 hash 与模型 usage 定位见 worktree `.local/harness-012-verification/implementation-state.json`；此文件由提交后写入，避免 handoff 自引用 SHA。
 - 本 run 模型策略由调用方指定 `gpt-6-astra / high`；durable input/cached/output usage 在本 session 不可取得，记 unknown，交由外层 YCA 更新 checkpoint。
+
+### 外层完整套件验证
+
+- YCA / `tools/codex-session-bridge`：`npm test` 最终 **182 tests / 181 pass / 0 fail / 1 skip**。首次 full suite 暴露 2 个旧 shutdown 测试假设（server-rendered HTML 与 GET 隐式 scan）；fresh Astra low 仅更新测试语义，生产代码未改，commit `f7e8fbc49acb761f7fced579c024c310c4514f47`。
+- Control Center：新增 UI build 后，真实 deployment 用例单独需要约 109～116 秒，旧 90 秒测试预算不再成立；调整测试 timeout 为 180 秒。
+- Control Center full suite 还暴露：真实 deployment 后立即执行 executable refresh 时，Windows 主机短时负载可让 production 4 秒 executable probe 返回 `ETIMEDOUT`，而该用例独立运行通过。未放宽 production discovery 策略；测试套件改为 `--test-concurrency=1`，且 executable-refresh 只对明确的 `CODEX_EXECUTABLE_UNAVAILABLE + ETIMEDOUT` 在副作用发生前做 20 秒有界重试，其他错误立即失败。
+- Control Center 最终 `npm test`：**51 / 51 pass，0 fail**；真实 deployment 验收约 116 秒，executable-refresh 在串行+有界重试下约 14 秒完成。
+- 上述稳定化均为测试/测试运行策略调整；HARNESS-012 production 代码未因 full-suite 红项回退到 GET 隐式扫描，也未扩大 Codex executable discovery 的生产超时。
