@@ -5,9 +5,15 @@ export interface Participant {
 }
 export interface SourceRef { kind: 'record' | 'source' | 'session' | 'run' | 'thread' | 'binding'; id: string }
 export interface ItemIntegrity { redacted: boolean; truncated: boolean | 'unknown'; incomplete: boolean | 'unknown' }
+export interface ExecutionMetadata {
+  category: 'command' | 'tool' | 'observation' | 'output';
+  source: string; scope: string | null; operationId: string | null;
+  observedAt: string; status: string; issues: string[];
+}
 interface ItemBase {
   id: string; participant: Participant; timestamp: string; cursor: number; sourceRefs: SourceRef[];
   integrity: ItemIntegrity; rawEvidence: unknown;
+  execution?: ExecutionMetadata;
 }
 export type ConversationItem = ItemBase & (
   | { kind: 'message'; content: { text: string } }
@@ -21,6 +27,7 @@ export interface PageInfo {
 export interface ConversationLink {
   id: string; label: string; kind: 'main' | 'review' | 'focused' | 'acceptance';
   isolation: string | null; original_review_id: string | null; finding_refs: string[];
+  review_id: string | null; participant: string | null;
 }
 export interface ConversationPage {
   id: string; ticket_id: string; items: ConversationItem[]; page: PageInfo;

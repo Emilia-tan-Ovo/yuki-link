@@ -3,19 +3,28 @@ import { HarnessError } from './model.ts';
 import type { RecordEntry } from './model.ts';
 import type { PageQuery } from './conversations.ts';
 import { protectedCopy } from './content-policy.ts';
-import type { ConversationItem, ConversationPage, Participant, OverviewDto, TicketDto, WorkflowDto, SourceRef } from './presentation-model.ts';
+import type { ConversationItem, ConversationPage, Participant, OverviewDto, TicketDto, WorkflowDto, SourceRef, ExecutionMetadata } from './presentation-model.ts';
 
 const object = (v: unknown): Record<string, unknown> => v !== null && typeof v === 'object' ? v as Record<string, unknown> : {};
 const text = (v: unknown, fallback = '') => typeof v === 'string' ? v : fallback;
 const system: Participant = { id: 'harness', role: 'system', label: 'Harness' };
 const fieldText = (v: unknown): string | null => typeof v === 'string' ? v : null;
 const flag = (v: unknown): boolean | 'unknown' => typeof v === 'boolean' ? v : 'unknown';
+const identity = (v: unknown): string | null => typeof v === 'string' && v.trim() && !v.includes('[REDACTED') ? v : null;
+function executionIssues(status: string, payload: Record<string, unknown>): string[] {
+  return [...new Set([
+    ...(['failed', 'error', 'diagnostic', 'collection-failed', 'cancelled', 'timed-out', 'interrupted'].includes(status) ? [status] : []),
+    ...(payload.error != null || payload.isError === true ? ['报告错误'] : []),
+    ...(typeof payload.exit_code === 'number' && payload.exit_code !== 0 ? ['退出码 ' + payload.exit_code] : []),
+    ...(typeof payload.stderr === 'string' && payload.stderr.length > 0 ? ['stderr 诊断'] : []),
+  ])];
+}
 
 // Only this mapper knows the currently persisted source format. Unknown facts remain visible.
 export function projectRecord(record: RecordEntry): ConversationItem {
   const protectedRecord = protectedCopy(record), safe = protectedRecord.value, d = safe.data;
   const sourceRefs: SourceRef[] = [{ kind: 'record', id: safe.event_id }, { kind: 'source', id: safe.source_id }];
-  const base = { id: safe.event_id, timestamp: safe.observed_at, cursor: safe.cursor, participant: system,
+  const base: Pick<ConversationItem, 'id' | 'timestamp' | 'cursor' | 'participant' | 'sourceRefs' | 'integrity' | 'rawEvidence' | 'execution'> = { id: safe.event_id, timestamp: safe.observed_at, cursor: safe.cursor, participant: system,
     sourceRefs, integrity: { redacted: protectedRecord.redacted, truncated: 'unknown' as boolean | 'unknown', incomplete: 'unknown' as boolean | 'unknown' }, rawEvidence: safe };
   const event = (kind: 'lifecycle' | 'workflow' | 'control' | 'task' | 'unknown', title: string, body = '', status: string | null = null): ConversationItem =>
     ({ ...base, kind, content: { title, text: body, status } });
@@ -23,6 +32,9 @@ export function projectRecord(record: RecordEntry): ConversationItem {
     const i = object(v);
     base.integrity = { redacted: base.integrity.redacted || i.redacted === true,
       truncated: i.truncated === 'source-output-limit' ? true : flag(i.truncated), incomplete: flag(i.incomplete) };
+  };
+  const execution = (category: ExecutionMetadata['category'], source: string, scope: string | null, operationId: string | null, status: string, issues: string[]) => {
+    base.execution = { category, source: safe.source_id + ':' + source, scope, operationId, observedAt: safe.observed_at, status, issues };
   };
   switch (d.kind) {
     case 'registered': return event('lifecycle', 'Ticket 已登记', d.ticket.title);
@@ -40,6 +52,11 @@ export function projectRecord(record: RecordEntry): ConversationItem {
     case 'owned_task': {
       integrity(d.task.integrity);
       const payload = object(d.task.payload);
+      const status = text(object(d.task.snapshot).status, 'unknown');
+      if (d.task.category === 'output' || d.task.category === 'observation') execution(d.task.category === 'output' ? 'output' : 'observation', d.task.source,
+        JSON.stringify([d.task.binding.service_epoch, d.task.binding.binding_id, d.task.binding.task_id]), null, status,
+        [...executionIssues(status, object(d.task.snapshot)), ...(payload.stream === 'stderr' ? ['stderr 诊断'] : []),
+          ...(d.task.integrity.capture === 'collection-failed' ? ['采集失败'] : [])]);
       return event('task', d.task.category === 'output' ? '任务输出 · ' + text(payload.stream, 'output') : '受管任务 · ' + d.task.kind,
         d.task.category === 'output' ? text(payload.text, '来源未提供文本输出') : d.task.binding.task_id,
         text(object(d.task.snapshot).status, 'unknown'));
@@ -47,6 +64,10 @@ export function projectRecord(record: RecordEntry): ConversationItem {
     case 'computer_call': {
       integrity(d.call.integrity);
       const input = object(d.call.input), result = object(d.call.result);
+      execution(d.call.tool === 'powershell' || d.call.tool === 'powershell_execute' ? 'command' : 'tool', d.call.source + ':' + d.call.tool, d.call.conversation_id, identity(d.call.call_id), d.call.outcome,
+        [...executionIssues(d.call.outcome, { ...result, error: d.call.error ?? result.error }),
+          ...(d.call.capture === 'collection-failed' ? ['采集失败'] : []),
+          ...(object(d.call.attribution).state === 'attribution mismatch' ? ['归属不匹配'] : [])]);
       return { ...base, kind: 'tool', content: { title: d.call.tool, status: d.call.outcome,
         command: fieldText(input.command) ?? fieldText(input.script), output: fieldText(result.stdout) ?? fieldText(result.content) ?? fieldText(d.call.result) } };
     }
@@ -60,14 +81,23 @@ export function projectRecord(record: RecordEntry): ConversationItem {
       if (e.kind === 'message.sent') return { ...base, participant: { id: 'caller:' + text(p.sender, 'caller'), role: 'coordinator', label: text(p.sender, '协作请求') }, kind: 'message', content: { text: text(p.text, '来源未提供消息正文') } };
       if (e.kind === 'source.snapshot') {
         const run = object(p.run);
+        execution('observation', 'engineer', e.run_id ? JSON.stringify([e.binding_id, e.session_id, e.run_id, e.thread_id]) : null,
+          null, text(run.status, 'unknown'), [...executionIssues(text(run.status), run),
+            ...(object(p.attribution).state === 'attribution mismatch' ? ['归属不匹配'] : [])]);
         return event('lifecycle', '运行状态 · ' + text(run.status, 'unknown'), [text(run.model), text(run.reasoning)].filter(Boolean).join(' · '), text(object(p.attribution).state, 'unknown'));
       }
-      if (e.kind === 'stderr') return event('lifecycle', '运行诊断', text(p.text), 'diagnostic');
+      if (e.kind === 'stderr') {
+        execution('output', 'engineer', null, null, 'diagnostic', ['stderr 诊断']);
+        return event('lifecycle', '运行诊断', text(p.text), 'diagnostic');
+      }
       if (e.kind === 'thread.switched') return event('lifecycle', '执行上下文已切换');
       if (e.kind === 'recovery.observed') return event('lifecycle', '已恢复历史观察', '保留记录与来源缺口；未自动续跑。');
       if (e.kind === 'codex') {
         base.participant = { id: 'engineer:' + e.session_id, role: 'engineer', label: '工程 Agent', provider: 'Codex' };
         if (item.type === 'agent_message' && typeof item.text === 'string') return { ...base, kind: 'message', content: { text: item.text } };
+        if (item.type === 'command_execution' || item.type === 'mcp_tool_call') execution(item.type === 'command_execution' ? 'command' : 'tool', 'engineer',
+          e.run_id ? JSON.stringify([e.binding_id, e.session_id, e.run_id, e.thread_id]) : null,
+          identity(item.id), text(item.status, text(p.type, 'unknown')), executionIssues(text(item.status, text(p.type)), { ...object(item.result), ...item }));
         if (item.type === 'command_execution') return { ...base, kind: 'tool', content: { title: '执行命令',
           status: text(item.status, text(p.type)), command: fieldText(item.command), output: fieldText(item.aggregated_output) } };
         if (item.type === 'mcp_tool_call') return { ...base, kind: 'tool', content: { title: text(item.tool, '工具调用'),
@@ -120,14 +150,16 @@ export class Presentation {
     return protectedCopy({ ticket: { id: d.ticket.id, key: d.ticket.key, title: d.ticket.title, reference: d.ticket.reference,
       main_conversation_id: d.ticket.main_conversation_id },
       conversation: this.conversation(d.ticket.main_conversation_id),
-      conversations: [{ id: d.ticket.main_conversation_id, label: 'Main', kind: 'main' as const, isolation: null, original_review_id: null, finding_refs: [] },
+      conversations: [{ id: d.ticket.main_conversation_id, label: 'Main', kind: 'main' as const, isolation: null, original_review_id: null, finding_refs: [], review_id: null, participant: null },
         ...d.child_conversations.map(c => {
           const relation = c.relation;
           const review = relation.kind === 'review' ? w?.reviews.find(r => r.review_id === relation.review_id) : null;
           return { id: c.conversation_id, label: c.relation.kind === 'review'
             ? (review?.mode === 'focused' ? 'Focused Review' : 'Review') + ' · ' + c.relation.participant : 'Acceptance',
             kind: c.relation.kind === 'review' ? review?.mode === 'focused' ? 'focused' as const : 'review' as const : 'acceptance' as const,
-            isolation: c.isolation.state, original_review_id: review?.original_review_id ?? null, finding_refs: review?.finding_refs.map(f => f.origin_review_id + '/' + f.finding_id) ?? [] };
+            review_id: relation.kind === 'review' ? relation.review_id : null, participant: relation.kind === 'review' ? relation.participant : null,
+            isolation: c.isolation.state, original_review_id: review?.original_review_id ?? (relation.kind === 'review' ? relation.original_review_id : null),
+            finding_refs: (review?.finding_refs ?? (relation.kind === 'review' ? relation.finding_refs : [])).map(f => f.origin_review_id + '/' + f.finding_id) };
         })], workflow, changes: { state: d.changes.state, baseline: d.changes.baseline?.commit_oid ?? null,
         current_head: d.changes.current_head, checked_at: d.changes.checked_at, freshness: d.changes.freshness,
         completeness: d.changes.completeness, files: d.changes.files.map(f => ({ file_id: f.file_id, revision: f.revision,

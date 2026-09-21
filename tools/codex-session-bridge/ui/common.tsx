@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode, RefObject } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -23,8 +23,21 @@ const labels: Record<string, string> = {
   'not-yet-observed': '等待结果', 'attribution mismatch': '归属不匹配', matched: '归属匹配',
 };
 export const label = (value: string) => labels[value] ?? value;
-export function Advanced({ value, title = 'Raw evidence & debug' }: { value: unknown; title?: string }) {
-  return <Collapsible.Root className="advanced"><Collapsible.Trigger><ChevronRight size={15} className="chevron" /><span>Advanced</span><span className="muted">{title}</span><Code2 size={14} /></Collapsible.Trigger>
+const DisclosureContext = createContext<{ values: ReadonlySet<string>; set: (id: string, open: boolean) => void } | null>(null);
+export function DisclosureProvider({ children }: { children: ReactNode }) {
+  const [values, setValues] = useState<Set<string>>(() => new Set());
+  return <DisclosureContext.Provider value={{ values, set: (id, open) => setValues(old => {
+    const next = new Set(old); if (open) next.add(id); else next.delete(id); return next;
+  }) }}>{children}</DisclosureContext.Provider>;
+}
+export function useDisclosure(id?: string) {
+  const context = useContext(DisclosureContext), [local, setLocal] = useState(false);
+  return { open: context && id ? context.values.has(id) : local,
+    onOpenChange: (open: boolean) => { if (context && id) context.set(id, open); else setLocal(open); } };
+}
+export function Advanced({ value, title = 'Raw evidence & debug', disclosureId }: { value: unknown; title?: string; disclosureId?: string }) {
+  const disclosure = useDisclosure(disclosureId);
+  return <Collapsible.Root className="advanced" {...disclosure}><Collapsible.Trigger><ChevronRight size={15} className="chevron" /><span>Advanced</span><span className="muted">{title}</span><Code2 size={14} /></Collapsible.Trigger>
     <Collapsible.Content className="collapse-content"><div className="raw-content"><pre tabIndex={0} aria-label="已保护的来源证据">{JSON.stringify(value, null, 2)}</pre></div></Collapsible.Content></Collapsible.Root>;
 }
 export function SideDrawer({ side, open, close, returnFocus, children }: { side: 'left' | 'right'; open: boolean; close: () => void; returnFocus: RefObject<HTMLButtonElement | null>; children: ReactNode }) {
