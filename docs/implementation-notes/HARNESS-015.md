@@ -16,3 +16,22 @@ Fixed point: `b3d0fef85b36500b79729535ed72d308762553dc`
 - Review：依 Owner 指令，本 implementation session 未执行 Review，也不提供 Review finding 或通过结论。
 - Commit：提交主题 `feat: 为新自然语言消息增加逐字显示`；精确 SHA 与最终状态写入 ignored checkpoint `.local/workflow-state/HARNESS-015.md`。
 - 模型成本：当前上下文无法取得 durable usage，记为 unknown，不使用模型估算。
+
+## Fresh Finding Fix Handoff
+
+- 修复基线：`21bad670199b4264ffc6a49d5e55e1ead8c73f79`；只处理 fresh Review 指出的 P2 reveal baseline finding，未重设计功能，未执行 Review。
+- 修复：Conversation 打开时创建独立 `MessageRevealState`，固定当时的 `high_water_cursor`；后续 append/prepend 只登记 loaded identity，不再移动 baseline。只有 cursor 超过 opening baseline、尚未 loaded 且尚未 consumed 的 `message` 会 reveal，选中后立即记为 consumed；Conversation 继续由 `conversationId` key 隔离。
+- TDD 红灯：旧实现运行 `node --test test/harness-conversation-reading.test.ts` 为 12/14，新增的 multi-page append 与 prepend/high-water 两条回归均实际失败，分别漏掉 `item-110` 与 `item-101`。
+- TDD 绿灯与定向验证（cwd `tools/codex-session-bridge`）：Conversation reading/rendering 为 15/15；`npm run typecheck`、`npm run typecheck:ui` 均 exit 0；仓库根 `git diff --check` exit 0。按 Owner 要求未运行 full suite。
+- 保持边界：未修改 Journal/API/DTO/collector、provider token streaming、grapheme/Markdown/reduced-motion 渲染行为或其他功能。
+- 提交：使用新的 fix commit，主题 `fix: 稳定对话消息渐显基线`；精确 SHA 写入 ignored checkpoint `.local/workflow-state/HARNESS-015.md`。
+- 模型成本：当前上下文无法取得 durable usage，记为 unknown，不使用模型估算。
+
+## P2 Finding Fix
+
+- 修复基线：`21bad670199b4264ffc6a49d5e55e1ead8c73f79`；仅修复 fresh Review 指出的 reveal baseline 问题，未执行 Review。
+- 根因与修复：`high_water_cursor` 属于整个 Journal，会被 append/prepend 响应推进。Conversation 现在在打开时固定 baseline，并按 record id 分别记录已加载与已消费身份；分页不会把尚未返回的新 message 误判为旧记录，同一 message 仍最多显现一次。
+- TDD：先新增“超过 50 条记录后的多页 append”和“新消息存在时 prepend 推进 high water”两项回归；旧实现分别漏掉 `item-110`、`item-101`，定向测试为 12/14、exit 1。修复后相关测试 15/15、exit 0。
+- 验证（cwd `tools/codex-session-bridge`）：`node --test test/harness-conversation-reading.test.ts test/harness-conversation-rendering.test.js`、`npm run typecheck`、`npm run typecheck:ui` 均 exit 0；仓库根 `git diff --check` 在提交前执行。依 Owner 要求未运行 full suite。
+- 范围：未修改 Journal、API、DTO、collector、provider token streaming、grapheme/Markdown/reduced-motion 渲染行为或其他 Ticket 功能。
+- Commit：将创建新的 `fix:` 提交，不 amend `21bad670`；精确 SHA 与最终状态写入 ignored checkpoint `.local/workflow-state/HARNESS-015.md`。

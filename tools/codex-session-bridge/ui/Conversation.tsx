@@ -8,13 +8,13 @@ import type { ReadingItem } from './conversation-reading';
 import { captureAnchor, mergePage, restoreAnchor } from './conversation-state';
 import type { ScrollAnchor } from './conversation-state';
 import { Badge, label } from './common';
-import { selectRevealMessageIds } from './message-reveal';
+import { createMessageRevealState, selectRevealMessageIds } from './message-reveal';
 
 export function Conversation({ id, initial, relation, refresh }: { id: string; initial?: ConversationPage; relation: ConversationLink; refresh: number }) {
   const [page, setPage] = useState<ConversationPage | null>(initial ?? null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const scroll = useRef<HTMLDivElement>(null), current = useRef(page), anchor = useRef<ScrollAnchor | null>(null);
   const bottom = useRef(true), loading = useRef(false), abort = useRef(new AbortController());
-  const consumedRevealIds = useRef(new Set<string>());
+  const messageReveal = useRef(createMessageRevealState(initial ?? null));
   const previousRows = useRef<ReadingItem[]>([]);
   const rows = useMemo(() => groupConversation(page?.items ?? [], previousRows.current), [page]);
   const [openMembers, setOpenMembers] = useState<Set<string>>(() => new Set());
@@ -33,9 +33,8 @@ export function Conversation({ id, initial, relation, refresh }: { id: string; i
         bottom.current = !old || direction === 'after' && scroll.current.scrollHeight - scroll.current.scrollTop - scroll.current.clientHeight < 100;
         if (!bottom.current) anchor.current = captureAnchor(scroll.current);
       }
-      const newlyRevealed = selectRevealMessageIds(old, next, direction, consumedRevealIds.current);
+      const newlyRevealed = selectRevealMessageIds(messageReveal.current, next, direction);
       if (newlyRevealed.length > 0) {
-        for (const messageId of newlyRevealed) consumedRevealIds.current.add(messageId);
         setRevealIds(ids => new Set([...ids, ...newlyRevealed]));
       }
       setPage(old ? mergePage(old, next, direction) : next); setError('');

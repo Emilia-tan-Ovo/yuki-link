@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { groupConversation, groupIsOpen, setGroupOpen, conversationTabs } from '../ui/conversation-reading.ts';
 import { mergePage, captureAnchor, restoreAnchor } from '../ui/conversation-state.ts';
 import { MAX_REVEAL_DURATION_MS, SHORT_MESSAGE_STEP_MS, graphemes, revealStepMs,
-  selectRevealMessageIds } from '../ui/message-reveal.ts';
+  createMessageRevealState, selectRevealMessageIds } from '../ui/message-reveal.ts';
 import type { ConversationItem, ConversationLink, ConversationPage } from '../src/harness/presentation-model.ts';
 
 function item(n: number, changes: Partial<NonNullable<ConversationItem['auxiliary']>> = {}): ConversationItem {
@@ -17,16 +17,37 @@ function item(n: number, changes: Partial<NonNullable<ConversationItem['auxiliar
 function message(n: number): ConversationItem {
   return { ...item(n), auxiliary: undefined, kind: 'message', content: { text: '消息 ' + n } };
 }
-test('message reveal starts after the current high water and consumes only appended messages once', () => {
+test('message reveal starts after the opening high water and consumes only appended messages once', () => {
   const page = (items: ConversationItem[], highWater: number): ConversationPage => ({ id: 'conversation', ticket_id: 'ticket', items,
     page: { first_cursor: items[0]?.cursor ?? null, last_cursor: items.at(-1)?.cursor ?? null,
       high_water_cursor: highWater, has_older: false, has_newer: false } });
-  const initial = page([message(1)], 1), append = page([message(2), item(3)], 3), consumed = new Set<string>();
-  assert.deepEqual(selectRevealMessageIds(null, initial, 'after', consumed), [], 'first response establishes the baseline');
-  assert.deepEqual(selectRevealMessageIds(initial, append, 'before', consumed), [], 'prepending history never reveals');
-  assert.deepEqual(selectRevealMessageIds(initial, append, 'after', consumed), ['item-2'], 'only appended messages reveal');
-  consumed.add('item-2');
-  assert.deepEqual(selectRevealMessageIds(initial, append, 'after', consumed), [], 'a message id is consumed once');
+  const initial = page([message(1)], 1), append = page([message(2), item(3)], 3);
+  const state = createMessageRevealState(null);
+  assert.deepEqual(selectRevealMessageIds(state, initial, 'after'), [], 'first response establishes the baseline');
+  assert.deepEqual(selectRevealMessageIds(state, page([message(0)], 3), 'before'), [], 'prepending history never reveals');
+  assert.deepEqual(selectRevealMessageIds(state, append, 'after'), ['item-2'], 'only appended messages reveal');
+  assert.deepEqual(selectRevealMessageIds(state, append, 'after'), [], 'a message id is consumed once');
+});
+test('message reveal keeps the opening baseline across multi-page append', () => {
+  const page = (items: ConversationItem[], highWater: number): ConversationPage => ({ id: 'conversation', ticket_id: 'ticket', items,
+    page: { first_cursor: items[0]?.cursor ?? null, last_cursor: items.at(-1)?.cursor ?? null,
+      high_water_cursor: highWater, has_older: false, has_newer: true } });
+  const initial = page([message(50)], 50);
+  const firstAppend = page(Array.from({ length: 50 }, (_, index) => item(51 + index)), 110);
+  const state = createMessageRevealState(initial);
+  assert.deepEqual(selectRevealMessageIds(state, firstAppend, 'after'), []);
+  const delayedMessage = page([message(110)], 110);
+  assert.deepEqual(selectRevealMessageIds(state, delayedMessage, 'after'), ['item-110']);
+});
+test('message reveal ignores high water advanced by a prepend while a new message exists', () => {
+  const page = (items: ConversationItem[], highWater: number): ConversationPage => ({ id: 'conversation', ticket_id: 'ticket', items,
+    page: { first_cursor: items[0]?.cursor ?? null, last_cursor: items.at(-1)?.cursor ?? null,
+      high_water_cursor: highWater, has_older: true, has_newer: false } });
+  const initial = page([message(100)], 100);
+  const state = createMessageRevealState(initial);
+  assert.deepEqual(selectRevealMessageIds(state, page([message(50)], 101), 'before'), []);
+  assert.deepEqual(selectRevealMessageIds(state, page([message(101)], 101), 'after'), ['item-101']);
+  assert.deepEqual(selectRevealMessageIds(state, page([message(50), message(101)], 101), 'after'), []);
 });
 test('message reveal preserves graphemes and bounds long-message timing', () => {
   assert.deepEqual(graphemes('中👩🏽‍💻A'), ['中', '👩🏽‍💻', 'A']);
