@@ -114,6 +114,60 @@ test('provider projection gives trusted auxiliary identities for observation and
   assert.deepEqual(projectRecord(f.event('stderr', { text: 'warning details' })).auxiliary!.issues, ['stderr 诊断']);
 });
 
+test('turn.failed is an issue boundary whose closed summary cannot be overwritten by later lifecycle state', t => {
+  const f = fixture(t);
+  const refs = { binding_id: randomUUID(), session_id: randomUUID(), run_id: randomUUID(), thread_id: randomUUID() };
+  const records = ['turn.started', 'turn.failed', 'turn.started']
+    .map(type => projectRecord(f.event('codex', { type }, f.ticket.conversation_id, refs)));
+
+  const rows = groupConversation(records);
+  assert.equal(rows.length, 3);
+  const failure = rows[1];
+  assert.equal(failure.kind, 'auxiliary-group');
+  if (failure.kind !== 'auxiliary-group') return;
+  assert.equal(failure.status, 'turn.failed');
+  assert.deepEqual(failure.issues, ['turn.failed']);
+});
+
+test('recovery gaps are issue boundaries and remain visible in the closed summary', t => {
+  const f = fixture(t);
+  const refs = { binding_id: randomUUID(), session_id: randomUUID(), run_id: randomUUID(), thread_id: randomUUID() };
+  const payload = (gaps: string[]) => ({
+    journal: { source_id: 'journal-source', startup_cursor: 0, source_high_water: [] },
+    binding: { id: refs.binding_id, ticket_id: f.ticket.ticket_id, conversation_id: f.ticket.conversation_id,
+      session_id: refs.session_id, scope: 'run', run_id: refs.run_id },
+    session: { state: 'unavailable', id: refs.session_id, cwd: null, thread_id: null },
+    runs: [], projection: { run_cap: 20, current_runs_total: 0, current_runs_included: 0,
+      source_high_water_total: 0, source_high_water_included: 0, truncated: false },
+    attribution: { state: 'unknown', source: 'current attribution unavailable' }, gaps,
+  });
+  const records = [payload([]), payload(['SESSION_UNAVAILABLE', 'ATTRIBUTION_UNAVAILABLE']), payload([])]
+    .map(value => projectRecord(f.event('recovery.observed', value, f.ticket.conversation_id, refs)));
+
+  const rows = groupConversation(records);
+  assert.equal(rows.length, 3);
+  const gap = rows[1];
+  assert.equal(gap.kind, 'auxiliary-group');
+  if (gap.kind !== 'auxiliary-group') return;
+  assert.deepEqual(gap.issues, ['SESSION_UNAVAILABLE', 'ATTRIBUTION_UNAVAILABLE']);
+});
+
+test('unknown source attribution is an issue boundary and remains visible in the closed summary', t => {
+  const f = fixture(t);
+  const refs = { binding_id: randomUUID(), session_id: randomUUID(), run_id: randomUUID(), thread_id: randomUUID() };
+  const records = ['matched', 'unknown', 'matched'].map(state => projectRecord(f.event('source.snapshot', {
+    run: { id: refs.run_id, status: 'running', exit_code: null },
+    permissions: { state: 'observed' }, attribution: { state, source: state === 'unknown' ? 'current attribution unavailable' : 'fixture' },
+  }, f.ticket.conversation_id, refs)));
+
+  const rows = groupConversation(records);
+  assert.equal(rows.length, 3);
+  const unknown = rows[1];
+  assert.equal(unknown.kind, 'auxiliary-group');
+  if (unknown.kind !== 'auxiliary-group') return;
+  assert.deepEqual(unknown.issues, ['归属未知']);
+});
+
 test('owned task lifecycle and control projection keep operation scopes without crossing task epochs', t => {
   const f = fixture(t), now = new Date().toISOString();
   const binding = { task_id: 'task-a', service_epoch: randomUUID(), request_id: 'request-a', ticket_id: f.ticket.ticket_id,

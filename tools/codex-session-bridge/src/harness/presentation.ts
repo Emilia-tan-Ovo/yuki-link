@@ -11,9 +11,12 @@ const system: Participant = { id: 'harness', role: 'system', label: 'Harness' };
 const fieldText = (v: unknown): string | null => typeof v === 'string' ? v : null;
 const flag = (v: unknown): boolean | 'unknown' => typeof v === 'boolean' ? v : 'unknown';
 const identity = (v: unknown): string | null => typeof v === 'string' && v.trim() && !v.includes('[REDACTED') ? v : null;
+const issueList = (v: unknown): string[] => Array.isArray(v)
+  ? [...new Set(v.filter((issue): issue is string => typeof issue === 'string' && issue.length > 0))]
+  : [];
 function executionIssues(status: string, payload: Record<string, unknown>): string[] {
   return [...new Set([
-    ...(['failed', 'error', 'diagnostic', 'collection-failed', 'cancelled', 'timed-out', 'interrupted'].includes(status) ? [status] : []),
+    ...(['failed', 'turn.failed', 'error', 'diagnostic', 'collection-failed', 'cancelled', 'timed-out', 'interrupted'].includes(status) ? [status] : []),
     ...(payload.error != null || payload.isError === true ? ['报告错误'] : []),
     ...(typeof payload.exit_code === 'number' && payload.exit_code !== 0 ? ['退出码 ' + payload.exit_code] : []),
     ...(typeof payload.stderr === 'string' && payload.stderr.length > 0 ? ['stderr 诊断'] : []),
@@ -90,10 +93,10 @@ export function projectRecord(record: RecordEntry): ConversationItem {
       if (e.thread_id) sourceRefs.push({ kind: 'thread', id: e.thread_id });
       if (e.kind === 'message.sent') return { ...base, participant: { id: 'caller:' + text(p.sender, 'caller'), role: 'coordinator', label: text(p.sender, '协作请求') }, kind: 'message', content: { text: text(p.text, '来源未提供消息正文') } };
       if (e.kind === 'source.snapshot') {
-        const run = object(p.run);
+        const run = object(p.run), attributionState = object(p.attribution).state;
         auxiliary('run-observation', 'observation', 'engineer', e.run_id ? JSON.stringify([e.binding_id, e.session_id, e.run_id, e.thread_id]) : null,
           null, text(run.status, 'unknown'), [...executionIssues(text(run.status), run),
-            ...(object(p.attribution).state === 'attribution mismatch' ? ['归属不匹配'] : [])]);
+            ...(attributionState === 'attribution mismatch' ? ['归属不匹配'] : attributionState === 'unknown' ? ['归属未知'] : [])]);
         return event('lifecycle', '运行状态 · ' + text(run.status, 'unknown'), [text(run.model), text(run.reasoning)].filter(Boolean).join(' · '), text(object(p.attribution).state, 'unknown'));
       }
       if (e.kind === 'stderr') {
@@ -103,7 +106,7 @@ export function projectRecord(record: RecordEntry): ConversationItem {
       if (e.kind === 'thread.switched') return event('lifecycle', '执行上下文已切换');
       if (e.kind === 'recovery.observed') {
         auxiliary('recovery', 'recovery', 'engineer', e.run_id ? JSON.stringify([e.binding_id, e.session_id, e.run_id, e.thread_id]) : null,
-          null, 'observed', executionIssues('observed', p));
+          null, 'observed', [...executionIssues('observed', p), ...issueList(p.gaps)]);
         return event('lifecycle', '已恢复历史观察', '保留记录与来源缺口；未自动续跑。');
       }
       if (e.kind === 'codex') {

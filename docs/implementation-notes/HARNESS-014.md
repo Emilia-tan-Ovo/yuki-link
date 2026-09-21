@@ -63,3 +63,14 @@ Fixed point: `d3b68f2f700669b366f5bc8a768638918718d9c8`
 - Commit：提交主题 `feat: 收缩并聚合 Conversation 辅助记录`；精确 SHA、最终文件清单和验证摘要写入非 Git checkpoint `.local/workflow-state/HARNESS-014.md`。
 - 下一步：外层 Emilia 以 fixed point → checkpoint commit 的完整本票 diff 启动 fresh primary Review，再执行 full suite 与真实 production-browser Acceptance。未 push、建 PR、merge 或 deploy。
 - 模型成本：本 implementation session 的 durable usage 在当前上下文不可取得，input/cached input/output 与 anomaly 记为 unknown，由外层 durable run status 补齐，不使用模型估算。
+
+## Finding Fix Handoff（F-01 / F-02）
+
+- 来源：Primary Review `.local/workflow-state/HARNESS-014-review.md` 的 F-01 / F-02；修复基线为 reviewed HEAD `0d028feab0b66787a65e34827e883abbef9174b4`，fixed point 仍为 `d3b68f2f700669b366f5bc8a768638918718d9c8`。
+- 实现范围：仅修改 `tools/codex-session-bridge/src/harness/presentation.ts` 的可信 projection：将已知 Codex lifecycle `turn.failed` 投影为 issue；将 `recovery.observed.payload.gaps` 的非空字符串 code 投影为 issues；将 `source.snapshot.payload.attribution.state === 'unknown'` 投影为“归属未知”。没有从正文猜测，也没有修改 Journal schema、collector、control semantics、分页 API、grouping 策略或 renderer。
+- 回归测试：`tools/codex-session-bridge/test/harness-presentation.test.ts` 使用真实 record shape 覆盖 `turn.started → turn.failed → turn.started`、带 `SESSION_UNAVAILABLE / ATTRIBUTION_UNAVAILABLE` 的 recovery 前后干净观察，以及 attribution `matched → unknown → matched`；三者均断言问题记录成为 singleton boundary，关闭摘要保留 issues。每个切片均先在旧实现上得到预期红灯，再做最小修复转绿。
+- 最终验证（cwd `tools/codex-session-bridge`）：`node --test test/harness-presentation.test.ts test/harness-conversation-reading.test.ts` 为 19/19、exit 0；`npm.cmd run typecheck` 与 `npm.cmd run typecheck:ui` 均 exit 0。遵照 finding-fix 范围未运行 full suite、build 或真实浏览器 Acceptance。
+- Finding 状态：F-01 / F-02 已实现修复并通过上述定向回归；fresh focused re-review 仍 pending，本 session 不提供 Review 结论。
+- Review policy：delegated 给外层 Emilia；下一步以 reviewed HEAD `0d028feab0b66787a65e34827e883abbef9174b4` 到本次新 commit 的增量启动 fresh focused re-review，最多一次。未 push、建 PR、deploy 或 amend 旧 commit。
+- Commit：主题 `fix: 补齐 Conversation 问题边界投影`；精确 SHA 与最终验证摘要写入 ignored checkpoint `.local/workflow-state/HARNESS-014.md`。
+- 模型成本：本 fresh finding-fix session 的 durable usage 在当前上下文不可取得，记为 unknown，由外层 durable run status 补齐，不使用模型估算。
