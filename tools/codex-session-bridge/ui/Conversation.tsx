@@ -1,15 +1,15 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, History, LockKeyhole } from 'lucide-react';
-import type { ComposerCapability, ConversationLink, ConversationPage } from '../src/harness/presentation-model';
+import { ArrowDown, History } from 'lucide-react';
+import type { ConversationLink, ConversationPage } from '../src/harness/presentation-model';
 import { api } from './api';
-import { ConversationRow, ExecutionGroupRow, DisclosureProvider } from './renderers';
+import { ConversationRow, AuxiliaryGroupRow, DisclosureProvider } from './renderers';
 import { groupConversation, groupIsOpen, setGroupOpen } from './conversation-reading';
 import type { ReadingItem } from './conversation-reading';
 import { captureAnchor, mergePage, restoreAnchor } from './conversation-state';
 import type { ScrollAnchor } from './conversation-state';
 import { Badge, label } from './common';
 
-export function Conversation({ id, initial, relation, composer, refresh }: { id: string; initial?: ConversationPage; relation: ConversationLink; composer: ComposerCapability; refresh: number }) {
+export function Conversation({ id, initial, relation, refresh }: { id: string; initial?: ConversationPage; relation: ConversationLink; refresh: number }) {
   const [page, setPage] = useState<ConversationPage | null>(initial ?? null), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const scroll = useRef<HTMLDivElement>(null), current = useRef(page), anchor = useRef<ScrollAnchor | null>(null);
   const bottom = useRef(true), loading = useRef(false), abort = useRef(new AbortController());
@@ -57,8 +57,8 @@ export function Conversation({ id, initial, relation, composer, refresh }: { id:
       {error && <div className="notice warning" role="alert">{error}<button className="text-button" onClick={() => void load('after')}>重试</button></div>}
       {!page && !error && <div className="empty-state">正在读取持久化历史…</div>}
       <DisclosureProvider>{rows.map(row => row.kind === 'item' ? <ConversationRow key={row.id} item={row.item} />
-        : <ExecutionGroupRow key={row.id} group={row} open={groupIsOpen(row, openMembers)} onOpenChange={open => setOpenMembers(ids => setGroupOpen(row, ids, open))} />)}</DisclosureProvider>
+        : <AuxiliaryGroupRow key={row.id} group={row} open={groupIsOpen(row, openMembers)} onOpenChange={open => setOpenMembers(ids => setGroupOpen(row, ids, open))} />)}</DisclosureProvider>
       {page && page.items.length === 0 && <div className="empty-state"><History size={28} /><h2>这里还没有协作记录</h2><p>已有运行产生的可观察事实会出现在这里。</p></div>}
       {page && <div className="conversation-end"><span>已加载 {page.items.length} 条记录</span><button className="text-button" disabled={busy} onClick={() => void load('after')}><ArrowDown size={14} />{page.page.has_newer ? '加载后续记录' : '查看最新'}</button></div>}
-    </div></div><div className="composer-slot" data-capability={composer.mode}><LockKeyhole size={16} /><div><strong>只读 Conversation</strong><span>{composer.reason}</span></div></div></>;
+    </div></div></>;
 }

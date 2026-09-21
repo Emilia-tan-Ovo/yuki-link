@@ -5,15 +5,16 @@ export interface Participant {
 }
 export interface SourceRef { kind: 'record' | 'source' | 'session' | 'run' | 'thread' | 'binding'; id: string }
 export interface ItemIntegrity { redacted: boolean; truncated: boolean | 'unknown'; incomplete: boolean | 'unknown' }
-export interface ExecutionMetadata {
-  category: 'command' | 'tool' | 'observation' | 'output';
+export interface AuxiliaryMetadata {
+  family: string;
+  category: 'command' | 'tool' | 'observation' | 'output' | 'recovery' | 'task' | 'control' | 'lifecycle';
   source: string; scope: string | null; operationId: string | null;
   observedAt: string; status: string; issues: string[];
 }
 interface ItemBase {
   id: string; participant: Participant; timestamp: string; cursor: number; sourceRefs: SourceRef[];
   integrity: ItemIntegrity; rawEvidence: unknown;
-  execution?: ExecutionMetadata;
+  auxiliary?: AuxiliaryMetadata;
 }
 export type ConversationItem = ItemBase & (
   | { kind: 'message'; content: { text: string } }
