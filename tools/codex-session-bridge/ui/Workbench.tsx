@@ -1,6 +1,7 @@
 import { ArrowUpRight, CircleCheck, FileCode2, Files, FolderOpen, Layers, RefreshCw, ShieldCheck, Square } from 'lucide-react';
 import type { ChangeFileDto, TicketDto } from '../src/harness/presentation-model';
 import { Advanced, Badge, label, short } from './common';
+import { conversationTabs } from './conversation-reading';
 
 export function Workbench({ data, openDiff, navigate, control, busy }: { data: TicketDto; openDiff: (file: ChangeFileDto) => void; navigate: (id: string) => void; control: (action: string) => void; busy: boolean }) {
   const w = data.workflow, c = data.changes;
@@ -23,7 +24,7 @@ export function Workbench({ data, openDiff, navigate, control, busy }: { data: T
       {w.reviews.map(r => <div key={r.id} className="review-card"><strong>{r.mode === 'focused' ? 'Focused Review' : 'Review'} · {r.id}</strong><Badge kind={r.status === 'passed' && r.applicability === 'verified' ? 'success' : ''}>{label(r.status)}</Badge>
         <div className="summary-line"><span>Standards</span><span>{label(r.standards)}</span></div><div className="summary-line"><span>Spec</span><span>{label(r.spec)}</span></div><p className="side-footnote">适用性：{label(r.applicability)}</p></div>)}
       {!w.reviews.length && <p className="side-footnote">还没有已记录的 Review。</p>}
-      {data.conversations.filter(c => c.kind !== 'main').map(c => <button key={c.id} className="review-link" onClick={() => navigate(c.id)}>{c.label}<ArrowUpRight size={15} /></button>)}
+      {conversationTabs(data.conversations).filter(c => c.kind !== 'main').map(c => <button key={c.id} className="review-link" title={c.accessibleName} aria-label={c.accessibleName} onClick={() => navigate(c.id)}>{c.name}<ArrowUpRight size={15} /></button>)}
       {w.findings.map(f => <div key={f.identity} className="finding-row"><span>{f.title}<br /><small>Review · {f.origin_review_id}</small></span><Badge>{label(f.status)}</Badge></div>)}
     </section>
     <section className="side-section"><div className="side-title"><h2>已有运行与控制</h2></div><div className="control-buttons"><button disabled={busy} onClick={() => control('refresh')}><RefreshCw size={15} />刷新状态</button><button disabled={busy} onClick={() => control('worktree/open')}><FolderOpen size={15} />打开 worktree</button></div>

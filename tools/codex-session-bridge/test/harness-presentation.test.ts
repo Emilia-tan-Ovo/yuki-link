@@ -9,6 +9,7 @@ import { Presentation, projectRecord } from '../src/harness/presentation.ts';
 import type { RecordEntry, Source } from '../src/harness/model.ts';
 import { mergePage, captureAnchor, restoreAnchor } from '../ui/conversation-state.ts';
 import type { ConversationPage } from '../src/harness/presentation-model.ts';
+import { groupConversation } from '../ui/conversation-reading.ts';
 
 function fixture(t: test.TestContext) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'harness-presentation-'));
@@ -70,4 +71,35 @@ test('prepend anchor preserves the first visible row pixel offset; append merge 
   offset += 380; restoreAnchor(container, anchor); assert.equal(container.scrollTop, 430);
   const page: ConversationPage = { id: 'c', ticket_id: 't', items: [], page: { first_cursor: null, last_cursor: null, high_water_cursor: 1, has_older: true, has_newer: false } };
   assert.equal(mergePage(page, { ...page, page: { ...page.page, has_older: false } }, 'after').page.has_older, true);
+});
+
+test('computer started/result projection retains atomic evidence and counts stable call identity once', async t => {
+  const f = fixture(t);
+  await f.harness.computerCalls.run('powershell', f.ticket.ticket_id, { command: 'fixture command' }, () => ({ stdout: 'fixture output', exit_code: 0 }));
+  const records = f.p.conversation(f.ticket.conversation_id).items.filter(i => i.execution);
+  assert.equal(records.length, 2);
+  assert.equal(records[0].execution!.operationId, records[1].execution!.operationId);
+  assert.equal(records[0].execution!.category, 'command');
+  const [group] = groupConversation(records);
+  assert.equal(group.kind, 'execution-group'); if (group.kind !== 'execution-group') return;
+  assert.equal(group.count, 1); assert.equal(group.countKind, 'calls'); assert.equal(group.status, 'succeeded');
+  assert.ok(group.members[0].kind === 'tool' && group.members[0].content.command === 'fixture command');
+  assert.ok(group.members[1].kind === 'tool' && group.members[1].content.output === 'fixture output');
+  await f.harness.computerCalls.run('powershell', f.ticket.ticket_id, {}, () => ({ stdout: '', stderr: 'diagnostic evidence', exit_code: 2 }));
+  const bad = f.p.conversation(f.ticket.conversation_id).items.at(-1)!;
+  assert.equal(bad.execution!.status, 'succeeded'); // Transport success does not erase execution diagnostics.
+  assert.deepEqual(bad.execution!.issues, ['退出码 2', 'stderr 诊断']);
+  assert.ok(JSON.stringify(bad.rawEvidence).includes('diagnostic evidence'));
+});
+
+test('provider projection gives observation/run scope and explicit diagnostics without grouping recovery', t => {
+  const f = fixture(t);
+  const command = projectRecord(f.event('codex', { type: 'item.completed', item: { id: 'i1', type: 'command_execution', status: 'completed', exit_code: 1 } }));
+  assert.equal(command.execution!.operationId, 'i1'); assert.equal(command.execution!.status, 'completed');
+  assert.deepEqual(command.execution!.issues, ['退出码 1']);
+  const observation = projectRecord(f.event('source.snapshot', { run: { status: 'running' }, attribution: { state: 'matched' } }));
+  assert.equal(observation.execution!.category, 'observation'); assert.ok(observation.execution!.scope);
+  assert.equal(projectRecord(f.event('recovery.observed', {})).execution, undefined);
+  assert.equal(projectRecord(f.event('future-event', {})).execution, undefined);
+  assert.deepEqual(projectRecord(f.event('stderr', { text: 'warning details' })).execution!.issues, ['stderr 诊断']);
 });

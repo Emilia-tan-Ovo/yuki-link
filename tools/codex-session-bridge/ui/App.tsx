@@ -4,7 +4,8 @@ import * as Tabs from '@radix-ui/react-tabs';
 import { ArrowRight, ArrowUpRight, ChevronRight, CircleCheck, Folder, FolderOpen, LayoutDashboard, LockKeyhole, MessageSquare, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RefreshCw, Sparkles } from 'lucide-react';
 import type { ChangeFileDto, OverviewDto, SessionDto, TicketDto, TicketSummary } from '../src/harness/presentation-model';
 import { api } from './api';
-import { Badge, label, short, SideDrawer, useMedia } from './common';
+import { Badge, label, SideDrawer, useMedia } from './common';
+import { conversationTabs } from './conversation-reading';
 import { Conversation } from './Conversation';
 import { Workbench } from './Workbench';
 import DiffViewer from './DiffViewer';
@@ -92,8 +93,8 @@ export default function App() {
         <div className="pane-toolbar-end">{data && <button className="icon-button" title="刷新当前工程事实" aria-label="刷新当前工程事实" disabled={busy} onClick={() => void control('refresh')}><RefreshCw size={16} /></button>}<span className="read-only"><LockKeyhole size={13} />只读</span><button ref={rightToggle} className="icon-button" disabled={!data} aria-label={rightVisible ? '收起工作台' : '展开工作台'} aria-expanded={rightVisible || drawer === 'right'} onClick={() => narrowWorkbench ? setDrawer('right') : setRightOpen(!rightOpen)}>{rightVisible ? <PanelRightClose size={19} /> : <PanelRightOpen size={19} />}</button></div></div>
         {notice && <div className="notice" role="status">{notice}</div>}
         {loading ? <div className="empty-state"><Sparkles size={28} /><p>正在读取工程事实…</p></div> : error ? <div className="empty-state" role="alert"><h2>暂时无法打开工作台</h2><p>{error}</p><button className="text-button" onClick={() => location.reload()}>重新载入<ArrowRight size={16} /></button></div>
-          : data && relation && session ? <><header className="ticket-heading live-ticket-heading"><div className="ticket-overline"><span>{data.ticket.key}</span><span className="overline-divider" /><span>工程协作历史</span></div><h1>{data.ticket.title}</h1><div className="ticket-meta"><Badge kind={data.workflow.accepted ? 'success' : ''}>{data.workflow.accepted ? '当前已接受' : label(data.workflow.phase)}</Badge><span>基线 <code>{short(data.changes.baseline)}</code></span></div></header>
-            <Tabs.Root value={conversationId} onValueChange={selectConversation} className="conversation-tabs"><Tabs.List className="tabs" aria-label="关联 Conversation">{data.conversations.map(c => <Tabs.Trigger key={c.id} value={c.id}><MessageSquare size={14} />{c.label}</Tabs.Trigger>)}</Tabs.List></Tabs.Root>
+          : data && relation && session ? <><header className="ticket-heading live-ticket-heading"><div className="ticket-overline"><span>{data.ticket.key}</span><Badge kind={data.workflow.accepted ? 'success' : ''}>{data.workflow.accepted ? '当前已接受' : label(data.workflow.phase)}</Badge></div><h1 title={data.ticket.title}>{data.ticket.title}</h1></header>
+            <Tabs.Root value={conversationId} onValueChange={selectConversation} className="conversation-tabs"><Tabs.List className="tabs" aria-label="关联 Conversation">{conversationTabs(data.conversations).map(c => <Tabs.Trigger key={c.id} value={c.id} title={c.accessibleName} aria-label={c.accessibleName}><MessageSquare size={14} />{c.name}</Tabs.Trigger>)}</Tabs.List></Tabs.Root>
             <Conversation key={conversationId} id={conversationId} initial={conversationId === data.ticket.main_conversation_id ? data.conversation : undefined} relation={relation} composer={session.composer} refresh={refresh} /></>
             : <Overview data={overview} navigate={navigate} />}
       </main><aside className="workbench-rail" id="ticket-workbench" aria-label="辅助工作台" inert={!rightVisible}><div className="rail-heading"><span>工作台</span><span className="rail-ticket">{data?.ticket.key}</span></div><div className="workbench-scroll" tabIndex={0} role="region" aria-label="Workflow、变更和 Review 摘要">{workbench}</div></aside>
