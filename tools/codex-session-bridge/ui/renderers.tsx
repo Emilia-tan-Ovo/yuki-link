@@ -64,7 +64,7 @@ function ExecutionMember({ item }: { item: ConversationItem }) {
 export function ExecutionGroupRow({ group, open, onOpenChange }: { group: ExecutionGroup; open: boolean; onOpenChange: (open: boolean) => void }) {
   const category = { command: '命令', tool: '工具', observation: '状态观察', output: '任务输出' }[group.category];
   const time = (value: string) => Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '时间待确认';
-  return <Collapsible.Root className="execution-group" data-item-id={group.memberIds[0]} data-member-ids={JSON.stringify(group.memberIds)} open={open} onOpenChange={onOpenChange}>
+  return <Collapsible.Root className="execution-group" data-anchor-group-id={group.id} data-item-id={group.memberIds[0]} data-member-ids={JSON.stringify(group.memberIds)} open={open} onOpenChange={onOpenChange}>
     <Collapsible.Trigger className="execution-group-trigger"><Terminal size={16} /><strong>{category} · {group.countKind === 'calls' ? '调用' : '执行记录'} × {group.count}</strong>
       <span>{label(group.status)}</span><ChevronRight size={16} className="chevron" /></Collapsible.Trigger>
     <div className="execution-summary"><span>{group.members[0].participant.label}</span><time title={group.from + ' → ' + group.to}>{time(group.from)}–{time(group.to)}</time><span>当前已加载 {group.members.length} 条</span>

@@ -57,12 +57,48 @@ test('cross-page regroup retains keys, atomic cursors, open membership and prepe
   assert.equal(group.id, original.id); assert.deepEqual(group.memberIds, [1, 2, 3, 4].map(n => 'item-' + n));
   assert.equal(groupIsOpen(group, open), true); assert.equal(groupIsOpen(group, setGroupOpen(group, open, false)), false);
   assert.deepEqual(merged.items.map(i => i.cursor), [1, 2, 3, 4]);
-  const oldNode = { dataset: { itemId: 'item-2', memberIds: JSON.stringify(original.memberIds) }, getBoundingClientRect: () => ({ top: 110, bottom: 170 }) };
-  const newNode = { dataset: { itemId: 'item-1', memberIds: JSON.stringify(group.memberIds) }, getBoundingClientRect: () => ({ top: 200, bottom: 270 }) };
+  const oldNode = { dataset: { itemId: 'item-2', anchorGroupId: original.id, memberIds: JSON.stringify(original.memberIds) }, getBoundingClientRect: () => ({ top: 110, bottom: 170 }) };
+  const newNode = { dataset: { itemId: 'item-1', anchorGroupId: group.id, memberIds: JSON.stringify(group.memberIds) }, getBoundingClientRect: () => ({ top: 200, bottom: 270 }) };
   let nodes = [oldNode];
   const container = { scrollTop: 30, getBoundingClientRect: () => ({ top: 100 }), querySelectorAll: () => nodes } as unknown as HTMLElement;
-  const anchor = captureAnchor(container)!; assert.equal(anchor.id, 'item-2'); nodes = [newNode];
+  const anchor = captureAnchor(container)!; assert.deepEqual(anchor, { kind: 'group', id: original.id, memberId: 'item-2', offset: 10 }); nodes = [newNode];
   restoreAnchor(container, anchor); assert.equal(container.scrollTop, 120);
+});
+test('unchanged expanded group summary restores exactly the same scroll position', () => {
+  const member = { dataset: { itemId: 'item-1' }, getBoundingClientRect: () => ({ top: 190, bottom: 250 }) };
+  const group = { dataset: { itemId: 'item-1', anchorGroupId: 'group-1', memberIds: '["item-1"]' },
+    getBoundingClientRect: () => ({ top: 110, bottom: 300 }) };
+  const container = { scrollTop: 500, getBoundingClientRect: () => ({ top: 100 }), querySelectorAll: () => [group, member] } as unknown as HTMLElement;
+  const anchor = captureAnchor(container)!;
+  assert.deepEqual(anchor, { kind: 'group', id: 'group-1', memberId: 'item-1', offset: 10 });
+  restoreAnchor(container, anchor);
+  assert.equal(container.scrollTop, 500);
+});
+test('prepend regroup restores an atomic member to its new collapsed containing group', () => {
+  const member = { dataset: { itemId: 'item-2' }, getBoundingClientRect: () => ({ top: 110, bottom: 170 }) };
+  const oldGroup = { dataset: { itemId: 'item-1', anchorGroupId: 'old-group', memberIds: '["item-1","item-2"]' },
+    getBoundingClientRect: () => ({ top: 50, bottom: 170 }), contains: (node: unknown) => node === member };
+  const newGroup = { dataset: { itemId: 'item-0', anchorGroupId: 'new-group', memberIds: '["item-0","item-1","item-2"]' },
+    getBoundingClientRect: () => ({ top: 200, bottom: 270 }) };
+  let nodes: unknown[] = [oldGroup, member];
+  const container = { scrollTop: 500, getBoundingClientRect: () => ({ top: 100 }), querySelectorAll: () => nodes } as unknown as HTMLElement;
+  const anchor = captureAnchor(container)!;
+  assert.deepEqual(anchor, { kind: 'item', id: 'item-2', offset: 10 });
+  nodes = [newGroup];
+  restoreAnchor(container, anchor);
+  assert.equal(container.scrollTop, 590);
+});
+test('ordinary item anchors preserve their offset after prepend', () => {
+  let top = 110;
+  const node = { dataset: { itemId: 'message-1' }, getBoundingClientRect: () => ({ top, bottom: top + 60 }) };
+  const container = { scrollTop: 500, getBoundingClientRect: () => ({ top: 100 }), querySelectorAll: () => [node] } as unknown as HTMLElement;
+  const anchor = captureAnchor(container)!;
+  assert.deepEqual(anchor, { kind: 'item', id: 'message-1', offset: 10 });
+  restoreAnchor(container, anchor);
+  assert.equal(container.scrollTop, 500);
+  top = 200;
+  restoreAnchor(container, anchor);
+  assert.equal(container.scrollTop, 590);
 });
 test('duplicate Focused Review labels retain distinct conversation/review/participant/full finding relations', () => {
   const relation = (n: number): ConversationLink => ({ id: 'child-' + n, label: 'Focused Review · spec', kind: 'focused',
