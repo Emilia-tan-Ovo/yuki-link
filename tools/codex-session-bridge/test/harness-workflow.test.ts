@@ -119,9 +119,8 @@ test('公开 MCP 记录 Workflow 后，首页与 Ticket 可追溯真实阶段且
   assert.equal(detail.workflow.current.subject.subject_id, 'implementation-1');
   assert.equal(detail.workflow.current.assessment.state, 'verified');
   assert.ok(detail.records.some((record: Wire) => record.data.kind === 'workflow_snapshot'));
-  const page = await (await fetch(f.base + '/tickets/' + ticket.ticket_id, { headers: { cookie: f.cookie } })).text();
-  assert.match(page, /Workflow · review/);
-  assert.match(page, /尚未验收/);
+  const page = await (await fetch(f.base + '/api/ui/tickets/' + ticket.ticket_id, { headers: { cookie: f.cookie } })).json() as Wire;
+  assert.equal(page.workflow.phase, 'review'); assert.equal(page.workflow.accepted, false);
 
   const retry = payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
     ticket_id: ticket.ticket_id, request_id: requestId, expected_revision: null, schema_version: 1, snapshot: firstSnapshot,
@@ -517,13 +516,13 @@ test('首页突出 Workflow 异常且不误标正常 Ticket', async t => {
   assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
     ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot: snapshot(f),
   } })).workflow_revision, 1);
-  let home = await (await fetch(f.base + '/', { headers: { cookie: f.cookie } })).text();
-  assert.match(home, new RegExp('<li><a href="/tickets/' + ticket.ticket_id));
-  assert.doesNotMatch(home, new RegExp('<li class="warning"><a href="/tickets/' + ticket.ticket_id));
+  const homeTicket = async () => ((await (await fetch(f.base + '/api/ui/projects', { headers: { cookie: f.cookie } })).json()) as Wire).projects[0].tickets[0];
+  let home = await homeTicket();
+  assert.equal(home.id, ticket.ticket_id); assert.equal(home.attention, false);
 
   writeFileSync(path.join(f.worktree, 'tracked.txt'), 'changed\n', 'utf8');
-  home = await (await fetch(f.base + '/', { headers: { cookie: f.cookie } })).text();
-  assert.match(home, /异常待处理：applicability stale/);
+  f.harness.scan(true);
+  home = await homeTicket(); assert.equal(home.attention, true);
   writeFileSync(path.join(f.worktree, 'tracked.txt'), 'baseline\n', 'utf8');
 
   const open = snapshot(f);
@@ -540,9 +539,7 @@ test('首页突出 Workflow 异常且不误标正常 Ticket', async t => {
   assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
     ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 1, schema_version: 1, snapshot: open,
   } })).workflow_revision, 2);
-  home = await (await fetch(f.base + '/', { headers: { cookie: f.cookie } })).text();
-  assert.match(home, /异常待处理：Acceptance incomplete · finding open 1/);
-  assert.match(home, new RegExp('<li class="warning"><a href="/tickets/' + ticket.ticket_id));
+  home = await homeTicket(); assert.equal(home.attention, true); assert.equal(home.findings, 1); assert.equal(home.accepted, false);
 
   const fixed = snapshot(f);
   fixed.reviews = open.reviews;
@@ -551,6 +548,5 @@ test('首页突出 Workflow 异常且不误标正常 Ticket', async t => {
   assert.equal(payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
     ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: 2, schema_version: 1, snapshot: fixed,
   } })).workflow_revision, 3);
-  home = await (await fetch(f.base + '/', { headers: { cookie: f.cookie } })).text();
-  assert.match(home, /异常待处理：Acceptance failed · finding fixed 1/);
+  home = await homeTicket(); assert.equal(home.attention, true); assert.equal(home.findings, 1); assert.equal(home.accepted, false);
 });

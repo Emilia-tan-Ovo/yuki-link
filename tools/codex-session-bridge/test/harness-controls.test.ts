@@ -56,8 +56,7 @@ async function fixture(t: test.TestContext) {
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const home = await fetch(base);
   const cookie = home.headers.get('set-cookie')!.split(';')[0];
-  const html = await home.text();
-  const csrf = /name="csrf-token" content="([^"]+)"/.exec(html)![1];
+  const { csrf } = await (await fetch(base + '/api/session', { headers: { cookie } })).json() as { csrf: string };
   const post = async (route: string, body: unknown = {}) => {
     const response = await fetch(base + route, { method: 'POST', headers: { cookie, origin: base,
       'content-type': 'application/json', 'x-csrf-token': csrf }, body: JSON.stringify(body) });
@@ -101,7 +100,7 @@ test('public Ticket controls refresh and exact-stop an existing run without star
   assert.equal(f.calls[0].stopCalls, 1);
   assert.notEqual(stopped.body.execution.status, 'stopped');
 
-  const page = await fetch(`${f.base}/tickets/${ticket.ticket_id}`, { headers: { cookie: f.cookie } }).then(r => r.text());
+  const page = await fetch(`${f.base}/api/ui/tickets/${ticket.ticket_id}`, { headers: { cookie: f.cookie } }).then(r => r.text());
   assert.doesNotMatch(page, /<button[^>]*>[^<]*(?:start|send|resume|continue)/i);
   assert.match(page, /停止请求已发送|stopping/);
 });

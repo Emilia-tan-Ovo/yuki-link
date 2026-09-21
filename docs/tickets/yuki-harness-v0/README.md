@@ -1,10 +1,10 @@
 # Yuki Harness V0 · Tickets Handoff
 
-状态：**to-tickets 已确认并发布。**
+状态：**原 11 张 V0 tracer-bullet Tickets 已完成；真实使用发现 UI 产品化缺口后，Owner 已确认追加 HARNESS-012 / #76。**
 
 Source Spec：[#39 — Yuki Harness V0：工程协作控制台与可追溯观察](https://github.com/Emilia-tan-Ovo/yuki-link/issues/39)
 
-拆票决定：Owner 已确认 11 张 tracer-bullet tickets 的粒度与依赖，不合并采集、recording 门禁或 Changes 等独立风险面。每张票保持可独立验证的纵向交付；HARNESS-011 只做真实链路汇合验收，不承担首次集成。
+拆票决定：原 11 张 tracer-bullet tickets 已完成 V0 底座与真实链路验收。HARNESS-011 后的真实 Owner 使用暴露出 Conversation-first UI 未产品化的问题；该缺口不重新拆成一组 UI Tickets，而以唯一一张 HARNESS-012 产品化竖切收敛，复用已验证 prototype 与现有 Harness domain/API。
 
 ## Tickets
 
@@ -21,8 +21,9 @@ Source Spec：[#39 — Yuki Harness V0：工程协作控制台与可追溯观察
 | HARNESS-009 — 复用 Control Center 的日常服务管理 | [#49](https://github.com/Emilia-tan-Ovo/yuki-link/issues/49) | #40 | high |
 | HARNESS-010 — Windows 登录自启与后台恢复观察 | [#50](https://github.com/Emilia-tan-Ovo/yuki-link/issues/50) | #44 | high |
 | HARNESS-011 — V0 真实协作链路汇合验收 | [#51](https://github.com/Emilia-tan-Ovo/yuki-link/issues/51) | #46, #47, #48, #49, #50 | normal |
+| HARNESS-012 — Conversation-first UI 产品化 | [#76](https://github.com/Emilia-tan-Ovo/yuki-link/issues/76) | None（#51 已完成） | high |
 
-GitHub 已为上述真实 blocking edges 建立原生 `blocked by` 关系；所有正式 Ticket 均为 open 且带 `ready-for-agent`。
+原 HARNESS-001 ～ HARNESS-011 的 blocking edges 与完成状态以 GitHub 为准；HARNESS-012 / #76 当前无 blocker，并带 `ready-for-agent`。
 
 ## Current frontier
 

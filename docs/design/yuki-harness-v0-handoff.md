@@ -1,8 +1,10 @@
 # Yuki Harness V0 · Design Handoff
 
-状态：**pair-with-docs、`to-spec`、`to-tickets` 均已完成；正式 Spec 为 GitHub Issue #39，当前 frontier 为 HARNESS-001 / #40。**
+状态：**HARNESS-001 ～ HARNESS-011 已完成并完成一次代表性真实链路验收；Owner 已确认 Conversation-first UI prototype，当前 frontier 为 HARNESS-012 / #76（UI 产品化）。**
 
 日期：2026-09-19
+
+更新：2026-09-21
 
 ## 目标
 
@@ -195,7 +197,50 @@ Harness V0 不自行：
 - Conversation 是主工作面。
 - Changes 与 Workflow 常驻辅助。
 - Review / Focused Review 等子 Conversation 提供关联入口。
-- 当前只确认信息主次，不锁死三栏、两栏、标签页或具体视觉布局。
+- Owner 已确认三栏作为正式产品化视觉基线：左侧 Project / Ticket 导航，中间 Conversation 主工作面，右侧 Workflow / Changes / Review 辅助工作台。
+- Main / Review / Focused Review 作为关联 Conversation 入口；Raw Evidence / Debug 默认折叠，不进入主阅读路径。
+- 正式 UI 保持响应式 rail / drawer，并以已验证的深色石墨 + 淡紫 accent + 低饱和状态色为视觉方向。
+
+## UI 产品化基线（2026-09-21）
+
+HARNESS-011 完成后，Owner 首次按真实使用者视角打开 V0 UI，确认现有服务端 HTML 仍主要暴露 Event Store / task / Workflow 的 raw JSON；该实现满足数据可追溯性，但没有达到本 Design Handoff 已确认的 Conversation-first 产品目标。随后在 `.local/prototypes/harness-ui-v1` 完成只读 prototype，并由 Owner 直接视觉/交互确认作为正式产品化基线。
+
+### 展示与扩展 seam
+
+- Event Store / Workflow / Changes 等 domain facts 继续作为事实来源；UI 不直接解释原始 provider payload。
+- production 增加独立 presentation projection module，把当前 records/facts 投影为稳定的 `Participant` 与 `ConversationItem` 等 UI DTO。
+- frontend 通过编译期可信 renderer registry 按语义 kind 渲染；未知事件必须保留经过保护策略处理的 Raw Evidence、integrity 与 cursor，不能静默丢弃。
+- 当前 Codex source 可在 projection 内映射为通用 participant/provider/source reference，但 UI 不能结构性依赖 Sylvia、Codex 或 `codex-run`。
+- 暂不为了未来 DeepSeek 预建通用 Provider adapter interface；等出现第二个真实 adapter 时再固定该 seam，避免单实现抽象。
+- Conversation 主区预留 Owner Composer capability / layout slot；当前 V0 产品化保持只读，不实现发送、续跑或新的工程任务入口。未来输入应面向 Emilia / Conversation command boundary，而不是具体 Provider。
+
+### 前端与同源托管
+
+- 正式 UI 使用 React / TypeScript + Vite production build，随 `yuki-computer-agent` 发布，并由现有 loopback Harness server 同源托管。
+- 不新增独立前端服务、认证、session 或 Supervisor；复用现有 Host / Origin / Sec-Fetch / HttpOnly SameSite session / CSRF / body-size 等安全语义。
+- CSP 只允许所需的同源 script / style / connect，不允许 inline script 或 eval；hashed assets 可 immutable cache，index / API / patch 均保持 `no-store`。
+- HTTP/static adapter 只负责路由、安全策略、缓存与静态资源，不承担 provider payload 解释；domain Harness 也不承载 UI DTO。
+- 普通 SPA GET 不应隐式执行 `scan(true)`；后台 collector 负责持续事实刷新，显式 refresh 保留“主动刷新当前事实”的语义。
+
+### Conversation 历史
+
+- 默认首屏加载最新一页 Conversation，而不是从最早记录开始遍历。
+- 新增 `before` / tail 语义用于向上加载更早历史；现有 `after` 保留用于追加新记录。
+- 分页必须稳定排序、去重，并在向上加载后保持当前可见滚动锚点，避免长 Ticket 的阅读位置跳动。
+
+### Changes / Diff
+
+- Ticket 固定 comparison baseline 继续是累计 Changes 的比较起点，Git 继续是最终文件状态与 diff 的主要事实来源。
+- 正式 UI 继续使用 Split / Unified DiffViewer；`react-diff-view` 使用精确锁定版本，不使用 prototype 的 `latest`。
+- 增加按文件懒加载的只读 patch seam。它只能读取当前 Ticket Changes 中的精确文件身份，不能退化成任意仓库文件读取接口。
+- patch 覆盖 tracked / untracked / rename；binary / deleted / protected / truncated / too-large / stale / unavailable 必须返回明确结构化状态，不能伪装为完整 diff。
+- patch 继续复用 worktree containment、protected path、redaction 与 size limit，并携带 baseline / current HEAD / freshness / integrity 身份以防止陈旧结果误展示。
+
+### 产品验收门禁
+
+- 有 UI / 人机交互的产品化 Ticket，HTTP 200、单元测试或快照测试只能证明底层/构建正确，不能单独构成 Acceptance passed。
+- 必须在 production build + 真实 Harness server 上打开真实浏览器，以 Owner 视角检查主阅读路径、关键交互、响应式行为、Diff、Raw Evidence fallback 与浏览器 CSP / network / console 状态。
+- 默认界面应让不了解内部 schema、UUID、SHA 或 Event Store 结构的使用者直接回答：谁在做什么、改了什么、现在走到哪、Review 结果是什么、是否有问题。
 
 ## 与现有系统的关系
 
@@ -242,6 +287,11 @@ Harness V0 不自行：
 - Ticket Change View 能展示从固定比较基线到当前的累计净变化，并保留 run / commit 下钻。
 - Ticket 主 Conversation 跨底层 session 切换仍保持同一身份；fresh Review 子 Conversation 不继承主上下文。
 - Harness 日常服务管理必须走现有 Control Center / Supervisor，不出现双管理者。
+- production React build 的同源静态资源、深链接、CSP、cookie / CSRF / Host / Origin / Sec-Fetch 约束必须通过浏览器与自动测试共同验证。
+- Conversation 最新页、`before` 历史分页与 `after` 新事件追加需验证顺序、去重和滚动锚点稳定。
+- presentation projection 对已知事件产出稳定人话 DTO；未知事件不得丢失，必须可下钻受保护 Raw Evidence。
+- 单文件 patch 需验证 tracked / untracked / rename 以及 binary / deleted / protected / truncated / too-large / stale 等结构化状态与安全限制。
+- UI Acceptance 必须真实打开 production build 并完成视觉/交互检查；HTTP 200 / tests green 不能单独替代。
 
 具体事件 schema、存储引擎、进程通信、Windows 自启实现、UI 自动化 seam、Changes 快照算法和安全内容过滤留待 Spec / ticket-design 进一步固定。
 
@@ -256,4 +306,4 @@ Harness V0 不自行：
 
 ## 下一步
 
-正式 Spec 已写入 `docs/specs/yuki-harness-v0.md` 并发布为 GitHub Issue #39；11 张 V0 Ticket 已发布，索引见 `docs/tickets/yuki-harness-v0/README.md`。当前 frontier 为 HARNESS-001 / #40；下一步在新的独立实现 worktree 中进入 #40 `ticket-design`。
+正式 Spec 仍为 GitHub Issue #39；HARNESS-001 ～ HARNESS-011 已完成。Owner 在真实使用中确认 UI 产品化缺口后新增 HARNESS-012 / #76，索引见 `docs/tickets/yuki-harness-v0/README.md`。当前 frontier 为 HARNESS-012 / #76；下一步在独立 worktree 中执行精简 `ticket-design`，随后由 fresh implementation session 产品化已确认 prototype。

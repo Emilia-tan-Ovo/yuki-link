@@ -54,7 +54,7 @@ async function publicFixture(runtime: string, source: Source) {
       const response = await fetch(`${base}/api/tickets/${ticketId}`, { headers: { cookie } });
       assert.equal(response.status, 200); return response.json() as Promise<Wire>;
     },
-    page: async (ticketId: string) => (await fetch(`${base}/tickets/${ticketId}`, { headers: { cookie } })).text(),
+    page: async (ticketId: string) => (await fetch(`${base}/api/ui/tickets/${ticketId}`, { headers: { cookie } })).json() as Promise<Wire>,
     close: async () => { await client.close(); mcp.close(); mcp.closeAllConnections(); ui.close(); ui.closeAllConnections(); harness.close(); },
   };
 }
@@ -95,8 +95,8 @@ test('public Ticket registration persists a fixed baseline and cumulative commit
   assert.equal(reopened.ticket.id, ticket.ticket_id);
   assert.equal(reopened.changes.baseline.commit_oid, repo.fixedPoint);
   assert.ok(reopened.changes.files.some((item: Wire) => item.path === 'committed.txt'));
-  assert.match(await f.page(ticket.ticket_id), /累计 Changes/);
-  assert.match(await f.page(ticket.ticket_id), /committed\.txt/);
+  assert.equal((await f.page(ticket.ticket_id)).changes.baseline, repo.fixedPoint);
+  assert.match(JSON.stringify(await f.page(ticket.ticket_id)), /committed\.txt/);
 });
 
 test('run association is process evidence, never modification ownership', async t => {
@@ -177,7 +177,7 @@ test('tracked and untracked protected names never expose content, hashes or prev
   assert.equal(detail.changes.completeness, 'incomplete');
   assert.ok(!JSON.stringify(detail).includes(trackedSecret));
   assert.ok(!JSON.stringify(detail).includes(untrackedSecret));
-  assert.match(await f.page(ticket.ticket_id), /完整性[^<]*incomplete|incomplete[^<]*完整性/);
+  assert.equal((await f.page(ticket.ticket_id)).changes.completeness, 'incomplete');
 });
 
 test('Ticket detail refreshes only its target while project overview stays summary-only', async t => {
@@ -262,9 +262,7 @@ test('current Changes report and render material incompleteness independently fr
   assert.equal(detail.changes.freshness, 'current');
   assert.equal(detail.changes.completeness, 'incomplete');
   const page = await f.page(ticket.ticket_id);
-  assert.match(page, /累计 Changes[^<]*current[^<]*incomplete/);
-  assert.match(page, /class="warning"/);
-  const home = await (await fetch(f.base)).text();
-  assert.match(home, /Changes current \/ (?:incomplete|unknown)/);
-  assert.match(home, /异常待处理/);
+  assert.equal(page.changes.freshness, 'current'); assert.equal(page.changes.completeness, 'incomplete');
+  const home = await (await fetch(f.base + '/api/ui/projects', { headers: { cookie: f.cookie } })).json() as Wire;
+  assert.equal(home.projects[0].tickets[0].attention, true);
 });

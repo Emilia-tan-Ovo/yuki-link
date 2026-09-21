@@ -7,6 +7,14 @@ import type { BaselineGap, ComparisonBaseline } from './model.ts';
 
 const now = () => new Date().toISOString();
 const MAX_FILES = 2048;
+const MAX_CONTENT = 64 * 1024;
+const MAX_PATCH = 128 * 1024;
+const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+export type PatchState = 'available' | 'binary' | 'deleted' | 'protected' | 'too-large' | 'truncated' | 'stale' | 'unavailable';
+export interface PatchContent {
+  state: PatchState; patch: string | null;
+  integrity: { redacted: boolean; complete: boolean; reason: string | null };
+}
 const protectedPart = /^(?:\.env(?:\..*)?|\.git|\.codex|\.agents|\.ssh|\.aws|\.azure|\.kube|\.npmrc|\.netrc|runtime|secrets?|credentials?|select-key|tunnel-client|auth\.json|.*(?:api[-_]?key|runtime[-_]?key|private[-_]?key|access[-_]?token|refresh[-_]?token).*|.*\.(?:key|pem|pfx|p12))$/i;
 const protectedPath = (value: string) => value.split(/[\\/]+/).filter(Boolean).some(part => protectedPart.test(part));
 const inside = (root: string, target: string) => {
@@ -51,7 +59,8 @@ export interface CurrentChangesFacts {
 
 export class ChangesSourceError extends Error {
   code: BaselineGap['code'];
-  constructor(code: BaselineGap['code']) { super(code); this.code = code; }
+  outputLimit: boolean;
+  constructor(code: BaselineGap['code'], outputLimit = false) { super(code); this.code = code; this.outputLimit = outputLimit; }
 }
 
 export interface ChangesSourceOptions { git?: () => string; spawn?: typeof spawnSync }
@@ -65,15 +74,72 @@ export class ChangesSource {
   }
 
   private run(cwd: string, args: string[], maxBuffer = 4 * 1024 * 1024) {
-    const result = this.spawn(this.git(), ['--no-optional-locks', '-c', 'core.hooksPath=', '-c', 'core.fsmonitor=false',
+    const result = this.spawn(this.git(), ['--no-optional-locks', '--literal-pathspecs', '-c', 'core.hooksPath=', '-c', 'core.fsmonitor=false',
       '-c', 'diff.external=', '-c', 'core.quotepath=false', ...args], {
       cwd, encoding: 'buffer', windowsHide: true, shell: false, timeout: 5000, maxBuffer,
     });
-    if (result.status !== 0 || result.error) throw new ChangesSourceError('GIT_UNAVAILABLE');
+    if (result.status !== 0 || result.error) throw new ChangesSourceError('GIT_UNAVAILABLE', (result.error as NodeJS.ErrnoException | undefined)?.code === 'ENOBUFS');
     return result.stdout ?? Buffer.alloc(0);
   }
 
   private line(cwd: string, args: string[]) { return this.run(cwd, args).toString('utf8').trim(); }
+
+  fileIdentity(ticketId: string, baseline: ComparisonBaseline, head: string, file: FileFact) {
+    let metadata: unknown = null;
+    // Metadata is part of the revision even when the content budget prevents a hash.
+    const target = path.resolve(baseline.worktree_root, file.path);
+    if (inside(baseline.worktree_root, target)) {
+      try { const s = lstatSync(target); metadata = [s.dev, s.ino, s.size, s.mtimeMs, s.ctimeMs, s.mode, s.nlink]; } catch { /* absent */ }
+    }
+    return { file_id: digest([ticketId, file.path, file.old_path]),
+      revision: digest([ticketId, baseline.repository_id, baseline.repository_instance_id, baseline.worktree_root,
+        baseline.commit_oid, head, file.path, file.old_path, file.change_kind, file.fact_source, file.content, metadata]) };
+  }
+
+  patch(baseline: ComparisonBaseline, file: FileFact): PatchContent {
+    const result = (state: PatchState, reason: string | null = state): PatchContent => ({ state, patch: null,
+      integrity: { redacted: false, complete: false, reason } });
+    const paths = [file.path, ...(file.old_path ? [file.old_path] : [])];
+    if (paths.some(p => !p || path.isAbsolute(p) || /[\x00-\x1f]/.test(p) || p.split(/[\\/]/).some(s => s === '..' || s === '.')
+      || protectedPath(p) || !inside(baseline.worktree_root, path.resolve(baseline.worktree_root, p)))) return result('protected');
+    if (file.change_kind === 'deleted') return result('deleted');
+    if (file.content.size !== null && file.content.size > MAX_CONTENT) return result('too-large');
+    if (file.content.state === 'unavailable') return result('unavailable', 'unsafe-or-unreadable-file');
+    if (file.content.content_type === 'binary') return result('binary');
+    if (!file.content.sha256) return result('truncated');
+    try {
+      // Revalidate the destination before invoking Git; never follow special files.
+      const current = this.content(baseline.worktree_root, file.path).content;
+      if (!current.sha256 || current.sha256 !== file.content.sha256) return result('stale');
+      let patch: string;
+      if (file.fact_source === 'filesystem-untracked') {
+        const bytes = readFileSync(path.resolve(baseline.worktree_root, file.path));
+        if (bytes.length > MAX_CONTENT) return result('too-large');
+        if (createHash('sha256').update(bytes).digest('hex') !== current.sha256) return result('stale');
+        const text = bytes.toString('utf8'), lines = text ? text.replace(/\n$/, '').split('\n') : [];
+        const a = JSON.stringify('a/' + file.path), b = JSON.stringify('b/' + file.path);
+        patch = `diff --git ${a} ${b}\nnew file mode 100644\n--- /dev/null\n+++ ${b}\n`
+          + (lines.length ? `@@ -0,0 +1,${lines.length} @@\n` + lines.map(line => '+' + line + '\n').join('')
+            + (text.endsWith('\n') ? '' : '\\ No newline at end of file\n') : '');
+      } else {
+        // Bound both sides before diffing. Blob reads bypass filters/textconv and symlink contents.
+        const oldPath = file.old_path ?? file.path;
+        const entry = this.run(baseline.worktree_root, ['ls-tree', '-z', baseline.commit_oid, '--', oldPath]).toString('utf8');
+        if (entry) {
+          const match = /^(100644|100755) blob ([a-f0-9]{40,64})\t/.exec(entry);
+          if (!match) return result('protected', 'special-baseline-entry');
+          if (Number(this.line(baseline.worktree_root, ['cat-file', '-s', match[2]])) > MAX_CONTENT) return result('too-large');
+          if (this.run(baseline.worktree_root, ['cat-file', 'blob', match[2]], MAX_CONTENT + 1).includes(0)) return result('binary');
+        }
+        patch = this.run(baseline.worktree_root, ['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--no-relative',
+          '--src-prefix=a/', '--dst-prefix=b/', '--submodule=short', '-M', '-U3', baseline.commit_oid, '--', ...paths], MAX_PATCH + 1).toString('utf8');
+      }
+      if (Buffer.byteLength(patch) > MAX_PATCH) return result('truncated', 'patch-size-limit');
+      const safe = redact(patch);
+      return { state: 'available', patch: safe, integrity: { redacted: safe !== patch, complete: true, reason: null } };
+    } catch (error) { return error instanceof ChangesSourceError && error.outputLimit
+      ? result('truncated', 'patch-size-limit') : result('unavailable', 'patch-source-unavailable'); }
+  }
 
   private identity(worktree: string) {
     let root: string, repository: string;
@@ -181,7 +247,10 @@ export class ChangesSource {
       C: 'copied', T: 'type-changed', U: 'unmerged' }[status[0]!] as FileFact['change_kind'] | undefined) ?? 'unknown';
     const tracked = this.tracked(identity.root, baseline.commit_oid);
     for (const item of tracked.slice(0, MAX_FILES)) {
-      const content = item.status.startsWith('D') ? { content: { state: 'observed' as const, size: 0, sha256: null,
+      const content = item.old_path && protectedPath(item.old_path) ? { content: { state: 'unavailable' as const, size: null, sha256: null,
+        preview: null, content_type: 'unknown' as const }, gaps: [{ code: 'UNTRACKED_CONTENT_UNAVAILABLE', source: 'filesystem' as const,
+          impact: 'renamed protected content is not read', path: item.path }] }
+        : item.status.startsWith('D') ? { content: { state: 'observed' as const, size: 0, sha256: null,
         preview: null, content_type: 'unknown' as const }, gaps: [] as EvidenceGap[] } : this.content(identity.root, item.path);
       gaps.push(...content.gaps);
       files.push({ path: item.path, old_path: item.old_path, change_kind: kind(item.status),
