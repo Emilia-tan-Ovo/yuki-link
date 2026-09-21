@@ -115,7 +115,8 @@ export class Presentation {
       accepted: summary.acceptance?.accepted === true, closeout: w?.closeout.status ?? 'pending',
       reviews: w?.reviews.map(r => ({ id: r.review_id, mode: r.mode, status: r.status, applicability: r.applicability,
         standards: r.standards.status, spec: r.spec.status, original_review_id: r.original_review_id ?? null })) ?? [],
-      findings: w?.findings.map(f => ({ id: f.finding_id, status: f.status, title: text(object(f).summary, f.finding_id) })) ?? [] };
+      findings: w?.findings.map(f => ({ id: f.finding_id, origin_review_id: f.origin_review_id,
+        identity: JSON.stringify([f.origin_review_id, f.finding_id]), status: f.status, title: text(object(f).summary, f.finding_id) })) ?? [] };
     return protectedCopy({ ticket: { id: d.ticket.id, key: d.ticket.key, title: d.ticket.title, reference: d.ticket.reference,
       main_conversation_id: d.ticket.main_conversation_id },
       conversation: this.conversation(d.ticket.main_conversation_id),

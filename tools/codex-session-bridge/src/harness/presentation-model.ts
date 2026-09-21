@@ -54,7 +54,7 @@ export interface ReviewDto {
 }
 export interface WorkflowDto {
   phase: string; revision: number | null; assessment: string; acceptance: string; accepted: boolean;
-  closeout: string; reviews: ReviewDto[]; findings: Array<{ id: string; status: string; title: string }>;
+  closeout: string; reviews: ReviewDto[]; findings: Array<{ id: string; origin_review_id: string; identity: string; status: string; title: string }>;
 }
 export interface ControlTarget { kind: 'run' | 'task'; id: string; status: string; observation: string; manageable: boolean }
 export interface TicketDto {

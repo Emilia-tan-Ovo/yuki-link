@@ -133,6 +133,9 @@ export class ChangesSource {
         }
         patch = this.run(baseline.worktree_root, ['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--no-relative',
           '--src-prefix=a/', '--dst-prefix=b/', '--submodule=short', '-M', '-U3', baseline.commit_oid, '--', ...paths], MAX_PATCH + 1).toString('utf8');
+        // Git attributes can classify NUL-free content as binary. Hunk lines have a prefix,
+        // so only Git's own unprefixed marker should override the text classification.
+        if (/^Binary files .+ and .+ differ$/m.test(patch) || /^GIT binary patch$/m.test(patch)) return result('binary');
       }
       if (Buffer.byteLength(patch) > MAX_PATCH) return result('truncated', 'patch-size-limit');
       const safe = redact(patch);

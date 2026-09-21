@@ -11,6 +11,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { createHttpServer } from '../src/http.js';
 import { Harness } from '../src/harness/harness.ts';
 import { createHarnessServer } from '../src/harness/server.ts';
+import { Presentation } from '../src/harness/presentation.ts';
 
 type Wire = Record<string, any>;
 const payload = (result: Record<string, unknown>) => result.structuredContent as Wire;
@@ -90,6 +91,31 @@ function checkpointPhase(f: Awaited<ReturnType<typeof fixture>>, phase: string) 
   const current = readFileSync(f.checkpoint, 'utf8');
   writeFileSync(f.checkpoint, current.replace(/^phase: .*$/m, `phase: ${phase}`), 'utf8');
 }
+
+test('finding projection preserves distinct Review ownership for duplicate finding IDs', async t => {
+  const f = await fixture(); t.after(f.close);
+  const ticket = f.harness.register({ project_key: 'p', project_name: 'p', ticket_key: 'HARNESS-005',
+    title: 'Review ownership', reference: 'issue:45', expected_worktree: f.worktree });
+  const current = snapshot(f);
+  current.reviews = ['review-a', 'review-b'].map(review_id => ({ review_id, original_review_id: null,
+    mode: 'full', status: 'findings', subject_ref: 'implementation-1', artifact_refs: [],
+    standards: { status: 'passed', evidence: ['standards-report'], reason: null },
+    spec: { status: 'findings', evidence: ['F1'], reason: '需要修复' },
+    finding_refs: [{ origin_review_id: review_id, finding_id: 'F1' }], isolated: true,
+    applicability: 'verified', reason: null }));
+  current.findings = ['review-a', 'review-b'].map(origin_review_id => ({ origin_review_id,
+    finding_id: 'F1', status: 'open', severity: 'P2', summary: '需要修复', subject_ref: 'implementation-1',
+    verification_review_id: null, artifact_refs: [], evidence: ['review-report'], applicability: 'verified', reason: null }));
+  const recorded = payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {
+    ticket_id: ticket.ticket_id, request_id: randomUUID(), expected_revision: null, schema_version: 1, snapshot: current,
+  } }));
+  assert.equal(recorded.workflow_revision, 1);
+  const presentation = new Presentation(f.harness), projected = presentation.ticket(ticket.ticket_id).workflow;
+  assert.deepEqual(projected.findings.map(f => [f.origin_review_id, f.id]), [['review-a', 'F1'], ['review-b', 'F1']]);
+  assert.equal(new Set(projected.findings.map(f => f.identity)).size, 2);
+  assert.ok(projected.findings.every(f => projected.reviews.some(r => r.id === f.origin_review_id)));
+  assert.deepEqual(presentation.ticket(ticket.ticket_id).workflow.findings, projected.findings);
+});
 
 test('公开 MCP 记录 Workflow 后，首页与 Ticket 可追溯真实阶段且不自动 accepted', async t => {
   const f = await fixture(); t.after(f.close);
