@@ -11,12 +11,13 @@ import { ChangesSource } from '../src/harness/changes-source.ts';
 import { parseDiff } from 'react-diff-view';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'core.autocrlf=false', ...args], { cwd, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-test('Git attributes mark text-looking tracked files as structured binary patches', t => {
+test('Git binary markers classify attributes without matching ordinary text records', t => {
   const repo = mkdtempSync(path.join(os.tmpdir(), 'harness-patch-attributes-'));
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   git(repo, 'init', '-q'); git(repo, 'config', 'user.name', 'Fixture'); git(repo, 'config', 'user.email', 'fixture@example.invalid');
   writeFileSync(path.join(repo, '.gitattributes'), '*.dat -diff\n', 'utf8');
   writeFileSync(path.join(repo, 'sample.dat'), 'before\n', 'utf8');
+  writeFileSync(path.join(repo, 'ordinary.txt'), 'before\n', 'utf8');
   git(repo, 'add', '.'); git(repo, 'commit', '-qm', 'baseline');
   const source = new ChangesSource(), baseline = source.capture(repo, 'HEAD');
   writeFileSync(path.join(repo, 'sample.dat'), 'after\n', 'utf8');
@@ -25,6 +26,17 @@ test('Git attributes mark text-looking tracked files as structured binary patche
   assert.equal(file.content.content_type, 'text');
   assert.deepEqual(source.patch(baseline, file), { state: 'binary', patch: null,
     integrity: { redacted: false, complete: false, reason: 'binary' } });
+  for (const separator of ['', '\r', '\u2028', '\u2029']) {
+    for (const marker of ['Binary files a/x and b/x differ', 'GIT binary patch']) {
+      const line = (separator ? 'ordinary' + separator : '') + marker;
+      writeFileSync(path.join(repo, 'ordinary.txt'), line + '\n', 'utf8');
+      const textFile = source.inspect(baseline).files.find(f => f.path === 'ordinary.txt')!;
+      const patch = source.patch(baseline, textFile);
+      assert.equal(patch.state, 'available', JSON.stringify(line));
+      assert.deepEqual(patch.integrity, { redacted: false, complete: true, reason: null });
+      assert.ok(patch.patch!.split('\n').includes('+' + line), JSON.stringify(line));
+    }
+  }
 });
 
 test('ticket-scoped patch covers tracked, untracked, rename, structured restrictions and stale identity', async t => {
