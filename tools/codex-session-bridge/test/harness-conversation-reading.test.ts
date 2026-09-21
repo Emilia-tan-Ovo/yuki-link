@@ -45,6 +45,31 @@ test('failure and integrity gaps break groups and remain in the summary', () => 
   const [uncertain] = groupConversation([{ ...item(1), integrity: { redacted: false, truncated: 'unknown', incomplete: 'unknown' } }]);
   assert.equal(uncertain.kind === 'execution-group' && uncertain.integrity.incomplete, 'unknown');
 });
+test('running task output with integrity gaps coalesces while preserving the summary warning', () => {
+  const records: ConversationItem[] = Array.from({ length: 40 }, (_, n) => ({
+    ...item(n, { category: 'output', scope: 'owned-task', operationId: null, status: 'running' }),
+    kind: 'task', content: { title: '任务输出', text: 'output-' + n, status: 'running' },
+    integrity: { redacted: false, truncated: false, incomplete: true },
+  }));
+  const rows = groupConversation(records);
+  assert.equal(rows.length, 1);
+  const group = rows[0]; assert.equal(group.kind, 'execution-group'); if (group.kind !== 'execution-group') return;
+  assert.equal(group.members.length, 40); assert.equal(group.count, 40); assert.equal(group.countKind, 'records');
+  assert.deepEqual(group.members, records); assert.equal(group.status, 'running');
+  assert.equal(group.integrity.incomplete, true);
+});
+test('incomplete non-output records and issue-bearing output remain grouping boundaries on both sides', () => {
+  for (const category of ['command', 'tool', 'observation', 'output'] as const) {
+    const middle = item(2, { category, ...(category === 'output' ? { issues: ['stderr 诊断'] } : {}) });
+    middle.integrity.incomplete = true;
+    const rows = groupConversation([item(1, { category }), middle, item(3, { category })]);
+    assert.equal(rows.length, 3, category);
+    assert.equal(groupConversation([middle, { ...middle, id: 'next' }]).length, 2, category);
+    const group = rows[1]; assert.equal(group.kind, 'execution-group'); if (group.kind !== 'execution-group') continue;
+    assert.equal(group.integrity.incomplete, true);
+    assert.deepEqual(group.issues, middle.execution!.issues);
+  }
+});
 test('cross-page regroup retains keys, atomic cursors, open membership and prepend/append anchor identity', () => {
   const page = (items: ConversationItem[]): ConversationPage => ({ id: 'conversation', ticket_id: 'ticket', items,
     page: { first_cursor: items[0].cursor, last_cursor: items.at(-1)!.cursor, high_water_cursor: 4, has_older: true, has_newer: false } });

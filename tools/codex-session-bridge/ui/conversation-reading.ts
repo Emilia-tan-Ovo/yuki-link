@@ -15,7 +15,8 @@ function adjacent(a: ConversationItem, b: ConversationItem): boolean {
   const gap = Date.parse(y.observedAt) - Date.parse(x.observedAt);
   return !!x.scope && x.scope === y.scope && x.source === y.source && x.category === y.category
     && a.participant.id === b.participant.id && a.participant.role === b.participant.role
-    && !x.issues.length && !y.issues.length && a.integrity.incomplete !== true && b.integrity.incomplete !== true
+    && !x.issues.length && !y.issues.length
+    && (x.category === 'output' || (a.integrity.incomplete !== true && b.integrity.incomplete !== true))
     && Number.isFinite(gap) && gap >= 0 && gap <= 5 * 60_000;
 }
 const aggregate = (values: Array<boolean | 'unknown'>): boolean | 'unknown' => values.includes(true) ? true : values.includes('unknown') ? 'unknown' : false;
