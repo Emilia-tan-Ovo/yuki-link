@@ -67,7 +67,7 @@ test('prepend anchor preserves the first visible row pixel offset; append merge 
   let offset = -20;
   const row = { dataset: { itemId: 'visible' }, getBoundingClientRect: () => ({ top: offset + 100, bottom: offset + 200 }) };
   const container = { scrollTop: 50, getBoundingClientRect: () => ({ top: 100 }), querySelectorAll: () => [row] } as unknown as HTMLElement;
-  const anchor = captureAnchor(container)!; assert.deepEqual(anchor, { id: 'visible', offset: -20 });
+  const anchor = captureAnchor(container)!; assert.deepEqual(anchor, { kind: 'item', id: 'visible', offset: -20 });
   offset += 380; restoreAnchor(container, anchor); assert.equal(container.scrollTop, 430);
   const page: ConversationPage = { id: 'c', ticket_id: 't', items: [], page: { first_cursor: null, last_cursor: null, high_water_cursor: 1, has_older: true, has_newer: false } };
   assert.equal(mergePage(page, { ...page, page: { ...page.page, has_older: false } }, 'after').page.has_older, true);
