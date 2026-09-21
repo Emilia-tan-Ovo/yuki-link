@@ -3,7 +3,7 @@ import * as Collapsible from '@radix-ui/react-collapsible';
 import { ChevronRight, CircleCheck, Terminal } from 'lucide-react';
 import type { ConversationItem } from '../src/harness/presentation-model';
 import { Advanced, Badge, label, useDisclosure } from './common';
-import type { ExecutionGroup } from './conversation-reading';
+import type { AuxiliaryGroup } from './conversation-reading';
 export { DisclosureProvider } from './common';
 
 function inline(text: string): ReactNode[] {
@@ -33,44 +33,40 @@ function Tool({ item }: { item: Of<'tool'> }) {
 function Event({ item }: { item: Exclude<ConversationItem, Of<'message'> | Of<'tool'>> }) {
   return <div className="timeline-event"><span className="event-node"><CircleCheck size={14} /></span><div><strong>{item.content.title}</strong>{item.content.text && <p>{item.content.text}</p>}</div>{item.content.status && <span className="event-tail">{label(item.content.status)}</span>}</div>;
 }
-type Registry = { [K in ConversationItem['kind']]: (item: ConversationItem) => ReactNode };
-// Closed, trusted registry; adding a provider does not change the component tree.
-const registry: Registry = {
-  message: item => item.kind === 'message' && <Message item={item} />,
-  tool: item => item.kind === 'tool' && <Tool item={item} />,
-  lifecycle: item => item.kind !== 'message' && item.kind !== 'tool' && <Event item={item} />,
-  workflow: item => item.kind !== 'message' && item.kind !== 'tool' && <Event item={item} />,
-  control: item => item.kind !== 'message' && item.kind !== 'tool' && <Event item={item} />,
-  task: item => item.kind !== 'message' && item.kind !== 'tool' && <Event item={item} />,
-  unknown: item => item.kind !== 'message' && item.kind !== 'tool' && <Event item={item} />,
-};
-export function ConversationRow({ item }: { item: ConversationItem }) {
-  return <div className={'conversation-item kind-' + item.kind} data-item-id={item.id}>
-    {registry[item.kind](item)}
+function Evidence({ item }: { item: Exclude<ConversationItem, Of<'message'>> }) {
+  return <>{item.kind === 'tool' ? <Tool item={item} /> : <Event item={item} />}
     {(item.integrity.redacted || item.integrity.truncated === true || item.integrity.incomplete === true) && <div className="integrity-note">
       {item.integrity.redacted && <Badge>已脱敏</Badge>}{item.integrity.truncated === true && <Badge>来源截断</Badge>}{item.integrity.incomplete === true && <Badge>内容有缺口</Badge>}
     </div>}
-    <Advanced disclosureId={item.id + ':advanced'} value={{ cursor: item.cursor, integrity: item.integrity, sourceRefs: item.sourceRefs, record: item.rawEvidence }} />
-  </div>;
+    <Advanced disclosureId={item.id + ':advanced'} value={{ cursor: item.cursor, integrity: item.integrity, sourceRefs: item.sourceRefs, record: item.rawEvidence }} /></>;
 }
-function ExecutionMember({ item }: { item: ConversationItem }) {
+function AuxiliaryRecord({ item }: { item: Exclude<ConversationItem, Of<'message'>> }) {
   const disclosure = useDisclosure(item.id + ':record');
-  return <Collapsible.Root className="execution-member" data-item-id={item.id} {...disclosure}>
-    <Collapsible.Trigger className="execution-member-trigger"><ChevronRight size={14} className="chevron" />
-      <span>{item.kind === 'message' ? '消息' : item.content.title}</span><span>{label(item.execution?.status ?? 'unknown')}</span><time>{item.timestamp}</time></Collapsible.Trigger>
-    <Collapsible.Content><ConversationRow item={item} /></Collapsible.Content>
+  return <Collapsible.Root className="auxiliary-member" data-item-id={item.id} {...disclosure}>
+    <Collapsible.Trigger className="auxiliary-member-trigger"><ChevronRight size={14} className="chevron" />
+      <span>{item.content.title}</span><span>{label(item.auxiliary?.status ?? item.content.status ?? 'unknown')}</span><time>{item.timestamp}</time></Collapsible.Trigger>
+    <Collapsible.Content className="auxiliary-record-content"><Evidence item={item} /></Collapsible.Content>
   </Collapsible.Root>;
 }
-export function ExecutionGroupRow({ group, open, onOpenChange }: { group: ExecutionGroup; open: boolean; onOpenChange: (open: boolean) => void }) {
-  const category = { command: '命令', tool: '工具', observation: '状态观察', output: '任务输出' }[group.category];
+export function ConversationRow({ item }: { item: ConversationItem }) {
+  return <div className={'conversation-item kind-' + item.kind} data-item-id={item.id}>
+    {item.kind === 'message' ? <><Message item={item} /><Advanced disclosureId={item.id + ':advanced'} value={{ cursor: item.cursor, integrity: item.integrity, sourceRefs: item.sourceRefs, record: item.rawEvidence }} /></>
+      : <AuxiliaryRecord item={item} />}
+  </div>;
+}
+export function AuxiliaryGroupRow({ group, open, onOpenChange }: { group: AuxiliaryGroup; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const category = { command: '命令', tool: '工具', observation: '状态观察', output: '任务输出', recovery: '历史恢复',
+    task: '受管任务事件', control: '控制记录', lifecycle: '生命周期' }[group.category];
   const time = (value: string) => Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '时间待确认';
-  return <Collapsible.Root className="execution-group" data-anchor-group-id={group.id} data-item-id={group.memberIds[0]} data-member-ids={JSON.stringify(group.memberIds)} open={open} onOpenChange={onOpenChange}>
-    <Collapsible.Trigger className="execution-group-trigger"><Terminal size={16} /><strong>{category} · {group.countKind === 'calls' ? '调用' : '执行记录'} × {group.count}</strong>
+  const multiplier = group.count > 1 ? ' ×' + group.count : '';
+  return <Collapsible.Root className="auxiliary-group" data-anchor-group-id={group.id} data-item-id={group.memberIds[0]} data-member-ids={JSON.stringify(group.memberIds)} open={open} onOpenChange={onOpenChange}>
+    <Collapsible.Trigger className="auxiliary-group-trigger"><Terminal size={16} /><strong>{category} · {group.countKind === 'calls' ? '调用' : '辅助记录'}{multiplier}</strong>
       <span>{label(group.status)}</span><ChevronRight size={16} className="chevron" /></Collapsible.Trigger>
-    <div className="execution-summary"><span>{group.members[0].participant.label}</span><time title={group.from + ' → ' + group.to}>{time(group.from)}–{time(group.to)}</time><span>当前已加载 {group.members.length} 条</span>
+    <div className="auxiliary-summary"><span>{group.members[0].participant.label}</span><time title={group.from + ' → ' + group.to}>{time(group.from)}–{time(group.to)}</time><span>当前已加载 {group.members.length} 条</span>
+      {group.statuses.length > 1 && <span>状态：{group.statuses.map(label).join(' → ')}</span>}
       {group.issues.map(issue => <Badge key={issue} kind="warning">{label(issue)}</Badge>)}
       {group.integrity.redacted && <Badge>已脱敏</Badge>}{group.integrity.truncated === true && <Badge>来源截断</Badge>}{group.integrity.incomplete === true && <Badge>内容有缺口</Badge>}
       {(group.integrity.truncated === 'unknown' || group.integrity.incomplete === 'unknown') && <span>完整性待确认</span>}
-    </div><Collapsible.Content className="execution-members">{group.members.map(item => <ExecutionMember key={item.id} item={item} />)}</Collapsible.Content>
+    </div><Collapsible.Content className="auxiliary-members">{group.members.map(item => item.kind !== 'message' && <ConversationRow key={item.id} item={item} />)}</Collapsible.Content>
   </Collapsible.Root>;
 }

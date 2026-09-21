@@ -8,24 +8,41 @@ import { groupConversation } from '../ui/conversation-reading.ts';
 test('execution details are absent from collapsed markup; expanding group exposes every atomic disclosure', async t => {
   const server = await createServer({ server: { middlewareMode: true, watch: null }, appType: 'custom' });
   t.after(() => server.close());
-  const { ExecutionGroupRow, ConversationRow } = await server.ssrLoadModule('/renderers.tsx');
+  const { AuxiliaryGroupRow, ConversationRow } = await server.ssrLoadModule('/renderers.tsx');
+  const { Conversation } = await server.ssrLoadModule('/Conversation.tsx');
   const item = { id: 'atomic-1', cursor: 1, timestamp: '2026-09-21T00:00:00Z',
     participant: { id: 'engineer', role: 'engineer', label: 'Sylvia' }, sourceRefs: [],
     integrity: { redacted: false, truncated: true, incomplete: false }, rawEvidence: { marker: 'RAW_EVIDENCE' },
     kind: 'tool', content: { title: '命令记录', command: 'COMMAND_EVIDENCE', output: 'OUTPUT_EVIDENCE', status: 'failed' },
-    execution: { category: 'command', source: 'source', scope: 'run', operationId: 'call',
+    auxiliary: { family: 'command', category: 'command', source: 'source', scope: 'run', operationId: 'call',
       status: 'failed', observedAt: '2026-09-21T00:00:00Z', issues: ['退出码 1'] } };
   const [group] = groupConversation([item]);
-  const closed = renderToStaticMarkup(createElement(ExecutionGroupRow, { group, open: false, onOpenChange() {} }));
+  const closed = renderToStaticMarkup(createElement(AuxiliaryGroupRow, { group, open: false, onOpenChange() {} }));
   assert.match(closed, /aria-expanded="false"/);
   for (const summary of ['退出码 1', '来源截断', '失败']) assert.ok(closed.includes(summary));
   for (const hidden of ['COMMAND_EVIDENCE', 'OUTPUT_EVIDENCE', 'RAW_EVIDENCE', '命令记录']) assert.ok(!closed.includes(hidden));
-  const opened = renderToStaticMarkup(createElement(ExecutionGroupRow, { group, open: true, onOpenChange() {} }));
+  assert.ok(!closed.includes('×1'));
+  const opened = renderToStaticMarkup(createElement(AuxiliaryGroupRow, { group, open: true, onOpenChange() {} }));
   assert.match(opened, /aria-expanded="true"/); assert.ok(opened.includes('命令记录')); assert.ok(opened.includes('atomic-1'));
   assert.match(opened, /aria-expanded="false"/); // Individual record remains independently collapsed.
   const atomic = renderToStaticMarkup(createElement(ConversationRow, { item }));
   for (const hidden of ['COMMAND_EVIDENCE', 'OUTPUT_EVIDENCE', 'RAW_EVIDENCE']) assert.ok(!atomic.includes(hidden));
-  assert.ok(atomic.includes('Advanced')); assert.match(atomic, /aria-expanded="false"/);
-  const narrative = renderToStaticMarkup(createElement(ConversationRow, { item: { ...item, execution: undefined, kind: 'message', content: { text: 'HUMAN_NARRATIVE' } } }));
+  assert.ok(!atomic.includes('Advanced')); assert.match(atomic, /aria-expanded="false"/);
+  const narrative = renderToStaticMarkup(createElement(ConversationRow, { item: { ...item, auxiliary: undefined, kind: 'message', content: { text: 'HUMAN_NARRATIVE' } } }));
   assert.ok(narrative.includes('HUMAN_NARRATIVE'));
+  for (const kind of ['lifecycle', 'workflow', 'control', 'task', 'unknown']) {
+    const auxiliary = { ...item, id: kind, kind, auxiliary: undefined,
+      content: { title: kind + ' title', text: kind + '_HIDDEN_BODY', status: 'observed' }, rawEvidence: { marker: kind + '_HIDDEN_RAW' } };
+    const markup = renderToStaticMarkup(createElement(ConversationRow, { item: auxiliary }));
+    assert.ok(markup.includes(kind + ' title'));
+    assert.ok(!markup.includes(kind + '_HIDDEN_BODY'));
+    assert.ok(!markup.includes(kind + '_HIDDEN_RAW'));
+  }
+  const page = { id: 'conversation', ticket_id: 'ticket', items: [], page: { first_cursor: null, last_cursor: null,
+    high_water_cursor: 0, has_older: false, has_newer: false } };
+  const relation = { id: 'conversation', label: 'Main', kind: 'main', isolation: null, original_review_id: null,
+    finding_refs: [], review_id: null, participant: null };
+  const conversation = renderToStaticMarkup(createElement(Conversation, { id: 'conversation', initial: page, relation, refresh: 0 }));
+  assert.ok(!conversation.includes('只读 Conversation'));
+  assert.ok(!conversation.includes('composer-slot'));
 });
