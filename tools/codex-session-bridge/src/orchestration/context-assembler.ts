@@ -52,19 +52,32 @@ export class ContextAssembler {
     if (!facts.workflow) unknowns.push(issue('WORKFLOW_NOT_OBSERVED', 'no structured Workflow snapshot is recorded', ['workflow']));
     if (!facts.execution.coverage.complete) unknowns.push(issue('EXECUTION_COVERAGE_INCOMPLETE',
       'one or more referenced executions could not be observed', facts.execution.source_refs));
+    const uncertainOperations = facts.execution.operations.filter(value => value.state === 'dispatching'
+      || value.state === 'reconciliation-required' || value.effective_state === 'reconciliation-required');
+    if (uncertainOperations.length) unknowns.push(issue('EXECUTION_OPERATION_RECONCILIATION_REQUIRED',
+      'one or more durable execution operations require read-only reconciliation', facts.execution.source_refs));
     if (facts.recording.state !== 'recording') unknowns.push(issue('HARNESS_EVIDENCE_GAP',
       `Harness recording state is ${facts.recording.state}`, facts.recording.source_refs));
     const sideEffectDeclarations = checkpoint.declarations.unknown_side_effects;
     if (sideEffectDeclarations.length > MAX_UNKNOWN_SIDE_EFFECTS) omissions.push({ category: 'unknown-side-effects',
       reason: 'item-limit', count: sideEffectDeclarations.length - MAX_UNKNOWN_SIDE_EFFECTS, retrieval_ref: checkpoint.location });
-    const unknownSideEffects = sideEffectDeclarations.slice(0, MAX_UNKNOWN_SIDE_EFFECTS).map((summary, index) => ({
+    const checkpointSideEffects = sideEffectDeclarations.slice(0, MAX_UNKNOWN_SIDE_EFFECTS).map((summary, index) => ({
       id: `checkpoint-side-effect-${index + 1}`, state: 'unknown', summary: summary.slice(0, 256), declaration_only: true, source_refs: ['checkpoint'],
     }));
+    const operationSideEffects = uncertainOperations.map(value => ({ id: `execution-operation-${String(value.operation_id)}`,
+      state: 'unknown', summary: `durable execution operation ${String(value.operation_id)} requires reconciliation`,
+      declaration_only: false, operation_id: value.operation_id, source_refs: value.source_refs }));
+    const unknownSideEffects = [...operationSideEffects, ...checkpointSideEffects].slice(0, MAX_UNKNOWN_SIDE_EFFECTS);
+    if (operationSideEffects.length + checkpointSideEffects.length > MAX_UNKNOWN_SIDE_EFFECTS) omissions.push({
+      category: 'unknown-side-effects', reason: 'item-limit',
+      count: operationSideEffects.length + checkpointSideEffects.length - MAX_UNKNOWN_SIDE_EFFECTS,
+      retrieval_ref: 'durable execution operations / checkpoint',
+    });
     const truncatedSideEffects = sideEffectDeclarations.filter(summary => summary.length > 256).length;
     if (truncatedSideEffects) omissions.push({ category: 'unknown-side-effect-text', reason: 'text-limit',
       count: truncatedSideEffects, retrieval_ref: checkpoint.location });
     if (unknownSideEffects.length) unknowns.push(issue('UNKNOWN_SIDE_EFFECT',
-      'checkpoint declares side effects whose result is not externally verified', ['checkpoint']));
+      'one or more side effects are not externally verified', unique(unknownSideEffects.flatMap(value => value.source_refs), value => value)));
     const integrity = { state: stateFor(conflicts, staleSources, unknowns), conflicts, stale_sources: staleSources, unknowns, omissions };
     const readiness = this.readiness(input.requested_action, facts, integrity.state, unknownSideEffects);
     const recommendation = this.recommend(input.requested_action, facts, integrity.state, readiness, unknownSideEffects);
@@ -129,6 +142,7 @@ export class ContextAssembler {
         active: activeExecutions.slice(0, MAX_EXECUTIONS),
         terminal: terminalExecutions.slice(0, MAX_EXECUTIONS),
         unknown: unknownExecutions.slice(0, MAX_EXECUTIONS),
+        operations: facts.execution.operations.slice(0, MAX_EXECUTIONS),
         coverage: { ...facts.execution.coverage, source_refs: facts.execution.source_refs },
         model_policy: { value: 'project-policy', retrieval_ref: 'AGENTS.md' },
         model_usage: { state: 'not-materialized', value: null, source_refs: facts.execution.source_refs },
@@ -169,6 +183,9 @@ export class ContextAssembler {
       reasons: [issue('UNSUPPORTED_ACTION', `requested action ${action} is not supported by contract v1`, ['ticket'])] };
     const active = facts.execution.observed.filter(value => value.classification === 'active');
     if (active.length) reasons.push(issue('ACTIVE_EXECUTION', 'an active execution exists in observed coverage', facts.execution.source_refs));
+    const operations = facts.execution.operations.filter(value => !['failed', 'bound'].includes(String(value.state)));
+    if (operations.length) reasons.push(issue('ACTIVE_EXECUTION_OPERATION',
+      'a durable execution operation still owns an execution claim', facts.execution.source_refs));
     if (sideEffects.length) reasons.push(issue('UNKNOWN_SIDE_EFFECT', 'unknown side effects require reconciliation', ['checkpoint']));
     if (integrity === 'conflicted') reasons.push(issue('EVIDENCE_CONFLICT', 'conflicting evidence must be resolved', ['workflow', 'checkpoint', 'git']));
     if (integrity === 'stale') reasons.push(issue('STALE_EVIDENCE', 'stale recovery evidence must be reconciled', ['checkpoint', 'workflow', 'git']));
@@ -188,6 +205,13 @@ export class ContextAssembler {
     readiness: { state: ReadinessState; reasons: Issue[] }, sideEffects: unknown[]) {
     let kind = 'continue-requested-action', reason_code = 'EVIDENCE_READY';
     if (readiness.state === 'unsupported') { kind = 'unsupported-action'; reason_code = 'UNSUPPORTED_ACTION'; }
+    else if (facts.execution.operations.some(value => value.state === 'dispatching'
+      || value.state === 'started' || value.state === 'reconciliation-required'
+      || value.effective_state === 'reconciliation-required')) {
+      kind = 'reconcile-durable-operation'; reason_code = 'EXECUTION_OPERATION_RECONCILIATION_REQUIRED';
+    } else if (facts.execution.operations.some(value => value.state === 'reserved')) {
+      kind = 'inspect-reserved-operation'; reason_code = 'EXECUTION_OPERATION_RESERVED';
+    }
     else if (facts.execution.observed.some(value => value.classification === 'active')) {
       kind = 'inspect-active-execution'; reason_code = 'ACTIVE_EXECUTION';
     } else if (sideEffects.length) { kind = 'reconcile-unknown-side-effect'; reason_code = 'UNKNOWN_SIDE_EFFECT'; }
@@ -222,6 +246,7 @@ export class ContextAssembler {
     trim(packet.execution.terminal, 'execution-terminal', 'runtime bindings / Workflow runtime refs');
     trim(packet.execution.unknown, 'execution-unknown', 'runtime bindings / Workflow runtime refs');
     trim(packet.execution.active, 'execution-active', 'runtime bindings / Workflow runtime refs');
+    trim(packet.execution.operations, 'execution-operations', 'Harness execution operation journal');
     if (bytes() > MAX_PACKET_BYTES) omissions.push({ category: 'safety-core', reason: 'budget-exceeded-safety-fields-retained',
       count: 0, retrieval_ref: 'packet.integrity and packet.attention' });
   }

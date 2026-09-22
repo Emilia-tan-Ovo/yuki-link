@@ -31,6 +31,29 @@ export class ConversationHistory {
     for (const record of journal.records) this.apply(record);
   }
   apply(record: RecordEntry) {
+    if (record.data.kind === 'execution_operation_reserved' || record.data.kind === 'execution_operation_transitioned') {
+      const destination = record.data.operation.destination;
+      if (destination.kind === 'child') {
+        const conversation: ChildConversation = { conversation_id: destination.conversation_id,
+          ticket_id: record.data.operation.ticket_id, parent_conversation_id: destination.parent_conversation_id,
+          relation: destination.relation, created_at: destination.created_at };
+        this.conversations.set(conversation.conversation_id, conversation);
+        this.relations.set(relationKey(conversation.ticket_id, conversation.relation), conversation);
+      }
+      return;
+    }
+    if (record.data.kind === 'execution_operation_bound') {
+      const destination = record.data.operation.destination;
+      if (destination.kind === 'child') {
+        const conversation: ChildConversation = { conversation_id: destination.conversation_id,
+          ticket_id: record.data.operation.ticket_id, parent_conversation_id: destination.parent_conversation_id,
+          relation: destination.relation, created_at: destination.created_at };
+        this.conversations.set(conversation.conversation_id, conversation);
+        this.relations.set(relationKey(conversation.ticket_id, conversation.relation), conversation);
+        this.assessments.set(record.data.binding.id, destination.isolation);
+      }
+      return;
+    }
     if (record.data.kind !== 'child_conversation_associated') return;
     const value = record.data.association;
     this.conversations.set(value.conversation.conversation_id, value.conversation);

@@ -76,7 +76,16 @@ export class SessionManager {
     return { ...this.accepted(this.store.state.runs[recorded.run_id]), deduplicated: true };
   }
 
-  async start(input) {
+  async start(input) { return this.startWithGuard(input, null); }
+
+  // Internal orchestration seam. The guard runs after async config/permission
+  // resolution and before RuntimeStore accepts the request. It must be synchronous.
+  async startGuarded(input, guard) {
+    if (typeof guard !== 'function') throw new BridgeError('INVALID_DISPATCH_GUARD', 'A synchronous dispatch guard is required.');
+    return this.startWithGuard(input, guard);
+  }
+
+  async startWithGuard(input, guard) {
     this.validateMessage(input);
     const permissionKey = permissionSelectionFingerprint(input.permissions);
     const legacyHash = input.permissions === undefined
@@ -95,7 +104,17 @@ export class SessionManager {
     const concurrentReplay = this.replay(input.request_id, hash, legacyHash ? [legacyHash] : []);
     if (concurrentReplay) return concurrentReplay;
     const session = { id: randomUUID(), codex_thread_id: null, cwd, model: config.model, reasoning: config.reasoning, permissions, created_at: now(), active_run_id: null, last_run_id: null };
-    return this.enqueue(session, input, hash, config);
+    if (guard) {
+      const result = guard(Object.freeze({ request_id: input.request_id, fingerprint: hash, cwd,
+        config: structuredClone(config), permissions: structuredClone(permissions), launch: Object.freeze({
+          prompt_sha256: createHash('sha256').update(input.prompt).digest('hex'),
+          prompt_utf8_bytes: Buffer.byteLength(input.prompt, 'utf8'), sender: input.sender ?? null,
+          model: input.model ?? null, reasoning: input.reasoning ?? null, timeout_ms: input.timeout_ms ?? null,
+          permission_selection: permissionKey,
+        }) }));
+      if (result && typeof result.then === 'function') throw new BridgeError('INVALID_DISPATCH_GUARD', 'The dispatch guard must not await.');
+    }
+    return this.enqueue(session, input, hash, config, Boolean(guard));
   }
 
   async send(input) {
@@ -116,7 +135,7 @@ export class SessionManager {
     return this.enqueue(session, input, hash, config);
   }
 
-  enqueue(session, input, hash, config) {
+  enqueue(session, input, hash, config, immediate = false) {
     if (this.closing) throw new BridgeError('SHUTTING_DOWN', 'Bridge is shutting down.');
     const run = {
       id: randomUUID(), session_id: session.id, request_id: input.request_id,
@@ -143,10 +162,26 @@ export class SessionManager {
       throw new BridgeError('PERSISTENCE_FAILED', 'Could not durably accept this request. No process was launched. Retry the same request_id after fixing local storage.');
     }
     // No process or model completion is awaited by a start/send tool call.
-    setImmediate(() => {
+    if (immediate) this.launch(run, session, input.prompt);
+    else setImmediate(() => {
       if (run.status === 'queued') this.launch(run, session, input.prompt);
     });
     return this.accepted(run);
+  }
+
+  // Read-only, exact durable lookup for orchestration reconciliation.
+  lookupRequest(requestId) {
+    if (typeof requestId !== 'string' || !Object.hasOwn(this.store.state.requests, requestId)) return null;
+    const request = this.store.state.requests[requestId];
+    if (!request || typeof request.fingerprint !== 'string' || typeof request.run_id !== 'string') {
+      throw new BridgeError('RUNTIME_STATE_CONFLICT', 'Runtime request mapping is invalid.', { request_id: requestId });
+    }
+    const run = this.store.state.runs[request.run_id];
+    if (!run || run.request_id !== requestId) throw new BridgeError('RUNTIME_STATE_CONFLICT', 'Runtime request does not match its run.', { request_id: requestId });
+    const session = this.store.state.sessions[run.session_id];
+    if (!session || session.id !== run.session_id) throw new BridgeError('RUNTIME_STATE_CONFLICT', 'Runtime run does not match a session.', { request_id: requestId });
+    return { request_id: requestId, fingerprint: request.fingerprint, session_id: session.id,
+      run_id: run.id, status: run.status };
   }
 
   accepted(run) {

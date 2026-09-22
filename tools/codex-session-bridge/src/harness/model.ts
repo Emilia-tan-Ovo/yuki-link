@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { taskRecordSchema } from './task-model.ts';
 import { workflowObservationRecordSchema, workflowSnapshotRecordSchema } from './workflow-model.ts';
 import { childConversationAssociationRecordSchema } from './conversation-model.ts';
+import { executionOperationBoundRecordSchema, executionOperationReservedRecordSchema,
+  executionOperationTransitionedRecordSchema } from './execution-model.ts';
 
 const id = z.string().uuid();
 const text = z.string().min(1).max(512);
@@ -86,6 +88,9 @@ export const recordSchema = z.object({
     z.object({ kind: z.literal('workflow_snapshot'), workflow: workflowSnapshotRecordSchema }),
     z.object({ kind: z.literal('workflow_observation'), workflow: workflowObservationRecordSchema }),
     z.object({ kind: z.literal('child_conversation_associated'), association: childConversationAssociationRecordSchema }),
+    executionOperationReservedRecordSchema,
+    executionOperationTransitionedRecordSchema,
+    executionOperationBoundRecordSchema,
     z.object({ kind: z.literal('control_action'), control: z.object({
       control_id: id, ticket_id: id, action: z.enum(['refresh', 'run.stop', 'task.stop', 'worktree.open']),
       stage: z.enum(['requested', 'result']), outcome: text, target: z.unknown(), source_status: z.unknown(),
@@ -108,6 +113,8 @@ export interface Source {
   events(run: SourceRun): SourceEvent[];
   attribution(ticket: Ticket, session?: SourceSession): unknown;
   status?(sessionId: string, runId: string): { run: SourceRun | null; session_status: string };
+  lookupRequest?(requestId: string): { request_id: string; fingerprint: string; session_id: string; run_id: string; status: string } | null;
+  activeRuns?(): SourceRun[];
   stop?(sessionId: string, runId: string): { outcome: string };
   worktree?(ticket: Ticket): string;
 }

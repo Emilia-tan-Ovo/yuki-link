@@ -40,6 +40,7 @@ export interface ContextFacts {
   checkpoint: DocumentFact;
   implementation_notes: DocumentFact;
   execution: { observed: Array<Record<string, unknown> & { source_refs: string[] }>;
+    operations: Array<Record<string, unknown> & { source_refs: string[] }>;
     coverage: { bindings: number; workflow_runtime_refs: number; global: false; complete: boolean }; source_refs: string[] };
   recording: { state: string; reason: string | null; source_refs: string[] };
   references: Array<{ kind: string; location: string; status: 'reference-only'; source_refs: string[] }>;

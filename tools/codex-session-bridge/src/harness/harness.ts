@@ -14,6 +14,8 @@ import type { HarnessControlOptions } from './controls.ts';
 import type { WorkflowSourceOptions } from './workflow-source.ts';
 import type { TaskSource } from './task-source.ts';
 import { HarnessError, registrationSchema, attachSchema } from './model.ts';
+import { ExecutionOperations } from '../orchestration/execution-operations.ts';
+import type { ExecutionAuthorizationValidator } from '../orchestration/execution-operations.ts';
 import type { Source, Project, Ticket, Binding, Event, Operation, RecordEntry } from './model.ts';
 
 export type HarnessExecutionCategory = 'record-only' | 'observe' | 'new-side-effect' | 'manage-existing';
@@ -48,6 +50,7 @@ export class Harness {
   conversations: ConversationHistory;
   changes: Changes;
   controls: HarnessControls;
+  executionOperations: ExecutionOperations;
   projects = new Map<string, Project>();
   tickets = new Map<string, Ticket>();
   bindings = new Map<string, Binding>();
@@ -61,7 +64,7 @@ export class Harness {
   startupCursor = 0;
   recoveryReconciled = false;
   constructor(runtime: string, source: Source, tasks?: TaskSource, workflowOptions: WorkflowSourceOptions = {},
-    controlOptions: HarnessControlOptions = {}) {
+    controlOptions: HarnessControlOptions = {}, executionOptions: { authorizationValidator?: ExecutionAuthorizationValidator } = {}) {
     this.source = source;
     this.journal = new Journal(runtime);
     for (const record of this.journal.records) this.apply(record);
@@ -71,6 +74,15 @@ export class Harness {
     this.workflowHistory = new WorkflowHistory(this.journal, id => this.ticket(id), new WorkflowSource(source, workflowOptions));
     this.conversations = new ConversationHistory(this.journal, source, this.workflowHistory, id => this.ticket(id), this.bindings);
     this.changes = new Changes(source, new ChangesSource({ git: workflowOptions.git }));
+    this.executionOperations = new ExecutionOperations(this.journal, {
+      ticket: id => this.ticket(id), bindings: this.bindings, source: this.source,
+      health: () => this.health(), workflow: id => this.workflowHistory.current.get(id),
+      currentIdentity: ticket => ticket.comparison_baseline ? this.changes.facts.currentIdentity(ticket.comparison_baseline) : null,
+      existingChild: (ticketId, relation) => this.conversations.relations.get(ticketId + ':' + relation.kind + ':'
+        + (relation.kind === 'review' ? relation.review_id + ':' + relation.participant : relation.acceptance_id)),
+      authorizationValidator: executionOptions.authorizationValidator,
+      onApplied: record => this.conversations.apply(record),
+    });
     this.controls = new HarnessControls(this.journal, source, this.taskHistory, id => this.ticket(id),
       this.bindings, this.observations, controlOptions);
   }
@@ -124,11 +136,21 @@ export class Harness {
     return { project_id: project.id, ticket_id: ticket.id, conversation_id: ticket.main_conversation_id, deduplicated: !!old };
   }
   recordWorkflow(input: unknown) { return this.workflowHistory.record(input); }
-  associateChildConversation(input: unknown) { const result = this.conversations.associate(input); this.scan(true); return result; }
+  associateChildConversation(input: unknown) {
+    const value = input as { ticket_id?: string; relation?: { kind?: string; review_id?: string; participant?: string; acceptance_id?: string } };
+    if (typeof value?.ticket_id === 'string' && value.relation && (value.relation.kind === 'review' || value.relation.kind === 'acceptance')) {
+      const key = value.ticket_id + ':' + value.relation.kind + ':' + (value.relation.kind === 'review'
+        ? value.relation.review_id + ':' + value.relation.participant : value.relation.acceptance_id);
+      const conversation = this.conversations.relations.get(key);
+      if (conversation) this.executionOperations.assertLegacyBindingAllowed(value.ticket_id, conversation.conversation_id);
+    }
+    const result = this.conversations.associate(input); this.scan(true); return result;
+  }
   attach(input: unknown) {
     const parsed = attachSchema.safeParse(input);
     if (!parsed.success) throw new HarnessError('INVALID_ATTACHMENT');
     const value = parsed.data, ticket = this.ticket(value.ticket_id);
+    this.executionOperations.assertLegacyBindingAllowed(ticket.id, ticket.main_conversation_id);
     const session = this.source.session(value.session_id);
     const runs = this.source.runs(session.id);
     if (value.run_id && !runs.some(r => r.id === value.run_id)) throw new HarnessError('ATTRIBUTION_MISMATCH', { reason: 'run-session-mismatch' });
