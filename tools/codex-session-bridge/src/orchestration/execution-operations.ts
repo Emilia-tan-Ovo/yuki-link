@@ -125,6 +125,7 @@ export class ExecutionOperations {
         timeout_ms: input.launch.timeout_ms,
         permission_selection: permissionSelectionFingerprint(input.launch.permissions ?? undefined) },
       authorization_boundary: input.authorization_boundary,
+      ...('implementation' in input ? { implementation: input.implementation } : {}),
     };
     return { intent: { ...intent, comparison: { schema_version: 1 as const,
       content_identity_sha256: comparisonDigest('content_identity', input.content_identity),
@@ -198,9 +199,11 @@ export class ExecutionOperations {
         isolation: { state: 'unknown', assessed_at: timestamp,
           reasons: [{ code: 'EXECUTION_RESERVED_NOT_STARTED', source: 'execution operation journal' }] } };
       })();
+    const implementation = 'implementation' in input;
     const operation = executionOperationSchema.parse({
-      schema_version: 1, operation_id: randomUUID(), ticket_id: input.ticket_id, request_id: input.request_id,
-      fingerprint_version: 'execution-protected-v1', protected_fingerprint: fingerprint, protected_intent: intent,
+      schema_version: implementation ? 2 : 1, operation_id: randomUUID(), ticket_id: input.ticket_id, request_id: input.request_id,
+      fingerprint_version: implementation ? 'execution-protected-v2' : 'execution-protected-v1',
+      protected_fingerprint: fingerprint, protected_intent: intent,
       destination, state: 'reserved', revision: 1,
       runtime: { request_id: runtimeRequestId('00000000-0000-4000-8000-000000000000'), fingerprint: null,
         session_id: null, run_id: null, status: null },
@@ -223,14 +226,26 @@ export class ExecutionOperations {
     return this.receipt(operation, false);
   }
 
+  findByRequest(ticketId: string, requestId: string) {
+    const operation = this.requests.get(`${ticketId}:${requestId}`);
+    return operation ? this.receipt(operation, true) : null;
+  }
+
   private receipt(operation: ExecutionOperation, deduplicated: boolean, reconciliation?: Record<string, unknown>) {
     const latest = this.latest.get(operation.operation_id);
     const effective = operation.state === 'dispatching' && this.replayedDispatching.has(operation.operation_id)
       ? 'reconciliation-required' : operation.state;
+    const implementation = operation.schema_version === 2 ? operation.protected_intent.implementation : null;
     return { operation_id: operation.operation_id, ticket_id: operation.ticket_id, request_id: operation.request_id,
       protected_fingerprint: operation.protected_fingerprint, fingerprint_version: operation.fingerprint_version,
       state: operation.state, effective_state: effective, destination: structuredClone(operation.destination),
       runtime: structuredClone(operation.runtime), binding_id: operation.binding_id,
+      ...(implementation ? { caller_fingerprint: implementation.caller_fingerprint,
+        contract: structuredClone(implementation.contract), policy: structuredClone(implementation.policy),
+        authorization: structuredClone(implementation.authorization),
+        ...(implementation.authority_source ? { authority_source: structuredClone(implementation.authority_source) } : {}),
+        preflight: structuredClone(implementation.preflight),
+        actual_permissions: operation.dispatch ? structuredClone(operation.dispatch.permissions) : null } : {}),
       latest_event_id: latest?.event_id ?? null, latest_cursor: latest?.cursor ?? null, deduplicated,
       recording: { state: this.journal.failure ? 'recording-failed' : 'recording', reason: this.journal.failure,
         source_id: this.journal.sourceId }, reconciliation: reconciliation ?? null };
