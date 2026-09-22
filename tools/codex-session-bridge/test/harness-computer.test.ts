@@ -252,7 +252,11 @@ test('八类工具保留来源事实、脱敏和旧调用行为；错误归属�
   }
   assert.equal((await f.get('/api/tickets/' + b.ticket_id)).records.length, 1);
   const tools = (await f.client.listTools()).tools;
-  assert.equal(tools.filter(tool => tool.inputSchema.properties?.ticket_id && !tool.name.startsWith('harness_') && tool.name !== 'task_start').length, 8);
+  const computerToolNames = new Set([
+    'powershell', 'powershell_execute', 'filesystem_list', 'filesystem_read',
+    'filesystem_write', 'filesystem_move', 'git_status', 'git_diff',
+  ]);
+  assert.equal(tools.filter(tool => computerToolNames.has(tool.name) && tool.inputSchema.properties?.ticket_id).length, 8);
 });
 
 test('响应丢失后仍保存一次执行；重启不自动重放', async t => {

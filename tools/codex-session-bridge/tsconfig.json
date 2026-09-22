@@ -12,5 +12,5 @@
     "checkJs": false,
     "skipLibCheck": true
   },
-  "include": ["src/harness/**/*.ts", "test/harness*.test.ts"]
+  "include": ["src/harness/**/*.ts", "src/orchestration/**/*.ts", "test/harness*.test.ts", "test/orchestration*.test.ts"]
 }
