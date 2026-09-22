@@ -169,7 +169,8 @@ export class HarnessContextFactsSource implements ContextFactsSource {
     }
     observed.sort((left, right) => String(left.runtime_ref_id ?? left.binding_id ?? left.run_id ?? left.task_id)
       .localeCompare(String(right.runtime_ref_id ?? right.binding_id ?? right.run_id ?? right.task_id)));
-    return { observed, coverage: { bindings: bindings.length, workflow_runtime_refs: runtimeRefs.length,
+    const operations = this.harness.executionOperations?.observations(ticketId) ?? [];
+    return { observed, operations, coverage: { bindings: bindings.length, workflow_runtime_refs: runtimeRefs.length,
       global: false, complete }, source_refs: [sourceRef, ...(workflow ? ['workflow'] : [])] };
   }
 }

@@ -21,6 +21,7 @@ interface Manager {
   session(id: string): SourceSession;
   status(input: { session_id: string; run_id: string }): { run: SourceRun | null; session_status: string };
   stopRun(sessionId: string, runId: string): { outcome: string };
+  lookupRequest(requestId: string): { request_id: string; fingerprint: string; session_id: string; run_id: string; status: string } | null;
 }
 export class CodexSource implements Source {
   manager: Manager;
@@ -43,6 +44,9 @@ export class CodexSource implements Source {
   }
   status(sessionId: string, runId: string) { return this.manager.status({ session_id: sessionId, run_id: runId }); }
   stop(sessionId: string, runId: string) { return this.manager.stopRun(sessionId, runId); }
+  lookupRequest(requestId: string) { return this.manager.lookupRequest(requestId); }
+  activeRuns() { return Object.values(this.manager.store.state.runs).filter(run =>
+    ['queued', 'starting', 'running', 'stopping'].includes(run.status)); }
   worktree(ticket: Ticket) {
     let directory: string;
     try {
