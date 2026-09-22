@@ -6,6 +6,8 @@ import { registrationSchema, attachSchema, HarnessError } from './harness/model.
 import { gateHarnessExecution } from './harness/harness.ts';
 import { workflowRecordInputSchema } from './harness/workflow-model.ts';
 import { childAssociationSchema } from './harness/conversation-model.ts';
+import { ContextAssembler } from './orchestration/context-assembler.ts';
+import { HarnessContextFactsSource } from './orchestration/harness-context-source.ts';
 
 export function createMcpServer(manager, computer) {
   const server = new McpServer({ name: 'yuki-computer-agent', version: '0.2.0' });
@@ -83,6 +85,19 @@ export function createMcpServer(manager, computer) {
   register('observe', 'codex_list_models', 'Read the current local Codex model and reasoning catalog. No model inference is started.', {
     refresh: z.boolean().optional(),
   }, ({ refresh }) => manager.catalog.list(refresh), true);
+  const contextInput = z.object({
+    ticket_id: z.string().uuid(),
+    requested_action: z.string().min(1).max(64).regex(/^[a-z][a-z0-9-]*$/),
+    trigger: z.enum(['manual', 'handoff', 'interruption', 'service-restart']),
+  }).strict();
+  const contextAssembler = () => {
+    if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
+    return new ContextAssembler(new HarnessContextFactsSource(manager.harness));
+  };
+  register('observe', 'assemble_ticket_context', 'Assemble a bounded, versioned Context Packet from current durable facts. This is read-only and does not refresh sources, start execution, advance Workflow, or write the Context Plan.',
+    contextInput, input => contextAssembler().assemble(input), true);
+  register('observe', 'prepare_ticket_resume', 'Prepare a read-only recovery projection and deterministic next-action recommendation from a Context Packet. This never starts or resumes execution, advances Workflow, or replays side effects.',
+    contextInput, input => contextAssembler().prepare(input), true);
   register('new-side-effect', 'codex_start_session', 'Start a new managed Codex conversation, freeze its effective native Codex permissions, and asynchronously submit the first message. Omit permissions to use the effective local default at creation. Returns run_id without waiting for model completion.', {
     cwd: z.string().min(1).describe('Absolute existing working directory inside the administrator allowlist.'), permissions, ...message,
   }, input => manager.start(input));

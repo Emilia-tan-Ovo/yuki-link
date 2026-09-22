@@ -57,6 +57,25 @@ export interface CurrentChangesFacts {
   sources: { git: { state: 'observed'; observed_at: string }; filesystem: { state: 'observed' | 'incomplete'; observed_at: string } };
 }
 
+export interface GitIdentityEntry {
+  path: string;
+  state: 'observed' | 'deleted' | 'unavailable' | 'unmerged';
+  content_id: string | null;
+  mode: string | null;
+}
+
+export interface CurrentGitIdentity {
+  observed_at: string;
+  scheme: 'yuki-git-subject';
+  version: 1;
+  scope: { repository_id: string; repository_instance_id: string; worktree_root: string };
+  completeness: 'complete' | 'incomplete';
+  digest: string | null;
+  payload: { head: string; path_encoding: 'utf8-json-v1'; layer_semantics: 'head-index-worktree-untracked-v1';
+    index: GitIdentityEntry[]; worktree: GitIdentityEntry[]; untracked: GitIdentityEntry[] };
+  gaps: EvidenceGap[];
+}
+
 export class ChangesSourceError extends Error {
   code: BaselineGap['code'];
   outputLimit: boolean;
@@ -236,6 +255,64 @@ export class ChangesSource {
       else result.push({ status, old_path: null, path: slash(first) });
     }
     return result;
+  }
+
+  currentIdentity(baseline: ComparisonBaseline): CurrentGitIdentity {
+    const observedAt = now(), identity = this.identity(baseline.worktree_root);
+    if (!samePath(identity.root, baseline.worktree_root) || !samePath(identity.repository, baseline.repository_id)
+      || baseline.repository_instance_id !== undefined && identity.instance !== baseline.repository_instance_id) {
+      throw new ChangesSourceError('REPOSITORY_MISMATCH');
+    }
+    const head = this.line(identity.root, ['rev-parse', 'HEAD']);
+    const records = splitZero(this.run(identity.root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--']));
+    const index: GitIdentityEntry[] = [], worktree: GitIdentityEntry[] = [], untracked: GitIdentityEntry[] = [];
+    const gaps: EvidenceGap[] = [];
+    const indexEntry = (relative: string, deleted: boolean, unmerged: boolean): GitIdentityEntry => {
+      if (unmerged) return { path: slash(relative), state: 'unmerged', content_id: null, mode: null };
+      if (deleted) return { path: slash(relative), state: 'deleted', content_id: null, mode: null };
+      if (protectedPath(relative)) return { path: slash(relative), state: 'unavailable', content_id: null, mode: null };
+      try {
+        const raw = this.run(identity.root, ['ls-files', '--stage', '-z', '--', relative]).toString('utf8');
+        const match = /^(\d+) ([a-f0-9]{40,64}) 0\t/.exec(raw);
+        if (!match) return { path: slash(relative), state: 'unavailable', content_id: null, mode: null };
+        return { path: slash(relative), state: 'observed', content_id: `git-blob:${match[2]}`, mode: match[1] };
+      } catch { return { path: slash(relative), state: 'unavailable', content_id: null, mode: null }; }
+    };
+    const filesystemEntry = (relative: string, deleted: boolean): GitIdentityEntry => {
+      if (deleted) return { path: slash(relative), state: 'deleted', content_id: null, mode: null };
+      const result = this.content(identity.root, relative);
+      gaps.push(...result.gaps);
+      let mode: string | null = null;
+      try { const stat = lstatSync(path.resolve(identity.root, relative)); mode = stat.isFile() ? (stat.mode & 0o111 ? '100755' : '100644') : null; }
+      catch { /* unavailable or raced */ }
+      return { path: slash(relative), state: result.content.sha256 ? 'observed' : 'unavailable',
+        content_id: result.content.sha256 ? `sha256:${result.content.sha256}` : null, mode };
+    };
+    for (let cursor = 0; cursor < records.length;) {
+      const record = records[cursor++]!;
+      const code = record.slice(0, 2), relative = record.slice(3);
+      if (!relative) continue;
+      if (code === '??') { untracked.push(filesystemEntry(relative, false)); continue; }
+      const renamed = code.includes('R') || code.includes('C');
+      if (renamed) cursor++; // source path metadata follows the destination in porcelain v1 -z.
+      const unmerged = code.includes('U') || code === 'AA' || code === 'DD';
+      if (code[0] !== ' ') index.push(indexEntry(relative, code[0] === 'D', unmerged));
+      if (code[1] !== ' ') worktree.push(filesystemEntry(relative, code[1] === 'D'));
+    }
+    const compare = (left: GitIdentityEntry, right: GitIdentityEntry) => left.path < right.path ? -1
+      : left.path > right.path ? 1 : JSON.stringify(left) < JSON.stringify(right) ? -1 : JSON.stringify(left) > JSON.stringify(right) ? 1 : 0;
+    index.sort(compare); worktree.sort(compare); untracked.sort(compare);
+    const entries = [...index, ...worktree, ...untracked];
+    const limited = entries.length > MAX_FILES;
+    if (limited) gaps.push({ code: 'CONTENT_TRUNCATED', source: 'git', impact: `identity is limited to ${MAX_FILES} entries` });
+    const payload = { head, path_encoding: 'utf8-json-v1' as const, layer_semantics: 'head-index-worktree-untracked-v1' as const,
+      index: index.slice(0, MAX_FILES), worktree: worktree.slice(0, MAX_FILES),
+      untracked: untracked.slice(0, MAX_FILES) };
+    const complete = !limited && entries.every(entry => entry.state === 'observed' || entry.state === 'deleted');
+    const scope = { repository_id: identity.repository, repository_instance_id: identity.instance, worktree_root: identity.root };
+    const canonical = { scheme: 'yuki-git-subject', version: 1, scope, payload };
+    return { observed_at: observedAt, scheme: 'yuki-git-subject', version: 1, scope,
+      completeness: complete ? 'complete' : 'incomplete', digest: complete ? `sha256:${digest(canonical)}` : null, payload, gaps };
   }
 
   inspect(baseline: ComparisonBaseline): CurrentChangesFacts {
