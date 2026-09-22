@@ -31,7 +31,10 @@ export interface ConversationLink {
   review_id: string | null; participant: string | null;
 }
 export interface ConversationPage {
-  id: string; ticket_id: string; items: ConversationItem[]; page: PageInfo;
+  id: string; ticket_id: string; items: ConversationItem[]; usage: ConversationUsage; page: PageInfo;
+}
+export interface ConversationUsage {
+  total_tokens: number; input_tokens: number; output_tokens: number; cached_input_tokens: number;
 }
 export interface ComposerCapability { mode: 'read-only'; reason: string }
 export interface SessionDto { csrf: string; composer: ComposerCapability; services_url: string | null }

@@ -6,6 +6,8 @@ import { MAX_REVEAL_DURATION_MS, SHORT_MESSAGE_STEP_MS, graphemes, revealStepMs,
   createMessageRevealState, selectRevealMessageIds } from '../ui/message-reveal.ts';
 import type { ConversationItem, ConversationLink, ConversationPage } from '../src/harness/presentation-model.ts';
 
+const emptyUsage = { total_tokens: 0, input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 };
+
 function item(n: number, changes: Partial<NonNullable<ConversationItem['auxiliary']>> = {}): ConversationItem {
   return { id: 'item-' + n, cursor: n, timestamp: new Date(n * 1000).toISOString(),
     participant: { id: 'engineer', role: 'engineer', label: 'Sylvia' }, sourceRefs: [],
@@ -18,7 +20,7 @@ function message(n: number): ConversationItem {
   return { ...item(n), auxiliary: undefined, kind: 'message', content: { text: '消息 ' + n } };
 }
 test('message reveal starts after the opening high water and consumes only appended messages once', () => {
-  const page = (items: ConversationItem[], highWater: number): ConversationPage => ({ id: 'conversation', ticket_id: 'ticket', items,
+  const page = (items: ConversationItem[], highWater: number): ConversationPage => ({ id: 'conversation', ticket_id: 'ticket', items, usage: emptyUsage,
     page: { first_cursor: items[0]?.cursor ?? null, last_cursor: items.at(-1)?.cursor ?? null,
       high_water_cursor: highWater, has_older: false, has_newer: false } });
   const initial = page([message(1)], 1), append = page([message(2), item(3)], 3);
@@ -29,7 +31,7 @@ test('message reveal starts after the opening high water and consumes only appen
   assert.deepEqual(selectRevealMessageIds(state, append, 'after'), [], 'a message id is consumed once');
 });
 test('message reveal keeps the opening baseline across multi-page append', () => {
-  const page = (items: ConversationItem[], highWater: number): ConversationPage => ({ id: 'conversation', ticket_id: 'ticket', items,
+  const page = (items: ConversationItem[], highWater: number): ConversationPage => ({ id: 'conversation', ticket_id: 'ticket', items, usage: emptyUsage,
     page: { first_cursor: items[0]?.cursor ?? null, last_cursor: items.at(-1)?.cursor ?? null,
       high_water_cursor: highWater, has_older: false, has_newer: true } });
   const initial = page([message(50)], 50);
@@ -40,7 +42,7 @@ test('message reveal keeps the opening baseline across multi-page append', () =>
   assert.deepEqual(selectRevealMessageIds(state, delayedMessage, 'after'), ['item-110']);
 });
 test('message reveal ignores high water advanced by a prepend while a new message exists', () => {
-  const page = (items: ConversationItem[], highWater: number): ConversationPage => ({ id: 'conversation', ticket_id: 'ticket', items,
+  const page = (items: ConversationItem[], highWater: number): ConversationPage => ({ id: 'conversation', ticket_id: 'ticket', items, usage: emptyUsage,
     page: { first_cursor: items[0]?.cursor ?? null, last_cursor: items.at(-1)?.cursor ?? null,
       high_water_cursor: highWater, has_older: true, has_newer: false } });
   const initial = page([message(100)], 100);
@@ -115,7 +117,7 @@ test('integrity flags aggregate without breaking groups while explicit issues re
   }
 });
 test('cross-page regroup retains keys, atomic cursors, open membership and prepend/append anchor identity', () => {
-  const page = (items: ConversationItem[]): ConversationPage => ({ id: 'conversation', ticket_id: 'ticket', items,
+  const page = (items: ConversationItem[]): ConversationPage => ({ id: 'conversation', ticket_id: 'ticket', items, usage: emptyUsage,
     page: { first_cursor: items[0].cursor, last_cursor: items.at(-1)!.cursor, high_water_cursor: 4, has_older: true, has_newer: false } });
   const initial = page([item(2), item(3)]), previous = groupConversation(initial.items), original = previous[0];
   assert.equal(original.kind, 'auxiliary-group'); if (original.kind !== 'auxiliary-group') return;

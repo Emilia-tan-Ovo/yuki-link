@@ -6,14 +6,15 @@ import path from 'node:path';
 import os from 'node:os';
 import { Harness } from '../src/harness/harness.ts';
 import { Presentation, projectRecord } from '../src/harness/presentation.ts';
-import type { RecordEntry, Source } from '../src/harness/model.ts';
+import type { RecordEntry, Source, SourceRun } from '../src/harness/model.ts';
 import { mergePage, captureAnchor, restoreAnchor } from '../ui/conversation-state.ts';
 import type { ConversationPage } from '../src/harness/presentation-model.ts';
 import { groupConversation } from '../ui/conversation-reading.ts';
 
 function fixture(t: test.TestContext) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'harness-presentation-'));
-  const source: Source = { session: () => { throw new Error('offline'); }, runs: () => [], events: () => [], attribution: () => null };
+  const runs: SourceRun[] = [];
+  const source: Source = { session: () => { throw new Error('offline'); }, runs: sessionId => runs.filter(run => run.session_id === sessionId), events: () => [], attribution: () => null };
   const harness = new Harness(root, source), p = new Presentation(harness);
   t.after(() => { harness.close(); rmSync(root, { recursive: true, force: true }); });
   const ticket = harness.register({ project_key: 'fixture', project_name: '工程', ticket_key: '012', title: '产品化', reference: 'fixture' });
@@ -24,7 +25,7 @@ function fixture(t: test.TestContext) {
       source_seq: null, source_at: null, kind, payload,
       integrity: { source_redaction: 'unknown', redacted: false, truncated: 'unknown' }, ...refs } });
   }
-  return { harness, p, ticket, event };
+  return { harness, p, ticket, event, runs };
 }
 test('projection maps messages/tools/lifecycle and preserves protected unknown records without mutation', t => {
   const f = fixture(t);
@@ -43,6 +44,33 @@ test('projection maps messages/tools/lifecycle and preserves protected unknown r
   assert.equal(projected.integrity.redacted, true); assert.doesNotMatch(JSON.stringify(projected), /fixture-secret-value/);
   assert.match(JSON.stringify(historical), /fixture-secret-value/);
   assert.ok(projected.sourceRefs.some(r => r.kind === 'record' && r.id === historical.event_id));
+});
+test('conversation projects persisted run model and refreshes deduplicated whole-history usage', t => {
+  const f = fixture(t), sessionId = randomUUID(), runId = randomUUID();
+  f.runs.push({ id: runId, session_id: sessionId, created_at: new Date().toISOString(), model: 'gpt-5.6-sol', reasoning: 'medium',
+    status: 'completed', config_source: 'fixture', timeout_ms: null, exit_code: 0 });
+  f.event('codex', { type: 'item.completed', item: { type: 'agent_message', text: '完成' } }, f.ticket.conversation_id,
+    { session_id: sessionId, run_id: runId });
+  const first = f.p.conversation(f.ticket.conversation_id);
+  const message = first.items.find(item => item.kind === 'message')!;
+  assert.equal(message.participant.label, 'Sylvia'); assert.equal(message.participant.provider, 'Codex');
+  assert.equal(message.participant.model, 'gpt-5.6-sol');
+  assert.deepEqual(first.usage, { total_tokens: 0, input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 });
+
+  f.event('codex', { type: 'turn.completed', usage: { input_tokens: 100, output_tokens: 25, cached_input_tokens: 40 } },
+    f.ticket.conversation_id, { session_id: sessionId, run_id: runId });
+  f.event('codex', { type: 'turn.completed', usage: { input_tokens: 100, output_tokens: 25, cached_input_tokens: 40 } },
+    f.ticket.conversation_id, { session_id: sessionId, run_id: runId });
+  for (let i = 0; i < 60; i++) f.event('future', { i });
+  const refreshed = f.p.conversation(f.ticket.conversation_id, { after: first.page.last_cursor! });
+  assert.deepEqual(refreshed.usage, { total_tokens: 125, input_tokens: 100, output_tokens: 25, cached_input_tokens: 40 });
+  assert.deepEqual(mergePage(first, refreshed, 'after').usage, refreshed.usage);
+
+  const legacyRunId = randomUUID();
+  f.event('codex', { type: 'turn.completed', usage: { input_tokens: 5, output_tokens: 2 } }, f.ticket.conversation_id,
+    { session_id: sessionId, run_id: legacyRunId });
+  assert.deepEqual(f.p.conversation(f.ticket.conversation_id).usage,
+    { total_tokens: 132, input_tokens: 105, output_tokens: 27, cached_input_tokens: 40 });
 });
 test('main and child histories share exclusive latest/before/after pagination and global high water', t => {
   const f = fixture(t), childId = randomUUID();
@@ -70,7 +98,7 @@ test('prepend anchor preserves the first visible row pixel offset; append merge 
   const container = { scrollTop: 50, getBoundingClientRect: () => ({ top: 100 }), querySelectorAll: () => [row] } as unknown as HTMLElement;
   const anchor = captureAnchor(container)!; assert.deepEqual(anchor, { kind: 'item', id: 'visible', offset: -20 });
   offset += 380; restoreAnchor(container, anchor); assert.equal(container.scrollTop, 430);
-  const page: ConversationPage = { id: 'c', ticket_id: 't', items: [], page: { first_cursor: null, last_cursor: null, high_water_cursor: 1, has_older: true, has_newer: false } };
+  const page: ConversationPage = { id: 'c', ticket_id: 't', items: [], usage: { total_tokens: 0, input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 }, page: { first_cursor: null, last_cursor: null, high_water_cursor: 1, has_older: true, has_newer: false } };
   assert.equal(mergePage(page, { ...page, page: { ...page.page, has_older: false } }, 'after').page.has_older, true);
 });
 

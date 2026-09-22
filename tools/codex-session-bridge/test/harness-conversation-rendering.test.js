@@ -46,11 +46,13 @@ test('execution details are absent from collapsed markup; expanding group expose
     assert.ok(!markup.includes(kind + '_HIDDEN_RAW'));
     assert.ok(!markup.includes('reveal-character'));
   }
-  const page = { id: 'conversation', ticket_id: 'ticket', items: [], page: { first_cursor: null, last_cursor: null,
+  const page = { id: 'conversation', ticket_id: 'ticket', items: [],
+    usage: { total_tokens: 125, input_tokens: 100, output_tokens: 25, cached_input_tokens: 40 }, page: { first_cursor: null, last_cursor: null,
     high_water_cursor: 0, has_older: false, has_newer: false } };
   const relation = { id: 'conversation', label: 'Main', kind: 'main', isolation: null, original_review_id: null,
     finding_refs: [], review_id: null, participant: null };
   const conversation = renderToStaticMarkup(createElement(Conversation, { id: 'conversation', initial: page, relation, refresh: 0 }));
   assert.ok(!conversation.includes('只读 Conversation'));
   assert.ok(!conversation.includes('composer-slot'));
+  for (const usage of ['Conversation Token', '总计 125', '输入 100', '输出 25', '缓存命中 40']) assert.ok(conversation.includes(usage));
 });
