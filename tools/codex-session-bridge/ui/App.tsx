@@ -2,13 +2,20 @@ import { useEffect, useRef, useState } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import * as Tabs from '@radix-ui/react-tabs';
 import { ArrowRight, ArrowUpRight, ChevronRight, CircleCheck, Folder, FolderOpen, LayoutDashboard, LockKeyhole, MessageSquare, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RefreshCw, Sparkles } from 'lucide-react';
-import type { ChangeFileDto, OverviewDto, SessionDto, TicketDto, TicketSummary } from '../src/harness/presentation-model';
+import type { ChangeFileDto, ConversationUsage, OverviewDto, SessionDto, TicketDto, TicketSummary } from '../src/harness/presentation-model';
 import { api } from './api';
 import { Badge, label, SideDrawer, useMedia } from './common';
 import { conversationTabs } from './conversation-reading';
 import { Conversation } from './Conversation';
 import { Workbench } from './Workbench';
 import DiffViewer from './DiffViewer';
+
+const token = (value: number) => value.toLocaleString();
+export function ConversationTokenSummary({ usage }: { usage: ConversationUsage }) {
+  return <div className="ticket-usage" aria-label="Conversation Token 统计"><span className="ticket-usage-label">Token</span>
+    <span>总计 {token(usage.total_tokens)}</span><span>输入 {token(usage.input_tokens)}</span>
+    <span>输出 {token(usage.output_tokens)}</span><span>缓存命中 {token(usage.cached_input_tokens)}</span></div>;
+}
 
 function TicketCard({ ticket, select, active }: { ticket: TicketSummary; select: () => void; active?: boolean }) {
   return <button className={'ticket-link' + (ticket.attention ? ' needs-attention' : '')} aria-current={active ? 'page' : undefined} onClick={select}>
@@ -36,6 +43,7 @@ export default function App() {
   const [route, setRoute] = useState(location.pathname), [data, setData] = useState<TicketDto | null>(null), [conversationId, setConversationId] = useState('');
   const [error, setError] = useState(''), [notice, setNotice] = useState(''), [loading, setLoading] = useState(true), [busy, setBusy] = useState(false), [refresh, setRefresh] = useState(0);
   const [leftOpen, setLeftOpen] = useState(true), [rightOpen, setRightOpen] = useState(true), [drawer, setDrawer] = useState<'left' | 'right' | null>(null), [file, setFile] = useState<ChangeFileDto | null>(null);
+  const [conversationUsage, setConversationUsage] = useState<ConversationUsage | null>(null);
   const narrowNav = useMedia('(max-width: 1199px)'), narrowWorkbench = useMedia('(max-width: 899px)');
   const leftVisible = !narrowNav && leftOpen, rightVisible = !!data && !narrowWorkbench && rightOpen;
   const leftToggle = useRef<HTMLButtonElement>(null), rightToggle = useRef<HTMLButtonElement>(null), diffReturn = useRef<HTMLElement | null>(null);
@@ -55,12 +63,13 @@ export default function App() {
       const overview = await api.overview(abort.signal);
       if (abort.signal.aborted) return;
       setOverview(overview);
-      if (route === '/') { setData(null); setConversationId(''); return; }
+      if (route === '/') { setData(null); setConversationId(''); setConversationUsage(null); return; }
       const parts = route.split('/');
       const conversation = parts[1] === 'conversations' ? await api.conversation(parts[2], '', abort.signal) : null;
       const ticket = await api.ticket(conversation?.ticket_id ?? parts[2], abort.signal);
       if (abort.signal.aborted) return;
-      setData(ticket); setConversationId(conversation?.id ?? ticket.ticket.main_conversation_id);
+      const activeConversation = conversation ?? ticket.conversation;
+      setData(ticket); setConversationId(activeConversation.id); setConversationUsage(activeConversation.usage);
     }
     load().catch(e => { if (!abort.signal.aborted) { setData(null); setError(String(e.message)); } }).finally(() => { if (!abort.signal.aborted) setLoading(false); });
     return () => abort.abort();
@@ -93,9 +102,9 @@ export default function App() {
         <div className="pane-toolbar-end">{data && <button className="icon-button" title="刷新当前工程事实" aria-label="刷新当前工程事实" disabled={busy} onClick={() => void control('refresh')}><RefreshCw size={16} /></button>}<span className="read-only"><LockKeyhole size={13} />只读</span><button ref={rightToggle} className="icon-button" disabled={!data} aria-label={rightVisible ? '收起工作台' : '展开工作台'} aria-expanded={rightVisible || drawer === 'right'} onClick={() => narrowWorkbench ? setDrawer('right') : setRightOpen(!rightOpen)}>{rightVisible ? <PanelRightClose size={19} /> : <PanelRightOpen size={19} />}</button></div></div>
         {notice && <div className="notice" role="status">{notice}</div>}
         {loading ? <div className="empty-state"><Sparkles size={28} /><p>正在读取工程事实…</p></div> : error ? <div className="empty-state" role="alert"><h2>暂时无法打开工作台</h2><p>{error}</p><button className="text-button" onClick={() => location.reload()}>重新载入<ArrowRight size={16} /></button></div>
-          : data && relation && session ? <><header className="ticket-heading live-ticket-heading"><div className="ticket-overline"><span>{data.ticket.key}</span><Badge kind={data.workflow.accepted ? 'success' : ''}>{data.workflow.accepted ? '当前已接受' : label(data.workflow.phase)}</Badge></div><h1 title={data.ticket.title}>{data.ticket.title}</h1></header>
+          : data && relation && session ? <><header className="ticket-heading live-ticket-heading"><div className="live-ticket-heading-main"><div className="ticket-overline"><span>{data.ticket.key}</span><Badge kind={data.workflow.accepted ? 'success' : ''}>{data.workflow.accepted ? '当前已接受' : label(data.workflow.phase)}</Badge></div><h1 title={data.ticket.title}>{data.ticket.title}</h1></div>{conversationUsage && <ConversationTokenSummary usage={conversationUsage} />}</header>
             <Tabs.Root value={conversationId} onValueChange={selectConversation} className="conversation-tabs"><Tabs.List className="tabs" aria-label="关联 Conversation">{conversationTabs(data.conversations).map(c => <Tabs.Trigger key={c.id} value={c.id} title={c.accessibleName} aria-label={c.accessibleName}><MessageSquare size={14} />{c.name}</Tabs.Trigger>)}</Tabs.List></Tabs.Root>
-            <Conversation key={conversationId} id={conversationId} initial={conversationId === data.ticket.main_conversation_id ? data.conversation : undefined} relation={relation} refresh={refresh} /></>
+            <Conversation key={conversationId} id={conversationId} initial={conversationId === data.ticket.main_conversation_id ? data.conversation : undefined} relation={relation} refresh={refresh} onUsageChange={setConversationUsage} /></>
             : <Overview data={overview} navigate={navigate} />}
       </main><aside className="workbench-rail" id="ticket-workbench" aria-label="辅助工作台" inert={!rightVisible}><div className="rail-heading"><span>工作台</span><span className="rail-ticket">{data?.ticket.key}</span></div><div className="workbench-scroll" tabIndex={0} role="region" aria-label="Workflow、变更和 Review 摘要">{workbench}</div></aside>
     </div><footer className="statusbar"><span><span className={recording?.state === 'recording' ? 'local-dot' : 'warning-dot'} />{label(recording?.state ?? 'unknown')}</span><span className="status-center">{recording?.observed_at ? '最近采集 ' + new Date(recording.observed_at).toLocaleTimeString() : '尚未观察来源'}</span><span>{session?.services_url ? <a href={session.services_url} rel="noreferrer">日常服务管理<ArrowUpRight size={12} /></a> : '日常服务管理：暂不可用'}</span></footer>

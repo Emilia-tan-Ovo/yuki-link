@@ -54,7 +54,7 @@ test('conversation projects persisted run model and refreshes deduplicated whole
   const first = f.p.conversation(f.ticket.conversation_id);
   const message = first.items.find(item => item.kind === 'message')!;
   assert.equal(message.participant.label, 'Sylvia'); assert.equal(message.participant.provider, 'Codex');
-  assert.equal(message.participant.model, 'gpt-5.6-sol');
+  assert.equal(message.participant.model, 'gpt-5.6-sol'); assert.equal(message.participant.reasoning, 'medium');
   assert.deepEqual(first.usage, { total_tokens: 0, input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 });
 
   f.event('codex', { type: 'turn.completed', usage: { input_tokens: 100, output_tokens: 25, cached_input_tokens: 40 } },

@@ -37,7 +37,7 @@ function Prose({ text, reveal = false }: { text: string; reveal?: boolean }) {
 type Of<K extends ConversationItem['kind']> = Extract<ConversationItem, { kind: K }>;
 function Message({ item, reveal }: { item: Of<'message'>; reveal: boolean }) {
   return <article className="message"><div className={'avatar role-' + item.participant.role} aria-hidden="true">{item.participant.label.slice(0, 1)}</div><div className="message-body">
-    <header className="message-meta"><strong>{item.participant.label}</strong><span>{[item.participant.provider, item.participant.model].filter(Boolean).join(' · ') || '协作消息'}</span><time dateTime={item.timestamp}>{new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></header>
+    <header className="message-meta"><strong>{item.participant.label}</strong><span>{[item.participant.provider, item.participant.model, item.participant.reasoning].filter(Boolean).join(' · ') || '协作消息'}</span><time dateTime={item.timestamp}>{new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></header>
     <Prose text={item.content.text} reveal={reveal} /></div></article>;
 }
 function Tool({ item }: { item: Of<'tool'> }) {

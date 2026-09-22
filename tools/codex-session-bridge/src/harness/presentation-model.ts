@@ -1,7 +1,7 @@
 // Shared wire contract. No provider payloads or server/runtime imports in the UI.
 export interface Participant {
   id: string; role: 'owner' | 'coordinator' | 'engineer' | 'system'; label: string;
-  provider?: string; model?: string;
+  provider?: string; model?: string; reasoning?: string;
 }
 export interface SourceRef { kind: 'record' | 'source' | 'session' | 'run' | 'thread' | 'binding'; id: string }
 export interface ItemIntegrity { redacted: boolean; truncated: boolean | 'unknown'; incomplete: boolean | 'unknown' }

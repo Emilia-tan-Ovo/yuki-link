@@ -1,6 +1,7 @@
 /* Product data states build on the Owner-approved prototype's tokens and layout. */
 .modal-overlay { pointer-events: auto; }
-.live-ticket-heading { width: 100%; max-width: 860px; margin: 0 auto; padding: 12px 32px 6px; flex-shrink: 0; }
+.live-ticket-heading { display: flex; align-items: flex-end; gap: 24px; width: 100%; max-width: 860px; margin: 0 auto; padding: 12px 32px 6px; flex-shrink: 0; }
+.live-ticket-heading-main { flex: 1; min-width: 0; }
 .live-ticket-heading h1 { font-size: 18px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: -.2px; }
 .live-ticket-heading .ticket-overline { margin-bottom: 4px; gap: 10px; font-size: 11px; }
 .live-ticket-heading .ticket-overline .badge { margin-left: 0; }
@@ -9,8 +10,8 @@
 .conversation-tabs .tabs > button { flex: 0 0 auto; white-space: nowrap; min-height: 40px; padding: 8px 12px; border-bottom: 2px solid transparent; }
 .conversation-tabs .tabs > button[data-state='active'] { border-bottom-color: var(--accent); }
 .conversation-history { padding-top: 18px; padding-bottom: 24px; }
-.conversation-usage { display: flex; flex-wrap: wrap; gap: 5px 14px; margin: 0 0 18px var(--conversation-reading-inset); color: var(--subtle); font-size: 11px; }
-.conversation-usage > span:first-child { color: var(--muted); font-weight: 500; }
+.ticket-usage { display: flex; align-items: baseline; justify-content: flex-end; flex-wrap: wrap; gap: 4px 12px; margin-left: auto; padding-bottom: 2px; flex-shrink: 0; color: var(--subtle); font-size: 11px; white-space: nowrap; }
+.ticket-usage-label { color: var(--muted); font-weight: 500; }
 .conversation-scroll { overflow-anchor: none; }
 .conversation-item { margin-bottom: 25px; }
 .conversation-item .message, .conversation-item .timeline-event, .conversation-item .tool { margin-bottom: 0; }
@@ -76,8 +77,8 @@
 .diff-heading .icon-button { margin-left: auto; }.diff-current strong { overflow: hidden; text-overflow: ellipsis; }.diff-scroll > .advanced { margin: 20px; }
 .diff-render .diff { table-layout: fixed; width: 100%; }.diff-render .diff-code { overflow: hidden; overflow-wrap: anywhere; white-space: pre-wrap; word-break: break-word; }
 @keyframes character-reveal { to { opacity: 1; } }
-@media (max-width: 760px) { .live-ticket-heading { padding: 10px 20px 6px; }.live-ticket-heading h1 { font-size: 18px; }.conversation-tabs { padding: 0 20px; }.overview-page > h1 { font-size: 26px; } }
+@media (max-width: 760px) { .live-ticket-heading { flex-wrap: wrap; gap: 6px 14px; padding: 10px 20px 6px; }.live-ticket-heading h1 { font-size: 18px; }.ticket-usage { flex-basis: 100%; justify-content: flex-end; }.conversation-tabs { padding: 0 20px; }.overview-page > h1 { font-size: 26px; } }
 @media (max-width: 480px) { .auxiliary-group-trigger, .auxiliary-member-trigger { min-height: 44px; } }
-@media (max-width: 480px) { .message-meta time { display: none; }.conversation-tabs .tabs > button { padding-inline: 9px; }.overview-tickets { grid-template-columns: 1fr; } }
+@media (max-width: 480px) { .ticket-usage { gap: 4px 8px; white-space: normal; }.message-meta time { display: none; }.conversation-tabs .tabs > button { padding-inline: 9px; }.overview-tickets { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   .prose-reveal .reveal-character { opacity: 1 !important; } }
