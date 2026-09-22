@@ -53,6 +53,9 @@ export const executionProtectedIntentSchema = z.object({
   ticket_id: id, destination: requestedExecutionDestinationSchema,
   expected_workflow_revision: z.number().int().positive(), subject_ref: text,
   content_identity: executionContentIdentitySchema,
+  comparison: z.object({
+    schema_version: z.literal(1), content_identity_sha256: hash, canonical_cwd_sha256: hash,
+  }).strict().optional(),
   launch: z.object({
     cwd: z.string().min(1), prompt_sha256: hash, prompt_utf8_bytes: z.number().int().positive(),
     sender: z.string().max(80).nullable(), model: z.string().max(128).nullable(),

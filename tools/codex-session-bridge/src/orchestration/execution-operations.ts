@@ -22,6 +22,10 @@ function stable(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function comparisonDigest(kind: 'content_identity' | 'canonical_cwd', value: unknown) {
+  return sha256(stable({ schema: 'execution-identity-compare-v1', kind, value }));
+}
+
 function destinationKey(ticketId: string, destination: RequestedExecutionDestination | ResolvedExecutionDestination) {
   if (destination.kind === 'main') return `${ticketId}:main`;
   const relation = destination.relation;
@@ -122,7 +126,10 @@ export class ExecutionOperations {
         permission_selection: permissionSelectionFingerprint(input.launch.permissions ?? undefined) },
       authorization_boundary: input.authorization_boundary,
     };
-    return { intent, fingerprint: sha256(stable(intent)) };
+    return { intent: { ...intent, comparison: { schema_version: 1 as const,
+      content_identity_sha256: comparisonDigest('content_identity', input.content_identity),
+      canonical_cwd_sha256: comparisonDigest('canonical_cwd', cwd) } },
+    fingerprint: sha256(stable(intent)) };
   }
 
   private runtimeClaim(operation: ExecutionOperation) {
@@ -283,11 +290,19 @@ export class ExecutionOperations {
       scheme: rawIdentity.scheme, version: rawIdentity.version, scope: rawIdentity.scope,
       completeness: rawIdentity.completeness, digest: rawIdentity.digest,
     });
+    const expectedComparison = current.protected_intent.comparison;
     if (!currentIdentity.success || currentIdentity.data.completeness !== 'complete'
-      || stable(currentIdentity.data) !== stable(current.protected_intent.content_identity)) {
+      || (expectedComparison
+        ? comparisonDigest('content_identity', currentIdentity.data) !== expectedComparison.content_identity_sha256
+        : stable(currentIdentity.data) !== stable(current.protected_intent.content_identity))) {
       throw new HarnessError('SUBJECT_IDENTITY_CONFLICT');
     }
-    if (realpathSync(dispatch.cwd) !== current.protected_intent.launch.cwd) throw new HarnessError('LAUNCH_IDENTITY_CONFLICT', { field: 'cwd' });
+    const canonicalCwd = realpathSync(dispatch.cwd);
+    if (expectedComparison
+      ? comparisonDigest('canonical_cwd', canonicalCwd) !== expectedComparison.canonical_cwd_sha256
+      : canonicalCwd !== current.protected_intent.launch.cwd) {
+      throw new HarnessError('LAUNCH_IDENTITY_CONFLICT', { field: 'cwd' });
+    }
     for (const field of ['prompt_sha256', 'prompt_utf8_bytes', 'sender', 'model', 'reasoning', 'timeout_ms', 'permission_selection'] as const) {
       if (stable(dispatch.launch[field]) !== stable(current.protected_intent.launch[field])) {
         throw new HarnessError('LAUNCH_IDENTITY_CONFLICT', { field });

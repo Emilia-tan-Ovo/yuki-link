@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -61,6 +61,18 @@ function setWorkflow(f: ReturnType<typeof fixture>, revision = 1) {
     snapshot: { subject: { subject_id: 'subject-1' } }, assessment: {} } as any);
 }
 
+function moveRepoToRedactedPath(f: ReturnType<typeof fixture>) {
+  const repo = path.join(f.root, 'password=secret-value', 'repo');
+  mkdirSync(path.dirname(repo));
+  renameSync(f.repo, repo);
+  const ticket = f.harness.tickets.get(f.registration.ticket_id)!;
+  const baseline = f.harness.changes.facts.capture(repo, ticket.comparison_baseline!.commit_oid);
+  ticket.comparison_baseline = baseline;
+  const identity = f.harness.changes.facts.currentIdentity(baseline);
+  return { repo, baseline, contentIdentity: { scheme: identity.scheme, version: identity.version, scope: identity.scope,
+    completeness: identity.completeness, digest: identity.digest } };
+}
+
 test('reserve is ticket-scoped, content-protected, typed, and restart-stable', t => {
   const f = fixture(t, { authorizeParallel: true });
   const main = f.harness.executionOperations.reserve(f.input());
@@ -91,6 +103,77 @@ test('reserve is ticket-scoped, content-protected, typed, and restart-stable', t
     concurrency: { mode: 'parallel', decision_ref: 'fixture-parallel' } } }));
   assert.equal(replayed.destination.conversation_id, childConversationId);
   assert.equal(replayed.deduplicated, true);
+});
+
+test('legacy operation without comparison digests remains restart-deduplicable', t => {
+  const f = fixture(t);
+  const reserved = f.harness.executionOperations.reserve(f.input());
+  const journalFile = path.join(f.runtime, 'harness', 'history.jsonl');
+  f.harness.close();
+  const records = readFileSync(journalFile, 'utf8').trimEnd().split('\n').map(line => JSON.parse(line));
+  for (const record of records) {
+    if (record.data.kind === 'execution_operation_reserved') delete record.data.operation.protected_intent.comparison;
+  }
+  writeFileSync(journalFile, records.map(record => JSON.stringify(record)).join('\n') + '\n', 'utf8');
+  f.harness = new Harness(f.runtime, f.source);
+  const replayed = f.harness.executionOperations.reserve(f.input());
+  assert.equal(replayed.operation_id, reserved.operation_id);
+  assert.equal(replayed.deduplicated, true);
+});
+
+test('redacted Journal preserves canonical identity comparison across restart', t => {
+  const f = fixture(t);
+  const moved = moveRepoToRedactedPath(f);
+  const reserved = f.harness.executionOperations.reserve(f.input({ content_identity: moved.contentIdentity,
+    launch: { ...(f.input().launch as object), cwd: moved.repo } }));
+  const journalFile = path.join(f.runtime, 'harness', 'history.jsonl');
+  const persisted = readFileSync(journalFile, 'utf8');
+  assert.equal(persisted.includes('secret-value'), false);
+  assert.equal(persisted.includes('secret prompt'), false);
+  assert.match(persisted, /password=\[REDACTED\]/);
+
+  f.harness.close();
+  f.harness = new Harness(f.runtime, f.source);
+  f.harness.tickets.get(f.registration.ticket_id)!.comparison_baseline = moved.baseline;
+  setWorkflow(f);
+  const operation = (f.harness.executionOperations as any).operations.get(reserved.operation_id);
+  const dispatch = f.harness.executionOperations.guardDispatch(reserved.operation_id, {
+    request_id: reserved.runtime.request_id, fingerprint: '2'.repeat(64), cwd: moved.repo,
+    config: { model: 'gpt-5.6-sol', reasoning: 'high' }, permissions: { sandbox_mode: 'danger-full-access' },
+    launch: { prompt_sha256: operation.protected_intent.launch.prompt_sha256,
+      prompt_utf8_bytes: Buffer.byteLength('secret prompt'), sender: 'Emilia', model: 'gpt-5.6-sol', reasoning: 'high',
+      timeout_ms: null, permission_selection: null },
+  });
+  assert.equal(dispatch.state, 'dispatching');
+});
+
+test('redacted Journal identity comparison still rejects changed Git content after restart', t => {
+  const f = fixture(t);
+  const moved = moveRepoToRedactedPath(f);
+  const reserved = f.harness.executionOperations.reserve(f.input({ content_identity: moved.contentIdentity,
+    launch: { ...(f.input().launch as object), cwd: moved.repo } }));
+  f.harness.close();
+  f.harness = new Harness(f.runtime, f.source);
+  f.harness.tickets.get(f.registration.ticket_id)!.comparison_baseline = moved.baseline;
+  setWorkflow(f);
+  const operation = (f.harness.executionOperations as any).operations.get(reserved.operation_id);
+  const otherCwd = path.join(f.root, 'other-cwd'); mkdirSync(otherCwd);
+  assert.throws(() => f.harness.executionOperations.guardDispatch(reserved.operation_id, {
+    request_id: reserved.runtime.request_id, fingerprint: '3'.repeat(64), cwd: otherCwd,
+    config: { model: 'gpt-5.6-sol', reasoning: 'high' }, permissions: { sandbox_mode: 'danger-full-access' },
+    launch: { prompt_sha256: operation.protected_intent.launch.prompt_sha256,
+      prompt_utf8_bytes: Buffer.byteLength('secret prompt'), sender: 'Emilia', model: 'gpt-5.6-sol', reasoning: 'high',
+      timeout_ms: null, permission_selection: null },
+  }), (error: any) => error.code === 'LAUNCH_IDENTITY_CONFLICT' && error.details.field === 'cwd');
+
+  writeFileSync(path.join(moved.repo, 'subject.txt'), 'changed\n', 'utf8');
+  assert.throws(() => f.harness.executionOperations.guardDispatch(reserved.operation_id, {
+    request_id: reserved.runtime.request_id, fingerprint: '3'.repeat(64), cwd: moved.repo,
+    config: { model: 'gpt-5.6-sol', reasoning: 'high' }, permissions: { sandbox_mode: 'danger-full-access' },
+    launch: { prompt_sha256: operation.protected_intent.launch.prompt_sha256,
+      prompt_utf8_bytes: Buffer.byteLength('secret prompt'), sender: 'Emilia', model: 'gpt-5.6-sol', reasoning: 'high',
+      timeout_ms: null, permission_selection: null },
+  }), (error: any) => error.code === 'SUBJECT_IDENTITY_CONFLICT');
 });
 
 test('explicit transitions and composite bind survive restart; reconcile stays read-only', t => {

@@ -53,3 +53,13 @@ Source Spec：https://github.com/Emilia-tan-Ovo/yuki-link/issues/89
 ### Emilia 确定性验证与提交定位
 
 以上 Handoff 是各模型阶段结束时的真实回执，不等同于后续全套测试或独立审查结果。Emilia 的 full-suite 命令、退出码与受测字节记录在 .local/workflow-artifacts/ORCH-002/emilia-verification.json；准确的本地 commit SHA、当前阶段与待办以 .local/workflow-state/ORCH-002.md 为准。Review 与 Acceptance 只能由各自真实报告确认，不从本文件的实现状态推断。
+
+### Review Fix Handoff 02
+
+- **来源与身份：** 只修 primary Review `review-01-spec.md` 的 SPEC-001 / Medium；worktree `C:/Users/KQ_Sh/Desktop/yuki-link/.local/worktrees/orch-002`，branch `codex/orch-002-durable-execution`，整票 fixed point `6e8373d47a8dbc018c421cfc9e4e939eb2560a66`，fix 开始 HEAD `950ee9ed1ed2ec19a233aed24234473449303763`。当前未提交变更为本节及 `execution-model.ts`、`execution-operations.ts`、`orchestration-execution.test.ts`。
+- **修复范围：** 新 operation 在 Journal 脱敏前为完整 `yuki-git-subject/v1` identity 与 canonical cwd 分别计算带域分隔的不可逆 SHA-256 比较摘要；`guardDispatch` 优先用摘要核对当前真实 Git identity/cwd，真实 content 或 cwd drift 仍分别拒绝。Journal 继续脱敏，durable intent 仍只保存 prompt SHA-256/长度，不保存 prompt 原文。
+- **兼容性：** comparison 字段在 typed schema 中可选；旧 operation 缺少摘要时沿用原逐字段 guard。`execution-protected-v1` fingerprint 继续按原 canonical intent 计算，新派生摘要不改变旧 payload 的 request dedupe 语义。
+- **红→绿与正式回归：** `node --test --test-name-pattern='redacted Journal' test/orchestration-execution.test.ts` 在修复前为 1/2、相同 identity 重启路径报 `SUBJECT_IDENTITY_CONFLICT`（退出码 1），修复后为 2/2（退出码 0），日志为 `.local/workflow-artifacts/ORCH-002/review-fix-02-red.log` 与 `review-fix-02-green.log`。最终 `node --test --test-name-pattern='redacted Journal|legacy operation' test/orchestration-execution.test.ts` 为 3/3（退出码 0），覆盖真实 Journal 重启、真实 Git/ChangesSource identity、prompt 原文不落盘、content/cwd drift 拒绝及旧 operation dedupe，日志为 `review-fix-02-final-targeted.log`。`npm run typecheck` 退出码 0，日志为 `review-fix-02-typecheck.log`。
+- **未运行项：** 本 fresh fix 未运行 full suite、真实模型链路或部署；完整测试、日志筛选、Git/Workflow/GitHub 动作继续由 Emilia + YCA 完成。
+- **Review policy 与 finding：** delegated 给 Emilia。SPEC-001 状态为 **fixed，待 fresh focused verification**；本 session 未自审、未修改原 Review 报告，不声明 verified 或 Review passed。
+- **Commit 与下一步：** 按 Owner 指令未 commit/push/PR，canonical checkpoint 未修改。Emilia 先核对当前 diff 与上述日志，再启动 fresh focused re-review；通过后执行确定性验收、提交与已授权 PR 流程。
