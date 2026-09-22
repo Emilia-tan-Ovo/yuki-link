@@ -1,0 +1,258 @@
+import { createHash } from 'node:crypto';
+import { readFileSync, realpathSync } from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { z } from 'zod';
+import { HarnessError } from '../harness/model.ts';
+import { executionContentIdentitySchema, implementationAuthorizationSchema,
+  implementationLaunchContractSchema, implementationPolicySnapshotSchema } from '../harness/execution-model.ts';
+
+const text = z.string().min(1).max(512);
+const hash = z.string().regex(/^[0-9a-f]{64}$/);
+const policyBodySchema = implementationPolicySnapshotSchema.omit({ digest: true });
+const authorizationFileSchema = z.object({
+  schema_version: z.literal(1), active_policy: policyBodySchema,
+  authorizations: z.array(implementationAuthorizationSchema).max(1024),
+}).strict();
+
+export const startTicketImplementationInputSchema = z.object({
+  schema_version: z.literal(1), ticket_id: z.string().uuid(),
+  request_id: z.string().min(1).max(128).regex(/^[A-Za-z0-9._:-]+$/),
+  authorization_ref: text,
+  expected: z.object({
+    workflow_revision: z.number().int().positive(), subject_ref: text,
+    content_identity: executionContentIdentitySchema,
+    policy: z.object({ policy_id: text, revision: z.number().int().positive(), digest: hash }).strict(),
+    notes: z.object({ path: text, sha256: hash }).strict(),
+  }).strict(),
+  current_delta: z.array(z.object({ ref: text, value: z.string().max(2048).nullable() }).strict()).max(32),
+}).strict();
+
+const stable = (value: unknown): string => Array.isArray(value) ? '[' + value.map(stable).join(',') + ']'
+  : value && typeof value === 'object' ? '{' + Object.keys(value as object).sort()
+    .map(key => JSON.stringify(key) + ':' + stable((value as Record<string, unknown>)[key])).join(',') + '}'
+    : JSON.stringify(value);
+const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+
+export function digestImplementationPolicy(value: unknown) {
+  return sha256(stable(policyBodySchema.parse(value)));
+}
+
+export interface ImplementationLaunchAuthoritySource {
+  policy(): z.infer<typeof implementationPolicySnapshotSchema>;
+  authorization(ticketKey: string, authorizationRef: string): z.infer<typeof implementationAuthorizationSchema> | null;
+}
+
+export class FileImplementationLaunchAuthoritySource implements ImplementationLaunchAuthoritySource {
+  private readonly filename: string;
+  constructor(filename: string) { this.filename = filename; }
+  private read() {
+    try { return authorizationFileSchema.parse(JSON.parse(readFileSync(this.filename, 'utf8'))); }
+    catch (error) { throw new HarnessError('IMPLEMENTATION_AUTHORITY_UNAVAILABLE', {
+      source: this.filename, reason: error instanceof Error ? error.message : 'authority source unavailable',
+    }); }
+  }
+  policy() {
+    const body = this.read().active_policy;
+    return implementationPolicySnapshotSchema.parse({ ...body, digest: digestImplementationPolicy(body) });
+  }
+  authorization(ticketKey: string, authorizationRef: string) {
+    return this.read().authorizations.find(value => value.ticket_key === ticketKey
+      && value.authorization_ref === authorizationRef && value.action === 'ticket-implementation'
+      && value.endpoint === 'implementation' && value.contract_version === 1) ?? null;
+  }
+}
+
+interface EnvironmentSource {
+  observe(cwd: string, policy: z.infer<typeof implementationPolicySnapshotSchema>, notes: { path: string; sha256: string }): {
+    required_paths: string[]; required_executables: string[];
+  };
+}
+
+export class HostImplementationEnvironmentSource implements EnvironmentSource {
+  observe(cwd: string, policy: z.infer<typeof implementationPolicySnapshotSchema>, notes: { path: string; sha256: string }) {
+    let root: string;
+    try { root = realpathSync(cwd); }
+    catch { throw new HarnessError('IMPLEMENTATION_ENVIRONMENT_CONFLICT', { source: cwd,
+      observed: 'worktree-unavailable', reprepare_required: true }); }
+    const resolveInside = (relative: string) => {
+      if (path.isAbsolute(relative)) throw new HarnessError('IMPLEMENTATION_ENVIRONMENT_CONFLICT', { field: relative, reason: 'absolute path' });
+      const lexical = path.resolve(root, relative);
+      let candidate: string;
+      try { candidate = realpathSync(lexical); }
+      catch { throw new HarnessError('IMPLEMENTATION_ENVIRONMENT_CONFLICT', { source: relative,
+        observed: 'missing', reprepare_required: true }); }
+      const relation = path.relative(root, candidate);
+      if (relation === '..' || relation.startsWith('..' + path.sep) || path.isAbsolute(relation)) {
+        throw new HarnessError('IMPLEMENTATION_ENVIRONMENT_CONFLICT', { field: relative, reason: 'outside worktree' });
+      }
+      return candidate;
+    };
+    const noteFile = resolveInside(notes.path);
+    if (sha256(readFileSync(noteFile)) !== notes.sha256) {
+      throw new HarnessError('IMPLEMENTATION_NOTES_CONFLICT', { source: notes.path, expected: notes.sha256,
+        observed: sha256(readFileSync(noteFile)), reprepare_required: true });
+    }
+    for (const required of policy.preflight.required_paths) {
+      resolveInside(required);
+    }
+    for (const executable of policy.preflight.required_executables) {
+      const locator = process.platform === 'win32' ? 'where.exe' : 'which';
+      const result = spawnSync(locator, [executable], { cwd: root, windowsHide: true, encoding: 'utf8', timeout: 5000 });
+      if (result.status !== 0) throw new HarnessError('IMPLEMENTATION_ENVIRONMENT_CONFLICT', {
+        source: executable, observed: 'not-found', reprepare_required: true,
+      });
+    }
+    return { required_paths: [...policy.preflight.required_paths], required_executables: [...policy.preflight.required_executables] };
+  }
+}
+
+const contract = implementationLaunchContractSchema.parse({ schema_version: 1, kind: 'ticket-implementation',
+  review_policy: 'delegated', destination: 'main', session: 'fresh' });
+
+function same(left: unknown, right: unknown) { return stable(left) === stable(right); }
+
+export class ImplementationLauncher {
+  private readonly manager: any;
+  private readonly harness: any;
+  private readonly authority: ImplementationLaunchAuthoritySource;
+  private readonly environment: EnvironmentSource;
+  constructor({ manager, harness, authority, environment = new HostImplementationEnvironmentSource() }:
+    { manager: any; harness: any; authority: ImplementationLaunchAuthoritySource; environment?: EnvironmentSource }) {
+    this.manager = manager; this.harness = harness; this.authority = authority; this.environment = environment;
+  }
+
+  private callerFingerprint(input: z.infer<typeof startTicketImplementationInputSchema>) {
+    return sha256(stable({ schema_version: input.schema_version, ticket_id: input.ticket_id,
+      authorization_ref: input.authorization_ref, expected: input.expected, current_delta: input.current_delta }));
+  }
+
+  private current(input: z.infer<typeof startTicketImplementationInputSchema>, frozen?: any) {
+    const ticket = this.harness.tickets.get(input.ticket_id);
+    if (!ticket) throw new HarnessError('TICKET_NOT_FOUND');
+    const project = this.harness.projects.get(ticket.project_id);
+    const policy = this.authority.policy();
+    const expectedPolicy = frozen?.policy ?? input.expected.policy;
+    if (!same({ policy_id: policy.policy_id, revision: policy.revision, digest: policy.digest }, expectedPolicy)) {
+      throw new HarnessError('IMPLEMENTATION_POLICY_CONFLICT', { expected: expectedPolicy,
+        observed: { policy_id: policy.policy_id, revision: policy.revision, digest: policy.digest }, reprepare_required: true });
+    }
+    if (!project || policy.project_key !== project.key || policy.action !== 'ticket-implementation'
+      || policy.workflow_phase !== 'implementation' || !policy.supported_contract_versions.includes(contract.schema_version)
+      || policy.permission_selection !== 'owner-native-default') {
+      throw new HarnessError('IMPLEMENTATION_POLICY_NOT_APPLICABLE', { policy_id: policy.policy_id, ticket_id: input.ticket_id });
+    }
+    const authorization = this.authority.authorization(ticket.key, input.authorization_ref);
+    if (!authorization || frozen?.authorization && !same(authorization, frozen.authorization)) {
+      throw new HarnessError('IMPLEMENTATION_NOT_AUTHORIZED', { ticket_id: input.ticket_id,
+        authorization_ref: input.authorization_ref, reprepare_required: true });
+    }
+    if (!same(input.expected.notes, authorization.notes)) throw new HarnessError('IMPLEMENTATION_NOTES_CONFLICT', {
+      expected: input.expected.notes, observed: authorization.notes, reprepare_required: true,
+    });
+    const workflow = this.harness.workflowHistory.current.get(input.ticket_id);
+    if (!workflow || workflow.workflow_revision !== input.expected.workflow_revision
+      || workflow.snapshot?.phase !== 'implementation'
+      || workflow.snapshot?.subject?.subject_id !== input.expected.subject_ref) {
+      throw new HarnessError('IMPLEMENTATION_WORKFLOW_CONFLICT', { expected: {
+        revision: input.expected.workflow_revision, phase: 'implementation', subject_ref: input.expected.subject_ref,
+      }, observed: workflow ? { revision: workflow.workflow_revision, phase: workflow.snapshot?.phase,
+        subject_ref: workflow.snapshot?.subject?.subject_id } : null, reprepare_required: true });
+    }
+    if (!ticket.comparison_baseline || !ticket.expected_worktree) {
+      throw new HarnessError('IMPLEMENTATION_GIT_IDENTITY_INCOMPLETE', { ticket_id: input.ticket_id, reprepare_required: true });
+    }
+    const currentIdentity = this.harness.changes.facts.currentIdentity(ticket.comparison_baseline);
+    const observedIdentity = executionContentIdentitySchema.parse({ scheme: currentIdentity.scheme,
+      version: currentIdentity.version, scope: currentIdentity.scope, completeness: currentIdentity.completeness,
+      digest: currentIdentity.digest });
+    if (!same(observedIdentity, input.expected.content_identity) || observedIdentity.completeness !== 'complete') {
+      throw new HarnessError('SUBJECT_IDENTITY_CONFLICT', { expected: input.expected.content_identity,
+        observed: observedIdentity, reprepare_required: true });
+    }
+    const environment = this.environment.observe(ticket.expected_worktree, policy, authorization.notes);
+    const references = [ticket.reference, ...(workflow.snapshot?.artifacts ?? []).map((value: any) => value.location)]
+      .filter((value: unknown): value is string => typeof value === 'string' && value.length > 0);
+    return { ticket, policy, authorization, workflow, observedIdentity, environment, references: [...new Set(references)] };
+  }
+
+  private prompt(snapshot: ReturnType<ImplementationLauncher['current']>, input: z.infer<typeof startTicketImplementationInputSchema>) {
+    return [
+      '执行 Ticket implementation。仅从以下持久化引用恢复上下文：',
+      ...snapshot.references.map(value => `- ${value}`),
+      '当前 delta：', ...input.current_delta.map(value => `- ${value.ref}: ${value.value ?? 'null'}`),
+      '结构化 workflow contract：review_policy=delegated；destination=Ticket Main；session=fresh。',
+      '完成实现、最小定向测试、commit 与 Implementation Handoff 后停止；不要执行 Review。',
+    ].join('\n');
+  }
+
+  async start(raw: unknown) {
+    const parsed = startTicketImplementationInputSchema.safeParse(raw);
+    if (!parsed.success) throw new HarnessError('INVALID_IMPLEMENTATION_LAUNCH_REQUEST', { issues: parsed.error.issues });
+    const input = parsed.data;
+    const callerFingerprint = this.callerFingerprint(input);
+    const existing = this.harness.executionOperations.findByRequest(input.ticket_id, input.request_id);
+    if (existing) {
+      if (existing.fingerprint_version !== 'execution-protected-v2'
+        || existing.caller_fingerprint !== callerFingerprint) {
+        throw new HarnessError('REQUEST_CONFLICT', { operation_id: existing.operation_id });
+      }
+      return { ...this.harness.executionOperations.reconcile(existing.operation_id), deduplicated: true };
+    }
+
+    this.harness.executionGate('new-side-effect');
+    const snapshot = this.current(input);
+    const prompt = this.prompt(snapshot, input);
+    const protection = {
+      caller_fingerprint: callerFingerprint, contract, policy: snapshot.policy, authorization: snapshot.authorization,
+      prompt_context: { references: snapshot.references, current_delta: input.current_delta },
+      preflight: { workflow_revision: snapshot.workflow.workflow_revision, subject_ref: input.expected.subject_ref,
+        notes: snapshot.authorization.notes, environment: snapshot.environment },
+    };
+    const reserved = this.harness.executionOperations.reserve({
+      ticket_id: input.ticket_id, request_id: input.request_id, destination: { kind: 'main' },
+      expected_workflow_revision: input.expected.workflow_revision, subject_ref: input.expected.subject_ref,
+      content_identity: input.expected.content_identity,
+      launch: { cwd: snapshot.ticket.expected_worktree, prompt, sender: 'Emilia', model: snapshot.policy.model,
+        reasoning: snapshot.policy.reasoning, timeout_ms: null, permissions: null },
+      authorization_boundary: { schema_version: 1, policy_id: snapshot.policy.policy_id,
+        decision_ref: snapshot.authorization.authorization_ref, concurrency: { mode: 'single-line', decision_ref: null } },
+      implementation: protection,
+    });
+    try {
+      await this.manager.startGuarded({ request_id: reserved.runtime.request_id, cwd: snapshot.ticket.expected_worktree,
+        prompt, sender: 'Emilia', model: snapshot.policy.model, reasoning: snapshot.policy.reasoning, timeout_ms: undefined },
+      (dispatch: any) => {
+        this.current(input, { policy: { policy_id: snapshot.policy.policy_id, revision: snapshot.policy.revision,
+          digest: snapshot.policy.digest }, authorization: snapshot.authorization });
+        if (dispatch?.config?.model !== snapshot.policy.model || dispatch?.config?.reasoning !== snapshot.policy.reasoning) {
+          throw new HarnessError('IMPLEMENTATION_MODEL_POLICY_CONFLICT', { expected: {
+            model: snapshot.policy.model, reasoning: snapshot.policy.reasoning,
+          }, observed: dispatch?.config ?? null, reprepare_required: true });
+        }
+        this.harness.executionOperations.guardDispatch(reserved.operation_id, dispatch);
+      });
+    } catch (error) {
+      const current = this.harness.executionOperations.query(reserved.operation_id);
+      if (current.state === 'reserved') this.harness.executionOperations.failReserved(reserved.operation_id,
+        (error as any)?.code ?? 'IMPLEMENTATION_LAUNCH_REJECTED', error instanceof Error ? error.message : 'launch rejected');
+      else if (current.state === 'dispatching' || current.state === 'started') {
+        this.harness.executionOperations.requireReconciliation(reserved.operation_id,
+          (error as any)?.code ?? 'IMPLEMENTATION_LAUNCH_OUTCOME_UNKNOWN', error instanceof Error ? error.message : 'launch outcome unknown');
+      }
+      throw error;
+    }
+    try {
+      this.harness.executionOperations.markStarted(reserved.operation_id);
+      return this.harness.executionOperations.bind(reserved.operation_id);
+    } catch (error) {
+      if ((error as any)?.code === 'RECORDING_OUTCOME_UNKNOWN') {
+        const receipt = this.harness.executionOperations.reconcile(reserved.operation_id);
+        return { ...receipt, effective_state: 'reconciliation-required', reconciliation: {
+          ...(receipt.reconciliation ?? {}), recording_outcome: 'unknown', checked_restart_required: true,
+        } };
+      }
+      throw error;
+    }
+  }
+}
