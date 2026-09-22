@@ -219,6 +219,29 @@ test('host executable preflight ignores worktree locator and executable spoofs a
     'a worktree executable must not be accepted as the host dependency');
 });
 
+test('host executable preflight rejects a worktree PATH alias to an external executable', t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'implementation-host-alias-'));
+  const worktree = path.join(root, 'worktree'); mkdirSync(worktree);
+  const trusted = path.join(root, 'trusted'); mkdirSync(trusted);
+  const notes = path.join(worktree, 'notes.md'); writeFileSync(notes, 'notes\n', 'utf8');
+  const executable = path.join(trusted, process.platform === 'win32' ? 'node.exe' : 'node');
+  try { linkSync(process.execPath, executable); } catch { copyFileSync(process.execPath, executable); }
+  if (process.platform !== 'win32') chmodSync(executable, 0o755);
+  const alias = path.join(worktree, 'host-alias');
+  symlinkSync(trusted, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const priorPath = process.env.PATH;
+  process.env.PATH = alias;
+  t.after(() => {
+    if (priorPath === undefined) delete process.env.PATH; else process.env.PATH = priorPath;
+    rmSync(root, { recursive: true, force: true });
+  });
+  const policy: any = { preflight: { required_paths: [], required_executables: ['node'] } };
+  assert.throws(() => new HostImplementationEnvironmentSource().observe(worktree, policy, {
+    path: 'notes.md', sha256: createHash('sha256').update('notes\n').digest('hex'),
+  }), (error: any) => error.code === 'IMPLEMENTATION_ENVIRONMENT_CONFLICT'
+    && error.details?.observed === 'trusted-host-executable-not-found');
+});
+
 test('same request retries read-only before authority and recording preflight; changed payload conflicts', async t => {
   const f = fixture(t);
   const first = await f.launcher.start(f.input());

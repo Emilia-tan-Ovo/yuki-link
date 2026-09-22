@@ -113,6 +113,7 @@ interface EnvironmentSource {
 
 export class HostImplementationEnvironmentSource implements EnvironmentSource {
   observe(cwd: string, policy: z.infer<typeof implementationPolicySnapshotSchema>, notes: { path: string; sha256: string }) {
+    const lexicalRoot = path.resolve(cwd);
     let root: string;
     try { root = realpathSync(cwd); }
     catch { throw new HarnessError('IMPLEMENTATION_ENVIRONMENT_CONFLICT', { source: cwd,
@@ -155,7 +156,7 @@ export class HostImplementationEnvironmentSource implements EnvironmentSource {
             if (!statSync(candidate).isFile()) continue;
             if (process.platform !== 'win32') accessSync(candidate, constants.X_OK);
             const canonical = realpathSync(candidate);
-            if (isInside(root, canonical)) continue;
+            if (isInside(lexicalRoot, path.resolve(candidate)) || isInside(root, canonical)) continue;
             resolved = canonical;
             break;
           } catch { /* Continue to the next trusted host PATH candidate. */ }
