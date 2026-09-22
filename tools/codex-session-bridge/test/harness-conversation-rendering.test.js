@@ -10,6 +10,7 @@ test('execution details are absent from collapsed markup; expanding group expose
   t.after(() => server.close());
   const { AuxiliaryGroupRow, ConversationRow } = await server.ssrLoadModule('/renderers.tsx');
   const { Conversation } = await server.ssrLoadModule('/Conversation.tsx');
+  const { ConversationTokenSummary } = await server.ssrLoadModule('/App.tsx');
   const item = { id: 'atomic-1', cursor: 1, timestamp: '2026-09-21T00:00:00Z',
     participant: { id: 'engineer', role: 'engineer', label: 'Sylvia' }, sourceRefs: [],
     integrity: { redacted: false, truncated: true, incomplete: false }, rawEvidence: { marker: 'RAW_EVIDENCE' },
@@ -28,8 +29,10 @@ test('execution details are absent from collapsed markup; expanding group expose
   const atomic = renderToStaticMarkup(createElement(ConversationRow, { item }));
   for (const hidden of ['COMMAND_EVIDENCE', 'OUTPUT_EVIDENCE', 'RAW_EVIDENCE']) assert.ok(!atomic.includes(hidden));
   assert.ok(!atomic.includes('Advanced')); assert.match(atomic, /aria-expanded="false"/);
-  const narrative = renderToStaticMarkup(createElement(ConversationRow, { item: { ...item, auxiliary: undefined, kind: 'message', content: { text: 'HUMAN_NARRATIVE' } } }));
-  assert.ok(narrative.includes('HUMAN_NARRATIVE'));
+  const narrative = renderToStaticMarkup(createElement(ConversationRow, { item: { ...item,
+    participant: { id: 'engineer', role: 'engineer', label: 'Sylvia', provider: 'Codex', model: 'gpt-5.6-sol', reasoning: 'medium' },
+    auxiliary: undefined, kind: 'message', content: { text: 'HUMAN_NARRATIVE' } } }));
+  assert.ok(narrative.includes('HUMAN_NARRATIVE')); assert.ok(narrative.includes('Codex · gpt-5.6-sol · medium'));
   assert.ok(!narrative.includes('reveal-character'));
   const revealed = renderToStaticMarkup(createElement(ConversationRow, {
     item: { ...item, auxiliary: undefined, kind: 'message', content: { text: '中👩🏽‍💻 **bold** `code`' } }, reveal: true,
@@ -53,6 +56,7 @@ test('execution details are absent from collapsed markup; expanding group expose
     finding_refs: [], review_id: null, participant: null };
   const conversation = renderToStaticMarkup(createElement(Conversation, { id: 'conversation', initial: page, relation, refresh: 0 }));
   assert.ok(!conversation.includes('只读 Conversation'));
-  assert.ok(!conversation.includes('composer-slot'));
-  for (const usage of ['Conversation Token', '总计 125', '输入 100', '输出 25', '缓存命中 40']) assert.ok(conversation.includes(usage));
+  assert.ok(!conversation.includes('composer-slot')); assert.ok(!conversation.includes('Conversation Token'));
+  const tokenSummary = renderToStaticMarkup(createElement(ConversationTokenSummary, { usage: page.usage }));
+  for (const usage of ['Token', '总计 125', '输入 100', '输出 25', '缓存命中 40']) assert.ok(tokenSummary.includes(usage));
 });
