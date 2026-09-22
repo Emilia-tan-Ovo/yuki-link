@@ -321,7 +321,7 @@ test('service epochs reject previous IDs, concurrent retries execute once and in
   }
   assert.equal(spawns, 1);
   const tools = (await first.client.listTools()).tools;
-  assert.equal(tools.length, 24);
+  assert.equal(tools.length, 25);
   assert.equal(tools.find(t => t.name === 'task_start').annotations.destructiveHint, true);
   assert.equal(tools.find(t => t.name === 'task_output').annotations.readOnlyHint, true);
 });

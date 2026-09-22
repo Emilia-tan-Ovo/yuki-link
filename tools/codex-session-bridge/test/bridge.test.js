@@ -453,7 +453,7 @@ test('real MCP HTTP clients reconnect to durable runs; host/origin checks and ex
   const url = new URL(`http://127.0.0.1:${server.address().port}/mcp`);
   const client = new Client({ name: 'test', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(url));
-  assert.equal((await client.listTools()).tools.length, 12);
+  assert.equal((await client.listTools()).tools.length, 13);
   const started = await client.callTool({ name: 'codex_start_session', arguments: input() });
   assert.equal(started.isError, undefined);
   const { run_id, session_id } = started.structuredContent;
