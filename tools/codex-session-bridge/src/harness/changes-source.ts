@@ -72,6 +72,7 @@ export interface CurrentGitIdentity {
   completeness: 'complete' | 'incomplete';
   digest: string | null;
   payload: { head: string; path_encoding: 'utf8-json-v1'; layer_semantics: 'head-index-worktree-untracked-v1';
+    index_state: { scheme: 'git-index-entries-v1'; digest: string | null };
     index: GitIdentityEntry[]; worktree: GitIdentityEntry[]; untracked: GitIdentityEntry[] };
   gaps: EvidenceGap[];
 }
@@ -267,6 +268,18 @@ export class ChangesSource {
     const records = splitZero(this.run(identity.root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--']));
     const index: GitIdentityEntry[] = [], worktree: GitIdentityEntry[] = [], untracked: GitIdentityEntry[] = [];
     const gaps: EvidenceGap[] = [];
+    let indexStateDigest: string | null = null;
+    let hiddenIndexEntries = 0;
+    try {
+      const indexState = this.run(identity.root, ['ls-files', '--stage', '-z', '--']);
+      indexStateDigest = `sha256:${createHash('sha256').update(indexState).digest('hex')}`;
+      hiddenIndexEntries = splitZero(this.run(identity.root, ['ls-files', '-v', '-z', '--']))
+        .filter(record => /^[a-zS] /.test(record)).length;
+      if (hiddenIndexEntries) gaps.push({ code: 'HIDDEN_INDEX_STATE', source: 'git',
+        impact: `${hiddenIndexEntries} tracked index entries use skip-worktree or assume-unchanged` });
+    } catch {
+      gaps.push({ code: 'INDEX_STATE_UNAVAILABLE', source: 'git', impact: 'complete Git index identity is unavailable' });
+    }
     const indexEntry = (relative: string, deleted: boolean, unmerged: boolean): GitIdentityEntry => {
       if (unmerged) return { path: slash(relative), state: 'unmerged', content_id: null, mode: null };
       if (deleted) return { path: slash(relative), state: 'deleted', content_id: null, mode: null };
@@ -306,9 +319,11 @@ export class ChangesSource {
     const limited = entries.length > MAX_FILES;
     if (limited) gaps.push({ code: 'CONTENT_TRUNCATED', source: 'git', impact: `identity is limited to ${MAX_FILES} entries` });
     const payload = { head, path_encoding: 'utf8-json-v1' as const, layer_semantics: 'head-index-worktree-untracked-v1' as const,
+      index_state: { scheme: 'git-index-entries-v1' as const, digest: indexStateDigest },
       index: index.slice(0, MAX_FILES), worktree: worktree.slice(0, MAX_FILES),
       untracked: untracked.slice(0, MAX_FILES) };
-    const complete = !limited && entries.every(entry => entry.state === 'observed' || entry.state === 'deleted');
+    const complete = !limited && !hiddenIndexEntries && indexStateDigest !== null
+      && entries.every(entry => entry.state === 'observed' || entry.state === 'deleted');
     const scope = { repository_id: identity.repository, repository_instance_id: identity.instance, worktree_root: identity.root };
     const canonical = { scheme: 'yuki-git-subject', version: 1, scope, payload };
     return { observed_at: observedAt, scheme: 'yuki-git-subject', version: 1, scope,

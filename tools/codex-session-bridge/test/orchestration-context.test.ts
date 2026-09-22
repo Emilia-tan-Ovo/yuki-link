@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -9,7 +9,10 @@ import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createHttpServer } from '../src/http.js';
+import { ChangesSource } from '../src/harness/changes-source.ts';
 import { Harness } from '../src/harness/harness.ts';
+import { MarkdownContextDocumentAdapter } from '../src/orchestration/document-adapter.ts';
+import { HarnessContextFactsSource } from '../src/orchestration/harness-context-source.ts';
 
 type Wire = Record<string, any>;
 
@@ -63,7 +66,7 @@ head: "${fixedPoint}"
 `, 'utf8');
 
   const session = { id: randomUUID(), cwd: repo, codex_thread_id: null, permissions: { sandbox_mode: 'read-only' } };
-  const run = { id: randomUUID(), session_id: session.id, created_at: new Date().toISOString(), model: 'fixture',
+  const run = { id: randomUUID(), session_id: session.id, created_at: '2000-01-01T00:00:00.000Z', model: 'fixture',
     reasoning: 'low', status: runStatus, config_source: 'fixture', timeout_ms: null, exit_code: runStatus === 'completed' ? 0 : null };
   let starts = 0;
   const source = { session: () => session, runs: () => [run], events: () => [], attribution: () => ({ state: 'matched' }),
@@ -83,6 +86,8 @@ head: "${fixedPoint}"
 
 test('public Context tools preserve evidence integrity and remain read-only', async t => {
   const f = await fixture(); t.after(f.close);
+  f.harness.checkedAt = '2000-01-01T00:00:00.000Z';
+  utimesSync(path.join(f.repo, '.local', 'workflow-state', 'ORCH-001.md'), new Date(0), new Date(0));
   writeFileSync(path.join(f.repo, 'subject.txt'), 'index version\n', 'utf8'); git(f.repo, 'add', 'subject.txt');
   writeFileSync(path.join(f.repo, 'subject.txt'), 'worktree version\n', 'utf8');
   writeFileSync(path.join(f.repo, 'untracked.txt'), 'untracked\n', 'utf8');
@@ -110,6 +115,13 @@ test('public Context tools preserve evidence integrity and remain read-only', as
     implementation.subject.identity.payload.worktree[0].content_id, 'index content is independent from worktree content');
   assert.equal(implementation.execution.coverage.global, false);
   assert.equal(implementation.execution.active[0].run_id, f.run.id);
+  assert.notEqual(implementation.execution.active[0].observed_at, f.run.created_at);
+  assert.equal(implementation.execution.active[0].created_at, f.run.created_at);
+  const runtimeSource = implementation.sources.find((value: Wire) => value.id === 'runtime');
+  const checkpointSource = implementation.sources.find((value: Wire) => value.id === 'checkpoint');
+  assert.ok(runtimeSource.observed_at);
+  assert.equal(runtimeSource.source_updated_at, '2000-01-01T00:00:00.000Z');
+  assert.equal(checkpointSource.source_updated_at, '1970-01-01T00:00:00.000Z');
   assert.equal(implementation.action_readiness.state, 'blocked');
   assert.ok(implementation.attention.unknown_side_effects.length > 0);
   assert.equal(implementation.retrieval.context_plan.status, 'observed');
@@ -118,6 +130,85 @@ test('public Context tools preserve evidence integrity and remain read-only', as
   assert.equal(readFileSync(path.join(f.root, 'runtime', 'harness', 'history.jsonl'), 'utf8'), beforeJournal);
   assert.equal(readFileSync(path.join(f.repo, '.local', 'workflow-state', 'ORCH-001.md'), 'utf8'), beforeCheckpoint);
   assert.equal(f.sideEffects(), 0);
+});
+
+test('current subject identity distinguishes index renames and rejects hidden index state', () => {
+  const repo = mkdtempSync(path.join(os.tmpdir(), 'orchestration-identity-'));
+  try {
+    git(repo, 'init'); git(repo, 'config', 'user.email', 'fixture@example.invalid'); git(repo, 'config', 'user.name', 'Fixture');
+    writeFileSync(path.join(repo, 'a.txt'), 'same\n', 'utf8');
+    writeFileSync(path.join(repo, 'b.txt'), 'same\n', 'utf8');
+    git(repo, 'add', '.'); git(repo, 'commit', '-m', 'base');
+    const source = new ChangesSource(), baseline = source.capture(repo, 'HEAD');
+
+    git(repo, 'mv', 'a.txt', 'dest.txt');
+    const first = source.currentIdentity(baseline);
+    git(repo, 'reset', '--hard', 'HEAD');
+    git(repo, 'mv', 'b.txt', 'dest.txt');
+    const second = source.currentIdentity(baseline);
+    assert.equal(first.completeness, 'complete');
+    assert.equal(second.completeness, 'complete');
+    assert.notEqual(first.payload.index_state.digest, second.payload.index_state.digest);
+    assert.notEqual(first.digest, second.digest, 'different staged rename sources are different subjects');
+
+    git(repo, 'reset', '--hard', 'HEAD');
+    git(repo, 'update-index', '--skip-worktree', 'a.txt');
+    writeFileSync(path.join(repo, 'a.txt'), 'hidden change\n', 'utf8');
+    const hidden = source.currentIdentity(baseline);
+    assert.equal(hidden.completeness, 'incomplete');
+    assert.equal(hidden.digest, null);
+    assert.ok(hidden.gaps.some(value => value.code === 'HIDDEN_INDEX_STATE'));
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test('every explicit runtime ref is materialized and observed at collection time', () => {
+  const lifecycleTime = '2000-01-01T00:00:00.000Z';
+  const harness = {
+    bindings: new Map(),
+    source: { runs: () => [] },
+    taskHistory: { currentStatus: () => [{
+      binding: { task_id: 'task-1' }, snapshot: { status: 'running', created_at: lifecycleTime,
+        started_at: lifecycleTime, finished_at: null }, source_state: 'observed',
+      current: { state: 'observed', observed_at: lifecycleTime },
+    }] },
+  };
+  const adapter = new HarnessContextFactsSource(harness as never) as Wire;
+  const workflow = { snapshot: { runtime_refs: [
+    { runtime_ref_id: 'owned-1', kind: 'owned-task', session_id: null, run_id: null, task_id: 'task-1', call_id: null },
+    { runtime_ref_id: 'codex-1', kind: 'codex-run', session_id: randomUUID(), run_id: randomUUID(), task_id: null, call_id: null },
+    { runtime_ref_id: 'sync-1', kind: 'sync-call', session_id: null, run_id: null, task_id: null, call_id: randomUUID() },
+  ] } };
+  const before = Date.now();
+  const execution = adapter.execution('ticket-1', workflow, 'runtime', new Date().toISOString());
+  assert.equal(execution.observed.length, 3);
+  assert.equal(execution.coverage.complete, false);
+  assert.equal(execution.observed.find((value: Wire) => value.runtime_ref_id === 'owned-1').classification, 'active');
+  assert.equal(execution.observed.find((value: Wire) => value.runtime_ref_id === 'codex-1').classification, 'unknown');
+  assert.equal(execution.observed.find((value: Wire) => value.runtime_ref_id === 'sync-1').classification, 'unknown');
+  assert.ok(execution.observed.every((value: Wire) => Date.parse(value.observed_at) >= before));
+  assert.equal(execution.observed.find((value: Wire) => value.runtime_ref_id === 'owned-1').created_at, lifecycleTime);
+});
+
+test('document adapter degrades incomplete contracts and preserves observation provenance', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'orchestration-documents-'));
+  try {
+    const adapter = new MarkdownContextDocumentAdapter();
+    writeFileSync(path.join(root, 'checkpoint.md'), '---\nschema_version: 1\n---\n', 'utf8');
+    assert.equal(adapter.read(root, 'checkpoint.md', 'checkpoint').status, 'malformed');
+
+    writeFileSync(path.join(root, 'notes.md'), '# Notes\n\n## Context Plan\n\n- **Core:** only-core\n', 'utf8');
+    assert.equal(adapter.read(root, 'notes.md', 'implementation-notes').status, 'malformed');
+
+    const effects = Array.from({ length: 100 }, (_, index) => `- effect-${index}: unknown`).join('\n');
+    writeFileSync(path.join(root, 'checkpoint.md'), `---\nschema_version: 1\nticket: ORCH-001\nphase: implementation\nworktree: ${root.replaceAll('\\', '/')}\nbranch: fixture\nfixed_point: fixed\nhead: head\n---\n\n# Side effects\n\n${effects}\n`, 'utf8');
+    const oldTime = new Date('2000-01-01T00:00:00.000Z');
+    utimesSync(path.join(root, 'checkpoint.md'), oldTime, oldTime);
+    const before = Date.now(), fact = adapter.read(root, 'checkpoint.md', 'checkpoint');
+    assert.equal(fact.status, 'observed');
+    assert.equal(fact.declarations.unknown_side_effects.length, 100);
+    assert.ok(Date.parse(fact.observed_at!) >= before);
+    assert.equal(fact.source_updated_at, oldTime.toISOString());
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('unsupported action and incomplete protected identity stay explicit', async t => {
@@ -173,6 +264,7 @@ test('stale and conflicting durable facts are preserved without choosing a winne
 test('document degradation and budget omissions remain explicit while safety facts survive', async t => {
   const f = await fixture('completed'); t.after(f.close);
   const notes = path.join(f.repo, 'docs', 'implementation-notes', 'ORCH-001.md');
+  const checkpoint = path.join(f.repo, '.local', 'workflow-state', 'ORCH-001.md');
   const many = Array.from({ length: 80 }, (_, index) => `${index}-${'x'.repeat(600)}`).join('；');
   writeFileSync(notes, `# Notes\n\n### Context Plan\n\n- **Core:** ${many}\n- **Related:** source spec\n- **Retrieval:** symbols\n- **Expansion triggers:** conflict\n`, 'utf8');
   let packet = (await f.client.callTool({ name: 'assemble_ticket_context', arguments: {
@@ -182,6 +274,14 @@ test('document degradation and budget omissions remain explicit while safety fac
   assert.ok(packet.attention.unknown_side_effects.length > 0, 'safety fact survives budget trimming');
   assert.ok(packet.budget.actual_bytes <= packet.budget.max_bytes
     || packet.integrity.omissions.some((value: Wire) => value.category === 'safety-core'));
+
+  const effects = Array.from({ length: 100 }, (_, index) => `- effect-${index}: unknown`).join('\n');
+  writeFileSync(checkpoint, readFileSync(checkpoint, 'utf8').replace('- external deployment: unknown', effects), 'utf8');
+  packet = (await f.client.callTool({ name: 'assemble_ticket_context', arguments: {
+    ticket_id: f.registration.ticket_id, requested_action: 'implementation', trigger: 'manual',
+  } })).structuredContent as Wire;
+  assert.equal(packet.attention.unknown_side_effects.length, 24);
+  assert.equal(packet.integrity.omissions.find((value: Wire) => value.category === 'unknown-side-effects').count, 76);
 
   writeFileSync(notes, '# Notes without a Context Plan\n', 'utf8');
   packet = (await f.client.callTool({ name: 'assemble_ticket_context', arguments: {
@@ -197,7 +297,6 @@ test('document degradation and budget omissions remain explicit while safety fac
   assert.equal(packet.retrieval.context_plan.status, 'missing');
   assert.ok(packet.retrieval.references.every((value: Wire) => value.status === 'reference-only'));
 
-  const checkpoint = path.join(f.repo, '.local', 'workflow-state', 'ORCH-001.md');
   writeFileSync(checkpoint, readFileSync(checkpoint, 'utf8').replace('schema_version: 1', 'schema_version: 2'), 'utf8');
   packet = (await f.client.callTool({ name: 'assemble_ticket_context', arguments: {
     ticket_id: f.registration.ticket_id, requested_action: 'implementation', trigger: 'manual',

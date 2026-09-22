@@ -14,6 +14,7 @@ export interface SourceFact {
   revision: string | number | null;
   digest: string | null;
   observed_at: string | null;
+  source_updated_at: string | null;
   state: 'observed' | 'missing' | 'malformed' | 'unsupported-version' | 'reference-only' | 'unavailable';
 }
 
@@ -23,6 +24,7 @@ export interface DocumentFact {
   location: string;
   digest: string | null;
   observed_at: string | null;
+  source_updated_at: string | null;
   fields: Record<string, unknown>;
   context_plan: { core: string[]; related: string[]; retrieval: string[]; expansion_triggers: string[] } | null;
   declarations: { unknown_side_effects: string[]; next_action: string[] };
