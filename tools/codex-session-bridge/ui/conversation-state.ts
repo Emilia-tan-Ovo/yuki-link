@@ -3,7 +3,7 @@ import type { ConversationPage } from '../src/harness/presentation-model.ts';
 export function mergePage(current: ConversationPage, next: ConversationPage, direction: 'before' | 'after'): ConversationPage {
   if (current.id !== next.id) return current;
   const items = [...new Map([...current.items, ...next.items].map(item => [item.id, item])).values()].sort((a, b) => a.cursor - b.cursor);
-  return { ...current, items, page: { first_cursor: items[0]?.cursor ?? null, last_cursor: items.at(-1)?.cursor ?? null,
+  return { ...current, usage: next.usage, items, page: { first_cursor: items[0]?.cursor ?? null, last_cursor: items.at(-1)?.cursor ?? null,
     high_water_cursor: Math.max(current.page.high_water_cursor, next.page.high_water_cursor),
     has_older: direction === 'before' ? next.page.has_older : current.page.has_older,
     has_newer: direction === 'after' ? next.page.has_newer : current.page.has_newer } };

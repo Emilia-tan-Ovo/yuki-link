@@ -3,7 +3,7 @@ import { HarnessError } from './model.ts';
 import type { RecordEntry } from './model.ts';
 import type { PageQuery } from './conversations.ts';
 import { protectedCopy } from './content-policy.ts';
-import type { ConversationItem, ConversationPage, Participant, OverviewDto, TicketDto, WorkflowDto, SourceRef, AuxiliaryMetadata } from './presentation-model.ts';
+import type { ConversationItem, ConversationPage, ConversationUsage, Participant, OverviewDto, TicketDto, WorkflowDto, SourceRef, AuxiliaryMetadata } from './presentation-model.ts';
 
 const object = (v: unknown): Record<string, unknown> => v !== null && typeof v === 'object' ? v as Record<string, unknown> : {};
 const text = (v: unknown, fallback = '') => typeof v === 'string' ? v : fallback;
@@ -24,7 +24,7 @@ function executionIssues(status: string, payload: Record<string, unknown>): stri
 }
 
 // Only this mapper knows the currently persisted source format. Unknown facts remain visible.
-export function projectRecord(record: RecordEntry): ConversationItem {
+export function projectRecord(record: RecordEntry, runModel?: string): ConversationItem {
   const protectedRecord = protectedCopy(record), safe = protectedRecord.value, d = safe.data;
   const sourceRefs: SourceRef[] = [{ kind: 'record', id: safe.event_id }, { kind: 'source', id: safe.source_id }];
   const base: Pick<ConversationItem, 'id' | 'timestamp' | 'cursor' | 'participant' | 'sourceRefs' | 'integrity' | 'rawEvidence' | 'auxiliary'> = { id: safe.event_id, timestamp: safe.observed_at, cursor: safe.cursor, participant: system,
@@ -110,7 +110,8 @@ export function projectRecord(record: RecordEntry): ConversationItem {
         return event('lifecycle', '已恢复历史观察', '保留记录与来源缺口；未自动续跑。');
       }
       if (e.kind === 'codex') {
-        base.participant = { id: 'engineer:' + e.session_id, role: 'engineer', label: '工程 Agent', provider: 'Codex' };
+        base.participant = { id: 'engineer:' + e.session_id, role: 'engineer', label: 'Sylvia', provider: 'Codex',
+          ...(runModel ? { model: runModel } : {}) };
         if (item.type === 'agent_message' && typeof item.text === 'string') return { ...base, kind: 'message', content: { text: item.text } };
         if (item.type === 'command_execution' || item.type === 'mcp_tool_call') {
           const category = item.type === 'command_execution' ? 'command' : 'tool';
@@ -158,7 +159,28 @@ export class Presentation {
     const ticketId = ticket?.id ?? h.conversations.conversations.get(id)?.ticket_id;
     if (!ticketId) throw new HarnessError('CONVERSATION_NOT_FOUND');
     const page = h.conversations.page(id, query);
-    return { id, ticket_id: ticketId, items: page.records.map(projectRecord), page: {
+    const modelByRun = new Map<string, string>();
+    for (const sessionId of new Set(page.records.flatMap(record => record.data.kind === 'event' ? [record.data.event.session_id] : []))) {
+      try { for (const run of h.source.runs(sessionId)) modelByRun.set(run.id, run.model); } catch { /* Persisted history remains readable while its source is offline. */ }
+    }
+    const usageByRun = new Map<string, Omit<ConversationUsage, 'total_tokens'>>();
+    for (const record of h.journal.records) {
+      if (record.data.kind !== 'event' || record.data.event.conversation_id !== id || record.data.event.kind !== 'codex'
+        || !record.data.event.run_id) continue;
+      const payload = object(record.data.event.payload);
+      if (payload.type !== 'turn.completed') continue;
+      const usage = object(payload.usage);
+      const tokens = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+      usageByRun.set(record.data.event.run_id, { input_tokens: tokens(usage.input_tokens), output_tokens: tokens(usage.output_tokens),
+        cached_input_tokens: tokens(usage.cached_input_tokens) });
+    }
+    const usage = [...usageByRun.values()].reduce<ConversationUsage>((sum, turn) => ({
+      total_tokens: sum.total_tokens + turn.input_tokens + turn.output_tokens,
+      input_tokens: sum.input_tokens + turn.input_tokens, output_tokens: sum.output_tokens + turn.output_tokens,
+      cached_input_tokens: sum.cached_input_tokens + turn.cached_input_tokens,
+    }), { total_tokens: 0, input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 });
+    return { id, ticket_id: ticketId, items: page.records.map(record => projectRecord(record,
+      record.data.kind === 'event' && record.data.event.run_id ? modelByRun.get(record.data.event.run_id) : undefined)), usage, page: {
       first_cursor: page.first_cursor, last_cursor: page.last_cursor, high_water_cursor: page.high_water_cursor,
       has_older: page.has_older, has_newer: page.has_newer } };
   }

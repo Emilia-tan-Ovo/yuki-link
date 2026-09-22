@@ -19,6 +19,7 @@ export function Conversation({ id, initial, relation, refresh }: { id: string; i
   const rows = useMemo(() => groupConversation(page?.items ?? [], previousRows.current), [page]);
   const [openMembers, setOpenMembers] = useState<Set<string>>(() => new Set());
   const [revealIds, setRevealIds] = useState<Set<string>>(() => new Set());
+  const tokens = (value: number) => value.toLocaleString();
   current.current = page;
   async function load(direction: 'before' | 'after') {
     if (loading.current) return;
@@ -60,6 +61,9 @@ export function Conversation({ id, initial, relation, refresh }: { id: string; i
       {relation.kind !== 'main' && <div className="context-strip"><span>Main 的独立子会话</span><Badge>{label(relation.isolation ?? 'unknown')}</Badge>
         <span>Participant：{relation.participant ?? '未记录'}</span>{relation.review_id && <span>Review：{relation.review_id}</span>}
         {relation.original_review_id && <span>原 Review：{relation.original_review_id}</span>}{relation.finding_refs.length > 0 && <span>Finding：{relation.finding_refs.join('、')}</span>}</div>}
+      {page && <div className="conversation-usage" aria-label="Conversation Token 统计"><span>Conversation Token</span>
+        <span>总计 {tokens(page.usage.total_tokens)}</span><span>输入 {tokens(page.usage.input_tokens)}</span>
+        <span>输出 {tokens(page.usage.output_tokens)}</span><span>缓存命中 {tokens(page.usage.cached_input_tokens)}</span></div>}
       {page?.page.has_older && <div className="history-loader"><button className="text-button" disabled={busy} onClick={() => void load('before')}><History size={16} />{busy ? '正在读取…' : '加载更早的记录'}</button></div>}
       {error && <div className="notice warning" role="alert">{error}<button className="text-button" onClick={() => void load('after')}>重试</button></div>}
       {!page && !error && <div className="empty-state">正在读取持久化历史…</div>}

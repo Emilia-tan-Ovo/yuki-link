@@ -9,13 +9,16 @@
 .conversation-tabs .tabs > button { flex: 0 0 auto; white-space: nowrap; min-height: 40px; padding: 8px 12px; border-bottom: 2px solid transparent; }
 .conversation-tabs .tabs > button[data-state='active'] { border-bottom-color: var(--accent); }
 .conversation-history { padding-top: 18px; padding-bottom: 24px; }
+.conversation-usage { display: flex; flex-wrap: wrap; gap: 5px 14px; margin: 0 0 18px var(--conversation-reading-inset); color: var(--subtle); font-size: 11px; }
+.conversation-usage > span:first-child { color: var(--muted); font-weight: 500; }
 .conversation-scroll { overflow-anchor: none; }
 .conversation-item { margin-bottom: 25px; }
 .conversation-item .message, .conversation-item .timeline-event, .conversation-item .tool { margin-bottom: 0; }
 .conversation-item .advanced { margin-top: 9px; margin-bottom: 0; border-top: 0; }
 .conversation-item .advanced > button { font-size: 11px; min-height: 24px; opacity: .75; }
 .conversation-item .advanced > button:hover, .conversation-item .advanced > button:focus-visible { opacity: 1; }
-.kind-tool > .tool { margin-left: 49px; }
+.kind-tool > .tool { margin-left: var(--conversation-reading-inset); }
+.conversation-item > .auxiliary-member { margin-left: var(--conversation-reading-inset); }
 .timeline-event { align-items: flex-start; }
 .timeline-event p { font-size: 13px; line-height: 1.8; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 5px; }
 .timeline-event .event-tail { max-width: 35%; overflow-wrap: anywhere; white-space: normal; }
@@ -30,8 +33,8 @@
 .prose pre { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; margin: 16px 0; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
 .raw-content pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 460px; overflow: auto; }
 .tool-content pre, .tool-content code { white-space: pre-wrap; overflow-wrap: anywhere; }
-.integrity-note { display: flex; gap: 6px; margin: 10px 0 0 49px; }
-.auxiliary-group { margin: 10px 0 18px 49px; border: 1px solid var(--border-soft); border-radius: 8px; min-width: 0; }
+.integrity-note { display: flex; gap: 6px; margin: 10px 0 0 var(--conversation-reading-inset); }
+.auxiliary-group { margin: 10px 0 18px var(--conversation-reading-inset); border: 1px solid var(--border-soft); border-radius: 8px; min-width: 0; }
 .auxiliary-group-trigger, .auxiliary-member-trigger { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 12px; text-align: left; color: var(--muted); font-size: 12px; flex-wrap: wrap; }
 .auxiliary-group-trigger strong { color: var(--text); font-weight: 500; }
 .auxiliary-group-trigger > .chevron { margin-left: auto; }
@@ -43,6 +46,7 @@
 .auxiliary-member-trigger { padding-inline: 2px; overflow-wrap: anywhere; }
 .auxiliary-member-trigger time { font-size: 10px; color: var(--subtle); }
 .auxiliary-members .conversation-item { margin: 0; animation: none; }
+.auxiliary-members .conversation-item > .auxiliary-member { margin-left: 0; }
 .auxiliary-record-content { padding-bottom: 12px; }
 .auxiliary-record-content .tool, .auxiliary-record-content .advanced, .auxiliary-record-content .timeline-event, .auxiliary-record-content .integrity-note { margin-left: 0; }
 .context-strip { overflow-wrap: anywhere; }
@@ -73,7 +77,7 @@
 .diff-render .diff { table-layout: fixed; width: 100%; }.diff-render .diff-code { overflow: hidden; overflow-wrap: anywhere; white-space: pre-wrap; word-break: break-word; }
 @keyframes character-reveal { to { opacity: 1; } }
 @media (max-width: 760px) { .live-ticket-heading { padding: 10px 20px 6px; }.live-ticket-heading h1 { font-size: 18px; }.conversation-tabs { padding: 0 20px; }.overview-page > h1 { font-size: 26px; } }
-@media (max-width: 480px) { .auxiliary-group { margin-left: 0; }.auxiliary-group-trigger, .auxiliary-member-trigger { min-height: 44px; } }
-@media (max-width: 480px) { .kind-tool > .tool, .integrity-note { margin-left: 0; }.message-meta time { display: none; }.conversation-tabs .tabs > button { padding-inline: 9px; }.overview-tickets { grid-template-columns: 1fr; } }
+@media (max-width: 480px) { .auxiliary-group-trigger, .auxiliary-member-trigger { min-height: 44px; } }
+@media (max-width: 480px) { .message-meta time { display: none; }.conversation-tabs .tabs > button { padding-inline: 9px; }.overview-tickets { grid-template-columns: 1fr; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   .prose-reveal .reveal-character { opacity: 1 !important; } }
