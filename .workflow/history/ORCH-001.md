@@ -2,13 +2,13 @@
 
 > 冻结历史摘要，不是动态 runtime source of truth。本机 raw 位置不保证在 fresh clone 可用；available 只表示观察时本机文件存在，不代表内容有效或验收通过。
 
-- 观察时间：2026-09-22T07:59:49.711Z
+- 观察时间：2026-09-22T09:06:23.965Z
 - Ticket / Issue：ORCH-001 / GitHub \#90
-- 来源：docs/implementation-notes/ORCH-001.md；.local/workflow-state/ORCH-001-review.md；.local/workflow-state/ORCH-001-focused-review.md；.local/workflow-state/ORCH-001-acceptance.md；.local/workflow-state/ORCH-001.md
+- 来源：docs/implementation-notes/ORCH-001.md；.local/workflow-state/ORCH-001-review.md；.local/workflow-state/ORCH-001-focused-review.md；.local/workflow-state/ORCH-001-acceptance.md；.local/workflow-state/ORCH-001.md；https://github.com/Emilia-tan-Ovo/yuki-link/pull/96
 - worktree：C:/Users/KQ\_Sh/Desktop/yuki-link/.local/worktrees/orch-001
 - branch：codex/orch-001-context-resume
 - fixed point：c0098c76675dc5cd4fc8c7170ec09d6ad113f26a
-- HEAD：a1b828f2eca36689c97071867fd61cbee2368c29
+- HEAD：b6f56d747b422691fdeb94b21d215b6cec44c7ad
 
 ## 过程与结果
 
@@ -64,9 +64,9 @@
 
 ## PR
 
-- 状态：pending
-- 摘要：当前尚未 push / 创建 PR；closeout 完成后创建并关联 GitHub \#90。
-- 证据来源：unknown / 尚无来源
+- 状态：recorded
+- 摘要：PR \#96 已创建并保持 OPEN；base codex/codex-session-bridge，head codex/orch-001-context-resume，创建时 head b6f56d747b422691fdeb94b21d215b6cec44c7ad，GitHub 报告 mergeable=MERGEABLE。PR body 含 Closes \#90；尚未 merge。
+- 证据来源：https://github.com/Emilia-tan-Ovo/yuki-link/pull/96
 
 ## Merge
 
@@ -78,20 +78,20 @@
 
 - implementation-notes：available
   - 本机位置：docs/implementation-notes/ORCH-001.md
-  - 观察时间：2026-09-22T07:59:49.711Z；适用内容 / 来源身份：sha256:9dd56415c4d5b2ef4f875d258dd55ab9c079adeb172e9359da0fe915c17a241f
+  - 观察时间：2026-09-22T09:06:23.965Z；适用内容 / 来源身份：sha256:9dd56415c4d5b2ef4f875d258dd55ab9c079adeb172e9359da0fe915c17a241f
 
 - checkpoint：available
   - 本机位置：.local/workflow-state/ORCH-001.md
-  - 观察时间：2026-09-22T07:59:49.711Z；适用内容 / 来源身份：sha256:22be4e3c9186b23f9dfb763fe02838f7a34d35fb89190950521c03f3f752a689
+  - 观察时间：2026-09-22T09:06:23.965Z；适用内容 / 来源身份：sha256:22be4e3c9186b23f9dfb763fe02838f7a34d35fb89190950521c03f3f752a689
 
 - primary-review：available
   - 本机位置：.local/workflow-state/ORCH-001-review.md
-  - 观察时间：2026-09-22T07:59:49.711Z；适用内容 / 来源身份：sha256:4b6ed63b6e226d0fab478252516b0ee9e3a992fea0264de43645e43e10f7dc6b
+  - 观察时间：2026-09-22T09:06:23.965Z；适用内容 / 来源身份：sha256:4b6ed63b6e226d0fab478252516b0ee9e3a992fea0264de43645e43e10f7dc6b
 
 - focused-review：available
   - 本机位置：.local/workflow-state/ORCH-001-focused-review.md
-  - 观察时间：2026-09-22T07:59:49.711Z；适用内容 / 来源身份：sha256:a69778c090cb5d346280aefd5986d2e0664ce6ba76b11d2f2e3a61f440f22706
+  - 观察时间：2026-09-22T09:06:23.965Z；适用内容 / 来源身份：sha256:a69778c090cb5d346280aefd5986d2e0664ce6ba76b11d2f2e3a61f440f22706
 
 - acceptance：available
   - 本机位置：.local/workflow-state/ORCH-001-acceptance.md
-  - 观察时间：2026-09-22T07:59:49.711Z；适用内容 / 来源身份：sha256:03cda1ec3173f8fa58644dd77c5bb1db6547f3f0e81cfd026acd0ad633d90e49
+  - 观察时间：2026-09-22T09:06:23.965Z；适用内容 / 来源身份：sha256:03cda1ec3173f8fa58644dd77c5bb1db6547f3f0e81cfd026acd0ad633d90e49
