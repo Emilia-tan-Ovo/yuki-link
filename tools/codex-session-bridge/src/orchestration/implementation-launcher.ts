@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, realpathSync } from 'node:fs';
+import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { z } from 'zod';
 import { HarnessError } from '../harness/model.ts';
-import { executionContentIdentitySchema, implementationAuthorizationSchema,
-  implementationLaunchContractSchema, implementationPolicySnapshotSchema } from '../harness/execution-model.ts';
+import { executionContentIdentitySchema, implementationAuthorizationSchema, implementationAuthoritySourceIdentitySchema,
+  implementationExecutableIdentitySchema, implementationLaunchContractSchema,
+  implementationPolicySnapshotSchema } from '../harness/execution-model.ts';
 
 const text = z.string().min(1).max(512);
 const hash = z.string().regex(/^[0-9a-f]{64}$/);
@@ -33,39 +33,81 @@ const stable = (value: unknown): string => Array.isArray(value) ? '[' + value.ma
     .map(key => JSON.stringify(key) + ':' + stable((value as Record<string, unknown>)[key])).join(',') + '}'
     : JSON.stringify(value);
 const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+const isInside = (root: string, candidate: string) => {
+  const relation = path.relative(root, candidate);
+  return relation === '' || relation !== '..' && !relation.startsWith('..' + path.sep) && !path.isAbsolute(relation);
+};
 
 export function digestImplementationPolicy(value: unknown) {
   return sha256(stable(policyBodySchema.parse(value)));
 }
 
 export interface ImplementationLaunchAuthoritySource {
-  policy(): z.infer<typeof implementationPolicySnapshotSchema>;
-  authorization(ticketKey: string, authorizationRef: string): z.infer<typeof implementationAuthorizationSchema> | null;
+  snapshot(ticketKey: string, authorizationRef: string): {
+    policy: z.infer<typeof implementationPolicySnapshotSchema>;
+    authorization: z.infer<typeof implementationAuthorizationSchema> | null;
+    source: z.infer<typeof implementationAuthoritySourceIdentitySchema>;
+  };
 }
 
 export class FileImplementationLaunchAuthoritySource implements ImplementationLaunchAuthoritySource {
+  private readonly requestedFilename: string;
   private readonly filename: string;
-  constructor(filename: string) { this.filename = filename; }
+  constructor(filename: string, { forbiddenRoots = [] }: { forbiddenRoots?: string[] } = {}) {
+    if (!path.isAbsolute(filename)) throw new HarnessError('IMPLEMENTATION_AUTHORITY_UNTRUSTED', {
+      source: filename, reason: 'authority source path must be absolute',
+    });
+    this.requestedFilename = filename;
+    try {
+      this.filename = realpathSync(filename);
+      for (const root of forbiddenRoots.map(value => ({ lexical: path.resolve(value), canonical: realpathSync(value) }))) {
+        if (isInside(root.lexical, path.resolve(filename)) || isInside(root.canonical, this.filename)) {
+          throw new HarnessError('IMPLEMENTATION_AUTHORITY_UNTRUSTED', {
+            source: filename, canonical_source: this.filename, forbidden_root: root.canonical,
+          });
+        }
+      }
+    } catch (error) {
+      if (error instanceof HarnessError) throw error;
+      throw new HarnessError('IMPLEMENTATION_AUTHORITY_UNAVAILABLE', {
+        source: filename, reason: error instanceof Error ? error.message : 'authority source unavailable',
+      });
+    }
+  }
   private read() {
-    try { return authorizationFileSchema.parse(JSON.parse(readFileSync(this.filename, 'utf8'))); }
-    catch (error) { throw new HarnessError('IMPLEMENTATION_AUTHORITY_UNAVAILABLE', {
-      source: this.filename, reason: error instanceof Error ? error.message : 'authority source unavailable',
-    }); }
+    try {
+      const observed = realpathSync(this.requestedFilename);
+      if (path.relative(this.filename, observed) !== '') throw new HarnessError('IMPLEMENTATION_AUTHORITY_UNTRUSTED', {
+        source: this.requestedFilename, expected: this.filename, observed,
+      });
+      const bytes = readFileSync(this.filename);
+      return { document: authorizationFileSchema.parse(JSON.parse(bytes.toString('utf8'))), bytes };
+    }
+    catch (error) {
+      if (error instanceof HarnessError) throw error;
+      throw new HarnessError('IMPLEMENTATION_AUTHORITY_UNAVAILABLE', {
+        source: this.filename, reason: error instanceof Error ? error.message : 'authority source unavailable',
+      });
+    }
   }
-  policy() {
-    const body = this.read().active_policy;
-    return implementationPolicySnapshotSchema.parse({ ...body, digest: digestImplementationPolicy(body) });
-  }
-  authorization(ticketKey: string, authorizationRef: string) {
-    return this.read().authorizations.find(value => value.ticket_key === ticketKey
+  snapshot(ticketKey: string, authorizationRef: string) {
+    const { document, bytes } = this.read();
+    const body = document.active_policy;
+    const policy = implementationPolicySnapshotSchema.parse({ ...body, digest: digestImplementationPolicy(body) });
+    const authorization = document.authorizations.find(value => value.ticket_key === ticketKey
       && value.authorization_ref === authorizationRef && value.action === 'ticket-implementation'
       && value.endpoint === 'implementation' && value.contract_version === 1) ?? null;
+    const source = implementationAuthoritySourceIdentitySchema.parse({
+      schema_version: 1, kind: 'file', reference: this.requestedFilename,
+      canonical_path: this.filename, sha256: sha256(bytes),
+    });
+    return { policy, authorization, source };
   }
 }
 
 interface EnvironmentSource {
   observe(cwd: string, policy: z.infer<typeof implementationPolicySnapshotSchema>, notes: { path: string; sha256: string }): {
-    required_paths: string[]; required_executables: string[];
+    required_paths: string[]; required_executables: Array<z.infer<typeof implementationExecutableIdentitySchema>>;
   };
 }
 
@@ -96,14 +138,39 @@ export class HostImplementationEnvironmentSource implements EnvironmentSource {
     for (const required of policy.preflight.required_paths) {
       resolveInside(required);
     }
-    for (const executable of policy.preflight.required_executables) {
-      const locator = process.platform === 'win32' ? 'where.exe' : 'which';
-      const result = spawnSync(locator, [executable], { cwd: root, windowsHide: true, encoding: 'utf8', timeout: 5000 });
-      if (result.status !== 0) throw new HarnessError('IMPLEMENTATION_ENVIRONMENT_CONFLICT', {
-        source: executable, observed: 'not-found', reprepare_required: true,
+    const requiredExecutables = policy.preflight.required_executables.map(executable => {
+      if (path.isAbsolute(executable) || executable.includes('/') || executable.includes('\\')) {
+        throw new HarnessError('IMPLEMENTATION_ENVIRONMENT_CONFLICT', {
+          source: executable, observed: 'invalid-host-executable-name', reprepare_required: true,
+        });
+      }
+      const extensions = process.platform === 'win32' && path.extname(executable) === ''
+        ? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean) : [''];
+      let resolved: string | null = null;
+      for (const entry of (process.env.PATH ?? '').split(path.delimiter)) {
+        if (!entry || !path.isAbsolute(entry)) continue;
+        for (const extension of extensions) {
+          const candidate = path.join(entry, executable + extension.toLowerCase());
+          try {
+            if (!statSync(candidate).isFile()) continue;
+            if (process.platform !== 'win32') accessSync(candidate, constants.X_OK);
+            const canonical = realpathSync(candidate);
+            if (isInside(root, canonical)) continue;
+            resolved = canonical;
+            break;
+          } catch { /* Continue to the next trusted host PATH candidate. */ }
+        }
+        if (resolved) break;
+      }
+      if (!resolved) throw new HarnessError('IMPLEMENTATION_ENVIRONMENT_CONFLICT', {
+        source: executable, observed: 'trusted-host-executable-not-found', reprepare_required: true,
       });
-    }
-    return { required_paths: [...policy.preflight.required_paths], required_executables: [...policy.preflight.required_executables] };
+      return implementationExecutableIdentitySchema.parse({
+        schema_version: 1, name: executable, canonical_path: resolved, sha256: sha256(readFileSync(resolved)),
+        source: 'host-path', refresh: 'preflight-and-dispatch-guard',
+      });
+    });
+    return { required_paths: [...policy.preflight.required_paths], required_executables: requiredExecutables };
   }
 }
 
@@ -115,10 +182,10 @@ function same(left: unknown, right: unknown) { return stable(left) === stable(ri
 export class ImplementationLauncher {
   private readonly manager: any;
   private readonly harness: any;
-  private readonly authority: ImplementationLaunchAuthoritySource;
+  private readonly authority: ImplementationLaunchAuthoritySource | null;
   private readonly environment: EnvironmentSource;
   constructor({ manager, harness, authority, environment = new HostImplementationEnvironmentSource() }:
-    { manager: any; harness: any; authority: ImplementationLaunchAuthoritySource; environment?: EnvironmentSource }) {
+    { manager: any; harness: any; authority: ImplementationLaunchAuthoritySource | null; environment?: EnvironmentSource }) {
     this.manager = manager; this.harness = harness; this.authority = authority; this.environment = environment;
   }
 
@@ -131,8 +198,14 @@ export class ImplementationLauncher {
     const ticket = this.harness.tickets.get(input.ticket_id);
     if (!ticket) throw new HarnessError('TICKET_NOT_FOUND');
     const project = this.harness.projects.get(ticket.project_id);
-    const policy = this.authority.policy();
-    const expectedPolicy = frozen?.policy ?? input.expected.policy;
+    if (!this.authority) throw new HarnessError('IMPLEMENTATION_AUTHORITY_UNAVAILABLE', {
+      source: 'service configuration', reprepare_required: true,
+    });
+    const authority = this.authority.snapshot(ticket.key, input.authorization_ref);
+    const policy = authority.policy;
+    const expectedPolicy = frozen?.authority
+      ? { policy_id: frozen.authority.policy.policy_id, revision: frozen.authority.policy.revision,
+        digest: frozen.authority.policy.digest } : input.expected.policy;
     if (!same({ policy_id: policy.policy_id, revision: policy.revision, digest: policy.digest }, expectedPolicy)) {
       throw new HarnessError('IMPLEMENTATION_POLICY_CONFLICT', { expected: expectedPolicy,
         observed: { policy_id: policy.policy_id, revision: policy.revision, digest: policy.digest }, reprepare_required: true });
@@ -142,10 +215,15 @@ export class ImplementationLauncher {
       || policy.permission_selection !== 'owner-native-default') {
       throw new HarnessError('IMPLEMENTATION_POLICY_NOT_APPLICABLE', { policy_id: policy.policy_id, ticket_id: input.ticket_id });
     }
-    const authorization = this.authority.authorization(ticket.key, input.authorization_ref);
-    if (!authorization || frozen?.authorization && !same(authorization, frozen.authorization)) {
+    const authorization = authority.authorization;
+    if (!authorization || frozen?.authority?.authorization && !same(authorization, frozen.authority.authorization)) {
       throw new HarnessError('IMPLEMENTATION_NOT_AUTHORIZED', { ticket_id: input.ticket_id,
         authorization_ref: input.authorization_ref, reprepare_required: true });
+    }
+    if (frozen?.authority && !same(authority, frozen.authority)) {
+      throw new HarnessError('IMPLEMENTATION_AUTHORITY_CONFLICT', {
+        expected: frozen.authority.source, observed: authority.source, reprepare_required: true,
+      });
     }
     if (!same(input.expected.notes, authorization.notes)) throw new HarnessError('IMPLEMENTATION_NOTES_CONFLICT', {
       expected: input.expected.notes, observed: authorization.notes, reprepare_required: true,
@@ -162,6 +240,19 @@ export class ImplementationLauncher {
     if (!ticket.comparison_baseline || !ticket.expected_worktree) {
       throw new HarnessError('IMPLEMENTATION_GIT_IDENTITY_INCOMPLETE', { ticket_id: input.ticket_id, reprepare_required: true });
     }
+    if (authority.source.canonical_path) {
+      let targetRoot: string;
+      try { targetRoot = realpathSync(ticket.expected_worktree); }
+      catch { throw new HarnessError('IMPLEMENTATION_ENVIRONMENT_CONFLICT', {
+        source: ticket.expected_worktree, observed: 'worktree-unavailable', reprepare_required: true,
+      }); }
+      if (isInside(targetRoot, authority.source.canonical_path)) {
+        throw new HarnessError('IMPLEMENTATION_AUTHORITY_UNTRUSTED', {
+          source: authority.source.reference, canonical_source: authority.source.canonical_path,
+          forbidden_root: targetRoot, reprepare_required: true,
+        });
+      }
+    }
     const currentIdentity = this.harness.changes.facts.currentIdentity(ticket.comparison_baseline);
     const observedIdentity = executionContentIdentitySchema.parse({ scheme: currentIdentity.scheme,
       version: currentIdentity.version, scope: currentIdentity.scope, completeness: currentIdentity.completeness,
@@ -171,9 +262,15 @@ export class ImplementationLauncher {
         observed: observedIdentity, reprepare_required: true });
     }
     const environment = this.environment.observe(ticket.expected_worktree, policy, authorization.notes);
+    if (frozen?.environment && !same(environment, frozen.environment)) {
+      throw new HarnessError('IMPLEMENTATION_ENVIRONMENT_CONFLICT', {
+        expected: frozen.environment, observed: environment, reprepare_required: true,
+      });
+    }
     const references = [ticket.reference, ...(workflow.snapshot?.artifacts ?? []).map((value: any) => value.location)]
       .filter((value: unknown): value is string => typeof value === 'string' && value.length > 0);
-    return { ticket, policy, authorization, workflow, observedIdentity, environment, references: [...new Set(references)] };
+    return { ticket, policy, authorization, authority, workflow, observedIdentity, environment,
+      references: [...new Set(references)] };
   }
 
   private prompt(snapshot: ReturnType<ImplementationLauncher['current']>, input: z.infer<typeof startTicketImplementationInputSchema>) {
@@ -205,6 +302,7 @@ export class ImplementationLauncher {
     const prompt = this.prompt(snapshot, input);
     const protection = {
       caller_fingerprint: callerFingerprint, contract, policy: snapshot.policy, authorization: snapshot.authorization,
+      authority_source: snapshot.authority.source,
       prompt_context: { references: snapshot.references, current_delta: input.current_delta },
       preflight: { workflow_revision: snapshot.workflow.workflow_revision, subject_ref: input.expected.subject_ref,
         notes: snapshot.authorization.notes, environment: snapshot.environment },
@@ -223,8 +321,7 @@ export class ImplementationLauncher {
       await this.manager.startGuarded({ request_id: reserved.runtime.request_id, cwd: snapshot.ticket.expected_worktree,
         prompt, sender: 'Emilia', model: snapshot.policy.model, reasoning: snapshot.policy.reasoning, timeout_ms: undefined },
       (dispatch: any) => {
-        this.current(input, { policy: { policy_id: snapshot.policy.policy_id, revision: snapshot.policy.revision,
-          digest: snapshot.policy.digest }, authorization: snapshot.authorization });
+        this.current(input, { authority: snapshot.authority, environment: snapshot.environment });
         if (dispatch?.config?.model !== snapshot.policy.model || dispatch?.config?.reasoning !== snapshot.policy.reasoning) {
           throw new HarnessError('IMPLEMENTATION_MODEL_POLICY_CONFLICT', { expected: {
             model: snapshot.policy.model, reasoning: snapshot.policy.reasoning,

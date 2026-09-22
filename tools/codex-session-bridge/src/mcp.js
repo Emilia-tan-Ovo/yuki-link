@@ -102,11 +102,8 @@ export function createMcpServer(manager, computer) {
   register('manage-existing', 'start_ticket_implementation', 'Start or reconcile one versioned fresh Ticket implementation operation. The contract fixes delegated Review and Ticket Main destination, compares caller expectations with trusted current authority, inherits native Owner permissions, and returns the durable operation receipt.',
     startTicketImplementationInputSchema, input => {
       if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
-      if (!manager.implementationLaunchAuthority) throw new HarnessError('IMPLEMENTATION_AUTHORITY_UNAVAILABLE', {
-        source: 'service configuration', reprepare_required: true,
-      });
       return new ImplementationLauncher({ manager, harness: manager.harness,
-        authority: manager.implementationLaunchAuthority }).start(input);
+        authority: manager.implementationLaunchAuthority ?? null }).start(input);
     });
   register('new-side-effect', 'codex_start_session', 'Start a new managed Codex conversation, freeze its effective native Codex permissions, and asynchronously submit the first message. Omit permissions to use the effective local default at creation. Returns run_id without waiting for model completion.', {
     cwd: z.string().min(1).describe('Absolute existing working directory inside the administrator allowlist.'), permissions, ...message,

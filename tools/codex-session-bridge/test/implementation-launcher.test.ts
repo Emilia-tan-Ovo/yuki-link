@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,7 +10,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Harness } from '../src/harness/harness.ts';
 import { createHttpServer } from '../src/http.js';
-import { FileImplementationLaunchAuthoritySource, ImplementationLauncher,
+import { FileImplementationLaunchAuthoritySource, HostImplementationEnvironmentSource, ImplementationLauncher,
   digestImplementationPolicy } from '../src/orchestration/implementation-launcher.ts';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -54,21 +54,22 @@ function fixture(t: test.TestContext) {
     preflight: { required_paths: [], required_executables: [], require_recording: true, model_line: 'single' },
     authority_refs: ['service-config:test'],
   };
+  let sourceRevision = 1;
   // Launcher identities use SHA-256 bytes, not Git object IDs.
   const notesSha256 = createHash('sha256').update(notes).digest('hex');
   let available = true;
   const authority = {
-    policy() {
+    snapshot(ticketKey: string, ref: string) {
       if (!available) throw Object.assign(new Error('authority unavailable'), { code: 'IMPLEMENTATION_AUTHORITY_UNAVAILABLE' });
-      return { ...structuredClone(policyBody), digest: digestImplementationPolicy(policyBody) };
-    },
-    authorization(ticketKey: string, ref: string) {
-      if (!available) throw Object.assign(new Error('authority unavailable'), { code: 'IMPLEMENTATION_AUTHORITY_UNAVAILABLE' });
-      if (ticketKey !== 'ORCH-004' || ref !== 'owner:#94') return null;
-      return { schema_version: 1, authorization_id: 'authorization-94', ticket_key: 'ORCH-004',
+      const policy = { ...structuredClone(policyBody), digest: digestImplementationPolicy(policyBody) };
+      const authorization = ticketKey !== 'ORCH-004' || ref !== 'owner:#94' ? null : {
+        schema_version: 1 as const, authorization_id: 'authorization-94', ticket_key: 'ORCH-004',
         action: 'ticket-implementation', endpoint: 'implementation', contract_version: 1,
         authorization_ref: ref, notes: { path: 'docs/notes.md', sha256: notesSha256 },
         authority_refs: ['github:#94'] };
+      const sha = createHash('sha256').update(JSON.stringify({ policy, authorization, sourceRevision })).digest('hex');
+      return { policy, authorization, source: { schema_version: 1 as const, kind: 'adapter' as const,
+        reference: 'fixture-authority', canonical_path: null, sha256: sha } };
     },
   };
   let starts = 0;
@@ -110,13 +111,19 @@ function fixture(t: test.TestContext) {
     current_delta: [{ ref: 'fixed_point', value: fixedPoint }], ...overrides,
   });
   t.after(() => { harness.workflowHistory.current.clear(); harness.close(); rmSync(root, { recursive: true, force: true }); });
-  return { launcher, harness, authority, input, registration, manager, runtime, source, get starts() { return starts; },
+  return { launcher, harness, authority, input, registration, manager, runtime, source, root, repo,
+    get starts() { return starts; },
     setAvailable(value: boolean) { available = value; }, changePolicy() { policyBody = { ...policyBody, revision: policyBody.revision + 1 }; },
+    changeAuthoritySource() { sourceRevision++; },
+    requireExecutable(name: string) { policyBody = { ...policyBody, preflight: {
+      ...policyBody.preflight, required_executables: [name],
+    } }; },
     setBeforeGuard(value: () => void) { beforeGuard = value; } };
 }
 
 test('launches one fresh delegated implementation into Ticket Main and freezes actual permissions', async t => {
   const f = fixture(t);
+  f.requireExecutable('node');
   const result = await f.launcher.start(f.input());
   assert.equal(result.state, 'bound');
   assert.equal(result.contract.kind, 'ticket-implementation');
@@ -125,13 +132,19 @@ test('launches one fresh delegated implementation into Ticket Main and freezes a
   assert.equal(result.destination.kind, 'main');
   assert.equal(result.destination.conversation_id, f.registration.conversation_id);
   assert.equal(result.policy.revision, 7);
+  assert.equal(result.authority_source.reference, 'fixture-authority');
+  assert.equal(result.preflight.environment.required_executables[0].name, 'node');
+  assert.notEqual(path.dirname(result.preflight.environment.required_executables[0].canonical_path), realpathSync(f.repo));
+  assert.match(result.preflight.environment.required_executables[0].sha256, /^[0-9a-f]{64}$/);
   assert.equal(result.actual_permissions.sandbox_mode, 'danger-full-access');
   assert.equal(f.starts, 1);
 });
 
-test('file authority source refreshes versioned policy and Ticket authorization from trusted config', t => {
+test('file authority source returns one atomic versioned snapshot with canonical trusted identity', t => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'implementation-authority-'));
-  const file = path.join(root, 'authority.json');
+  const worktree = path.join(root, 'worktree'); mkdirSync(worktree);
+  const trusted = path.join(root, 'trusted'); mkdirSync(trusted);
+  const file = path.join(trusted, 'authority.json');
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const policy = { schema_version: 1, policy_id: 'implementation-policy', revision: 1, project_key: 'YCA',
     action: 'ticket-implementation', workflow_phase: 'implementation', supported_contract_versions: [1],
@@ -143,12 +156,67 @@ test('file authority source refreshes versioned policy and Ticket authorization 
     authorization_ref: 'owner:#94', notes: { path: 'docs/notes.md', sha256: 'c'.repeat(64) },
     authority_refs: ['github:#94'] };
   writeFileSync(file, JSON.stringify({ schema_version: 1, active_policy: policy, authorizations: [authorization] }), 'utf8');
-  const source = new FileImplementationLaunchAuthoritySource(file);
-  assert.equal(source.policy().digest, digestImplementationPolicy(policy));
-  assert.equal(source.authorization('ORCH-004', 'owner:#94')?.authorization_id, 'authorization-94');
+  const source = new FileImplementationLaunchAuthoritySource(file, { forbiddenRoots: [worktree] });
+  const first = source.snapshot('ORCH-004', 'owner:#94');
+  assert.equal(first.policy.digest, digestImplementationPolicy(policy));
+  assert.equal(first.authorization?.authorization_id, 'authorization-94');
+  assert.equal(first.source.kind, 'file');
+  assert.equal(first.source.canonical_path, realpathSync(file));
   writeFileSync(file, JSON.stringify({ schema_version: 1, active_policy: { ...policy, revision: 2 },
-    authorizations: [authorization] }), 'utf8');
-  assert.equal(source.policy().revision, 2, 'new requests observe the currently activated immutable snapshot');
+    authorizations: [{ ...authorization, authorization_id: 'authorization-94-revision-2' }] }), 'utf8');
+  const second = source.snapshot('ORCH-004', 'owner:#94');
+  assert.equal(second.policy.revision, 2, 'new requests observe the currently activated immutable snapshot');
+  assert.equal(second.authorization?.authorization_id, 'authorization-94-revision-2',
+    'policy and authorization come from the same file read');
+  assert.notEqual(second.source.sha256, first.source.sha256);
+
+  const controlled = path.join(worktree, 'authority.json');
+  writeFileSync(controlled, JSON.stringify({ schema_version: 1, active_policy: policy, authorizations: [authorization] }), 'utf8');
+  assert.throws(() => new FileImplementationLaunchAuthoritySource(controlled, { forbiddenRoots: [worktree] }),
+    (error: any) => error.code === 'IMPLEMENTATION_AUTHORITY_UNTRUSTED');
+  const alias = path.join(root, 'authority-alias');
+  symlinkSync(worktree, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => new FileImplementationLaunchAuthoritySource(path.join(alias, 'authority.json'),
+    { forbiddenRoots: [worktree] }), (error: any) => error.code === 'IMPLEMENTATION_AUTHORITY_UNTRUSTED');
+  const controlledAlias = path.join(worktree, 'trusted-alias');
+  symlinkSync(trusted, controlledAlias, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => new FileImplementationLaunchAuthoritySource(path.join(controlledAlias, 'authority.json'),
+    { forbiddenRoots: [worktree] }), (error: any) => error.code === 'IMPLEMENTATION_AUTHORITY_UNTRUSTED');
+});
+
+test('host executable preflight ignores worktree locator and executable spoofs and freezes trusted identity', t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'implementation-host-preflight-'));
+  const notes = path.join(root, 'notes.md'); writeFileSync(notes, 'notes\n', 'utf8');
+  const marker = path.join(root, 'locator-executed');
+  const markerScript = path.join(root, 'marker.cjs');
+  writeFileSync(markerScript, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'executed')`, 'utf8');
+  const locator = path.join(root, process.platform === 'win32' ? 'where.exe' : 'which');
+  const executable = path.join(root, process.platform === 'win32' ? 'node.exe' : 'node');
+  const materialize = (destination: string) => {
+    try { linkSync(process.execPath, destination); } catch { copyFileSync(process.execPath, destination); }
+  };
+  materialize(locator); materialize(executable);
+  if (process.platform !== 'win32') { chmodSync(locator, 0o755); chmodSync(executable, 0o755); }
+  const priorPath = process.env.PATH;
+  const priorNodeOptions = process.env.NODE_OPTIONS;
+  process.env.PATH = `${root}${path.delimiter}${priorPath ?? ''}`;
+  process.env.NODE_OPTIONS = `--require=${markerScript}`;
+  t.after(() => {
+    if (priorPath === undefined) delete process.env.PATH; else process.env.PATH = priorPath;
+    if (priorNodeOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = priorNodeOptions;
+    rmSync(root, { recursive: true, force: true });
+  });
+  const policy: any = { preflight: { required_paths: [], required_executables: ['node'] } };
+  const observed = new HostImplementationEnvironmentSource().observe(root, policy, {
+    path: 'notes.md', sha256: createHash('sha256').update('notes\n').digest('hex'),
+  });
+  assert.equal(existsSync(marker), false, 'preflight must not execute a locator from the target worktree');
+  assert.equal(observed.required_executables.length, 1);
+  assert.equal(observed.required_executables[0].name, 'node');
+  assert.equal(observed.required_executables[0].source, 'host-path');
+  assert.match(observed.required_executables[0].sha256, /^[0-9a-f]{64}$/);
+  assert.notEqual(path.dirname(observed.required_executables[0].canonical_path), realpathSync(root),
+    'a worktree executable must not be accepted as the host dependency');
 });
 
 test('same request retries read-only before authority and recording preflight; changed payload conflicts', async t => {
@@ -178,6 +246,36 @@ test('post-await policy drift rejects dispatch without creating a runtime sessio
   f.setBeforeGuard(() => f.changePolicy());
   await assert.rejects(f.launcher.start(f.input()), (error: any) => error.code === 'IMPLEMENTATION_POLICY_CONFLICT');
   assert.equal(f.starts, 1);
+  const operation = f.harness.executionOperations.observations(f.registration.ticket_id)[0];
+  assert.equal(operation.state, 'failed');
+  assert.equal(operation.runtime.session_id, null);
+});
+
+test('post-await authority source replacement rejects the whole frozen snapshot', async t => {
+  const f = fixture(t);
+  f.setBeforeGuard(() => f.changeAuthoritySource());
+  await assert.rejects(f.launcher.start(f.input()),
+    (error: any) => error.code === 'IMPLEMENTATION_AUTHORITY_CONFLICT');
+  const operation = f.harness.executionOperations.observations(f.registration.ticket_id)[0];
+  assert.equal(operation.state, 'failed');
+  assert.equal(operation.runtime.session_id, null);
+});
+
+test('post-await executable resolution drift rejects dispatch', async t => {
+  const f = fixture(t);
+  f.requireExecutable('node');
+  const replacement = path.join(f.root, 'replacement-host'); mkdirSync(replacement);
+  const executable = path.join(replacement, process.platform === 'win32' ? 'node.exe' : 'node');
+  try { linkSync(process.execPath, executable); } catch { copyFileSync(process.execPath, executable); }
+  if (process.platform !== 'win32') chmodSync(executable, 0o755);
+  const originalPath = process.env.PATH;
+  f.setBeforeGuard(() => { process.env.PATH = `${replacement}${path.delimiter}${originalPath ?? ''}`; });
+  try {
+    await assert.rejects(f.launcher.start(f.input()),
+      (error: any) => error.code === 'IMPLEMENTATION_ENVIRONMENT_CONFLICT');
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;
+  }
   const operation = f.harness.executionOperations.observations(f.registration.ticket_id)[0];
   assert.equal(operation.state, 'failed');
   assert.equal(operation.runtime.session_id, null);
@@ -225,6 +323,7 @@ test('public MCP start_ticket_implementation exposes the protected high-level se
   assert.equal(receipt.contract.review_policy, 'delegated');
   assert.equal(receipt.destination.conversation_id, f.registration.conversation_id);
   assert.equal(f.starts, 1);
+  (f.manager as any).implementationLaunchAuthority = null;
   (f.harness.journal as any).failure = 'fixture recording failure';
   const retry = await client.callTool({ name: 'start_ticket_implementation', arguments: f.input({
     request_id: 'public-implementation-request',
@@ -233,10 +332,11 @@ test('public MCP start_ticket_implementation exposes the protected high-level se
   assert.equal((retry.structuredContent as any).operation_id, receipt.operation_id);
   assert.equal((retry.structuredContent as any).evidence_gap.state, 'recording-failed');
   assert.equal(f.starts, 1);
+  (f.harness.journal as any).failure = null;
   const rejected = await client.callTool({ name: 'start_ticket_implementation', arguments: f.input({
     request_id: 'new-request-during-recording-failure',
   }) });
   assert.equal(rejected.isError, true);
-  assert.equal((rejected.structuredContent as any).error.code, 'RECORDING_FAILED');
+  assert.equal((rejected.structuredContent as any).error.code, 'IMPLEMENTATION_AUTHORITY_UNAVAILABLE');
   assert.equal(f.starts, 1);
 });

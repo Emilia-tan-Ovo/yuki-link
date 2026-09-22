@@ -77,7 +77,9 @@ if (values.help) {
     store = new RuntimeStore(values.runtime);
     manager = new SessionManager({ store, catalog, executor: new CodexExecutor(values['codex-bin']), permissionResolver: new PermissionResolver(values['codex-bin']), allowedCwds: values['allow-cwd'] });
     manager.implementationLaunchAuthority = values['implementation-launch-authority']
-      ? new FileImplementationLaunchAuthoritySource(values['implementation-launch-authority']) : null;
+      ? new FileImplementationLaunchAuthoritySource(values['implementation-launch-authority'], {
+        forbiddenRoots: values['allow-cwd'],
+      }) : null;
     computer = new ComputerTools({ readRoots: [...values['allow-cwd'], ...(values['read-root'] ?? [])], writeRoots: values['allow-cwd'], runtime: values.runtime, controlRoots: values['control-root'], pwsh: values['pwsh-bin'] });
     manager.harness = createHarnessRuntime(manager, values['control-root'], computer.tasks);
     let server;

@@ -73,15 +73,32 @@ export const implementationAuthorizationSchema = z.object({
   authority_refs: z.array(text).min(1).max(32),
 }).strict();
 
+export const implementationAuthoritySourceIdentitySchema = z.object({
+  schema_version: z.literal(1), kind: z.enum(['file', 'adapter']), reference: text,
+  canonical_path: z.string().min(1).nullable(), sha256: hash,
+}).strict();
+
+export const implementationExecutableIdentitySchema = z.object({
+  schema_version: z.literal(1), name: text, canonical_path: z.string().min(1), sha256: hash,
+  source: z.literal('host-path'), refresh: z.literal('preflight-and-dispatch-guard'),
+}).strict();
+
+const implementationEnvironmentSnapshotSchema = z.union([
+  z.object({ required_paths: z.array(text).max(64), required_executables: z.array(text).max(64) }).strict(),
+  z.object({ required_paths: z.array(text).max(64),
+    required_executables: z.array(implementationExecutableIdentitySchema).max(64) }).strict(),
+]);
+
 const deltaSchema = z.object({ ref: text, value: z.string().max(2048).nullable() }).strict();
 export const implementationExecutionProtectionSchema = z.object({
   caller_fingerprint: hash, contract: implementationLaunchContractSchema,
   policy: implementationPolicySnapshotSchema, authorization: implementationAuthorizationSchema,
+  authority_source: implementationAuthoritySourceIdentitySchema.optional(),
   prompt_context: z.object({ references: z.array(text).min(1).max(64), current_delta: z.array(deltaSchema).max(32) }).strict(),
   preflight: z.object({
     workflow_revision: z.number().int().positive(), subject_ref: text,
     notes: z.object({ path: text, sha256: hash }).strict(),
-    environment: z.object({ required_paths: z.array(text).max(64), required_executables: z.array(text).max(64) }).strict(),
+    environment: implementationEnvironmentSnapshotSchema,
   }).strict(),
 }).strict();
 
