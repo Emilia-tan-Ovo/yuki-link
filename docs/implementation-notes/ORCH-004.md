@@ -40,3 +40,17 @@ Source Spec：https://github.com/Emilia-tan-Ovo/yuki-link/issues/89
 - **Related：** GitHub #89 的 Enforced Rules / high-level API / capability exposure / Testing Decisions；GitHub #91 与 `docs/implementation-notes/ORCH-002.md`；`tools/codex-session-bridge/src/permissions.js`、`tools/codex-session-bridge/src/harness/workflow-model.ts`、`tools/codex-session-bridge/src/orchestration/context-assembler.ts`、`tools/codex-session-bridge/src/orchestration/harness-context-source.ts`。Related 按需读取，不默认全文灌入。
 - **Retrieval：** 定向搜索 `startGuarded`、`runtimeRequestId`、`guardDispatch`、`markStarted`、`bind`、`reconcile`、`permissionSelectionFingerprint`、`authorizationValidator`、`action_readiness`、`MODEL_LINE_BUSY`、`RECORDING_OUTCOME_UNKNOWN`、`gateHarnessExecution`。
 - **Expansion triggers：** authority 激活/authorization source 无法确定、v1/v2 journal 兼容不清、caller retry 无法先于动态 preflight 判定、最终 guard 无法验证 policy/authorization、actual permission snapshot 无法进入 receipt、或 public seam 无法安全表达 unknown recovery 时，扩大最小必要调查；correctness 优先，但不扩产品范围。
+
+## Implementation Handoff
+
+- **来源：** GitHub #94、GitHub #89、本文 Owner-confirmed Implementation Notes；fixed point `bf149f9217201c52355dcfb8f23efcada4f1084f`。
+- **身份：** worktree `C:/Users/KQ_Sh/Desktop/yuki-link/.local/worktrees/orch-004`；branch `codex/orch-004-delegated-implementation-launcher`；实现内容 commit `a99183e2cd16ead264c9a27f3607e76cce645a9e`。该 commit 仅包含本文、launcher/schema/MCP/service-config 接线与直接测试共 7 个本票文件。
+- **范围：** 新增 public `start_ticket_implementation`；固定 `ticket-implementation / delegated / Main / fresh` contract；从显式 authority JSON source 读取 versioned policy 与 Ticket authorization；caller `expected` 仅 compare-and-reject；新增 `execution-protected-v2` durable snapshot/receipt 并保留 v1 回放；按 existing-request-first、new-request preflight、reserve、`startGuarded`、started、Main bind/reconcile 编排；省略 permissions 参数并在 receipt 记录实际 frozen snapshot。未扩入 Review/Acceptance launcher、Memory、Provider implementation、capability profile 或真实最终协作链验收。
+- **TDD 红灯：** `node --test test/implementation-launcher.test.ts` 首次退出码 1，原因为 `ERR_MODULE_NOT_FOUND`，证明新的高层 seam 尚不存在；随后最小实现推进到绿。
+- **定向测试：** `node --test test/implementation-launcher.test.ts`，退出码 0，7/7；覆盖固定 contract、authority refresh、expected/policy drift、same-request conflict/retry、permission snapshot、unknown bind restart recovery 与 public MCP gate。
+- **兼容回归：** `node --test test/orchestration-execution.test.ts`，退出码 0，12/12；`node --test test/harness-execution-gate.test.ts`，退出码 0，10/10。
+- **静态与入口验证：** `npm run typecheck`，退出码 0；`node src/main.js --help`，退出码 0，确认 `--implementation-launch-authority` 可解析并展示。
+- **未运行：** 未运行 full suite、真实 Codex/permission resolver、真实 authority 配置与最终协作链验收；依约交由 Emilia + YCA 后续执行。本 implementation session 未执行 Review。
+- **Review policy：** `delegated`；接收方 Emilia；primary Review 状态 `pending`，必须由 fresh reviewer 基于 fixed point、上述 commit、本文与测试证据执行。
+- **Finding / risks：** 当前没有 Review finding；由于 Review 尚未执行，不作“零 finding 已通过”声明。真实服务启用前需由运行层提供符合 schema 的绝对路径 authority JSON；缺失或失效时 launcher fail-closed。
+- **下一步：** Emilia 核对 handoff-only commit 与最终 HEAD 后更新 Harness/checkpoint，运行 full suite，并启动 fresh primary reviewer；不得复用本 implementation context。
