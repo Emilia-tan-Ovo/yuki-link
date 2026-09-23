@@ -4,7 +4,6 @@ import { publicError } from './errors.js';
 import { SANDBOX_MODE_VALUES, APPROVAL_POLICY_VALUES, APPROVAL_REVIEWER_VALUES } from './permissions.js';
 import { registrationSchema, attachSchema, HarnessError } from './harness/model.ts';
 import { gateHarnessExecution } from './harness/harness.ts';
-import { workflowRecordInputSchema } from './harness/workflow-model.ts';
 import { childAssociationSchema } from './harness/conversation-model.ts';
 import { ContextAssembler } from './orchestration/context-assembler.ts';
 import { HarnessContextFactsSource } from './orchestration/harness-context-source.ts';
@@ -76,7 +75,11 @@ export function createMcpServer(manager, computer) {
       return manager.harness.attach(input);
     });
   register('record-only', 'harness_record_workflow', 'Record a complete structured Workflow snapshot for an explicitly registered Ticket. This only records and checks cited evidence; it does not run Review, Acceptance, tests, Git writes or model work.',
-    workflowRecordInputSchema, input => {
+    // Accept raw fields here so the record layer can return bounded validation diagnostics
+    // through the public error envelope instead of an SDK-level schema error.
+    z.object({ ticket_id: z.unknown().optional(), request_id: z.unknown().optional(),
+      expected_revision: z.unknown().optional(), schema_version: z.unknown().optional(),
+      snapshot: z.unknown().optional() }).passthrough(), input => {
       if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
       return manager.harness.recordWorkflow(input);
     });
