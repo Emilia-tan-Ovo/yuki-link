@@ -10,6 +10,7 @@ import { ContextAssembler } from './orchestration/context-assembler.ts';
 import { HarnessContextFactsSource } from './orchestration/harness-context-source.ts';
 import { ImplementationLauncher, startTicketImplementationInputSchema } from './orchestration/implementation-launcher.ts';
 import { DEFAULT_MODEL, DEFAULT_REASONING } from './model-policy.js';
+import { ReviewLauncher, startTicketReviewInputSchema } from './orchestration/review-launcher.ts';
 
 export function createMcpServer(manager, computer) {
   const server = new McpServer({ name: 'yuki-computer-agent', version: '0.2.0' });
@@ -109,6 +110,12 @@ export function createMcpServer(manager, computer) {
       if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
       return new ImplementationLauncher({ manager, harness: manager.harness,
         authority: manager.implementationLaunchAuthority ?? null }).start(input);
+    });
+  register('manage-existing', 'start_ticket_review', 'Start or reconcile one versioned fresh Ticket Review. A durable Review child reservation precedes the model launch; the result identifies the child Conversation, session, run and recording state.',
+    startTicketReviewInputSchema, input => {
+      if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
+      return new ReviewLauncher({ manager, harness: manager.harness,
+        authority: manager.reviewLaunchAuthority ?? null }).start(input);
     });
   register('new-side-effect', 'codex_start_session', 'Start a new managed Codex conversation, freeze its effective native Codex permissions, and asynchronously submit the first message. Omit permissions to use the effective local default at creation. Returns run_id without waiting for model completion.', {
     cwd: z.string().min(1).describe('Absolute existing working directory inside the administrator allowlist.'), permissions, ...message,

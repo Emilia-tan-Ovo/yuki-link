@@ -7,6 +7,7 @@ import type { Binding, RecordEntry, Source, Ticket } from '../harness/model.ts';
 import { executionContentIdentitySchema, executionOperationSchema, executionReserveInputSchema } from '../harness/execution-model.ts';
 import type { ExecutionContentIdentity, ExecutionOperation, ExecutionReserveInput, RequestedExecutionDestination,
   ResolvedExecutionDestination } from '../harness/execution-model.ts';
+import type { IsolationAssessment } from '../harness/conversation-model.ts';
 
 type ChildRelation = Extract<RequestedExecutionDestination, { kind: 'child' }>['relation'];
 
@@ -57,6 +58,7 @@ interface ExecutionDependencies {
   existingChild?(ticketId: string, relation: ChildRelation): {
     conversation_id: string; parent_conversation_id: string; relation: ChildRelation; created_at: string;
   } | undefined;
+  assessChild?(sessionId: string, runId: string, conversationId: string): IsolationAssessment;
   authorizationValidator?: ExecutionAuthorizationValidator;
   onApplied?(record: RecordEntry): void;
 }
@@ -93,7 +95,7 @@ export class ExecutionOperations {
     this.latest.set(operation.operation_id, record);
     if (replaying && operation.state === 'dispatching') this.replayedDispatching.add(operation.operation_id);
     if (data.kind === 'execution_operation_bound') this.dependencies.bindings.set(data.binding.id, data.binding);
-    this.dependencies.onApplied?.(record);
+    if (!replaying) this.dependencies.onApplied?.(record);
   }
 
   private append(data: RecordEntry['data'], phase: string) {
@@ -126,6 +128,7 @@ export class ExecutionOperations {
         permission_selection: permissionSelectionFingerprint(input.launch.permissions ?? undefined) },
       authorization_boundary: input.authorization_boundary,
       ...('implementation' in input ? { implementation: input.implementation } : {}),
+      ...('review' in input ? { review: input.review } : {}),
     };
     return { intent: { ...intent, comparison: { schema_version: 1 as const,
       content_identity_sha256: comparisonDigest('content_identity', input.content_identity),
@@ -200,9 +203,10 @@ export class ExecutionOperations {
           reasons: [{ code: 'EXECUTION_RESERVED_NOT_STARTED', source: 'execution operation journal' }] } };
       })();
     const implementation = 'implementation' in input;
+    const review = 'review' in input;
     const operation = executionOperationSchema.parse({
-      schema_version: implementation ? 2 : 1, operation_id: randomUUID(), ticket_id: input.ticket_id, request_id: input.request_id,
-      fingerprint_version: implementation ? 'execution-protected-v2' : 'execution-protected-v1',
+      schema_version: review ? 3 : implementation ? 2 : 1, operation_id: randomUUID(), ticket_id: input.ticket_id, request_id: input.request_id,
+      fingerprint_version: review ? 'execution-protected-v3' : implementation ? 'execution-protected-v2' : 'execution-protected-v1',
       protected_fingerprint: fingerprint, protected_intent: intent,
       destination, state: 'reserved', revision: 1,
       runtime: { request_id: runtimeRequestId('00000000-0000-4000-8000-000000000000'), fingerprint: null,
@@ -236,6 +240,7 @@ export class ExecutionOperations {
     const effective = operation.state === 'dispatching' && this.replayedDispatching.has(operation.operation_id)
       ? 'reconciliation-required' : operation.state;
     const implementation = operation.schema_version === 2 ? operation.protected_intent.implementation : null;
+    const review = operation.schema_version === 3 ? operation.protected_intent.review : null;
     return { operation_id: operation.operation_id, ticket_id: operation.ticket_id, request_id: operation.request_id,
       protected_fingerprint: operation.protected_fingerprint, fingerprint_version: operation.fingerprint_version,
       state: operation.state, effective_state: effective, destination: structuredClone(operation.destination),
@@ -246,6 +251,11 @@ export class ExecutionOperations {
         ...(implementation.authority_source ? { authority_source: structuredClone(implementation.authority_source) } : {}),
         preflight: structuredClone(implementation.preflight),
         prompt_cost: implementation.prompt_context.cost ? structuredClone(implementation.prompt_context.cost) : null,
+        actual_permissions: operation.dispatch ? structuredClone(operation.dispatch.permissions) : null } : {}),
+      ...(review ? { caller_fingerprint: review.caller_fingerprint,
+        contract: structuredClone(review.contract), policy: structuredClone(review.policy),
+        authorization: structuredClone(review.authorization), authority_source: structuredClone(review.authority_source),
+        preflight: structuredClone(review.preflight),
         actual_permissions: operation.dispatch ? structuredClone(operation.dispatch.permissions) : null } : {}),
       latest_event_id: latest?.event_id ?? null, latest_cursor: latest?.cursor ?? null, deduplicated,
       recording: { state: this.journal.failure ? 'recording-failed' : 'recording', reason: this.journal.failure,
@@ -404,7 +414,12 @@ export class ExecutionOperations {
     const binding = { id: randomUUID(), ticket_id: current.ticket_id, conversation_id: conversationId,
       source_id: this.journal.sourceId, session_id: lookup.observation.session_id, scope: 'run',
       run_id: lookup.observation.run_id, attached_at: timestamp } as const;
+    const isolation = current.destination.kind === 'child'
+      ? this.dependencies.assessChild?.(binding.session_id, binding.run_id, conversationId) ?? null : null;
+    if (isolation?.state === 'mismatch') throw new HarnessError('ATTRIBUTION_CONFLICT', { isolation });
     const operation = executionOperationSchema.parse({ ...current, state: 'bound', revision: current.revision + 1,
+      destination: current.destination.kind === 'child' && isolation
+        ? { ...current.destination, isolation } : current.destination,
       binding_id: binding.id, runtime: { ...current.runtime, status: lookup.observation.status }, updated_at: timestamp });
     this.append({ kind: 'execution_operation_bound', previous_state: 'started', operation, binding }, 'bind');
     return this.receipt(operation, false);
