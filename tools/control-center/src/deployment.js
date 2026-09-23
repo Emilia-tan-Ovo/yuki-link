@@ -87,7 +87,10 @@ async function probe(node, cwd) {
 async function probeLauncherFlags(node, cwd) {
   const result = await run(node, [path.join(cwd, 'src/main.js'), '--help'], { cwd, timeout: 15_000, limit: 64 * 1024 });
   if (result.code !== 0) throw fail('DEPLOYMENT_LAUNCHER_PROBE_FAILED');
-  return { implementationLaunchAuthority: result.output.includes('--implementation-launch-authority ABSOLUTE_JSON_PATH') };
+  return {
+    implementationLaunchAuthority: result.output.includes('--implementation-launch-authority ABSOLUTE_JSON_PATH'),
+    reviewLaunchAuthority: result.output.includes('--review-launch-authority ABSOLUTE_JSON_PATH'),
+  };
 }
 
 export async function readDeployment(root, commit) {
@@ -118,9 +121,16 @@ export async function verifyDeployment(root, commit, node = process.execPath) {
   const version = await command(node, ['--version'], manifest.cwd, 'DEPLOYMENT_NODE_UNSUPPORTED');
   if (Number(/^v(\d+)\./.exec(version)?.[1]) !== manifest.nodeMajor) throw fail('DEPLOYMENT_NODE_CHANGED');
   if (JSON.stringify(await probe(node, manifest.cwd)) !== JSON.stringify(manifest.tools)) throw fail('DEPLOYMENT_PROBE_FAILED');
-  if (manifest.launcherFlags && JSON.stringify(await probeLauncherFlags(node, manifest.cwd)) !== JSON.stringify(manifest.launcherFlags))
-    throw fail('DEPLOYMENT_LAUNCHER_CHANGED');
-  return { ...manifest, launcherFlags: manifest.launcherFlags ?? { implementationLaunchAuthority: false } };
+  if (manifest.launcherFlags) {
+    const observed = await probeLauncherFlags(node, manifest.cwd);
+    for (const [flag, supported] of Object.entries(manifest.launcherFlags)) {
+      if (observed[flag] !== supported) throw fail('DEPLOYMENT_LAUNCHER_CHANGED');
+    }
+  }
+  return { ...manifest, launcherFlags: {
+    implementationLaunchAuthority: manifest.launcherFlags?.implementationLaunchAuthority === true,
+    reviewLaunchAuthority: manifest.launcherFlags?.reviewLaunchAuthority === true,
+  } };
 }
 
 function claimPreparation(root) {

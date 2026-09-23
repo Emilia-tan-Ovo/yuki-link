@@ -46,6 +46,12 @@ test('optional Harness port keeps legacy config valid and participates in local 
   writeFileSync(file, JSON.stringify({ ...config, yca: { ...config.yca,
     implementationLaunchAuthority: path.join(root, 'authority.json') } }), 'utf8');
   assert.equal(loadConfig(file).yca.implementationLaunchAuthority, path.join(root, 'authority.json'));
+  writeFileSync(file, JSON.stringify({ ...config, yca: { ...config.yca,
+    reviewLaunchAuthority: 'relative-review-authority.json' } }), 'utf8');
+  assert.throws(() => loadConfig(file), { code: 'ABSOLUTE_PATH_REQUIRED' });
+  writeFileSync(file, JSON.stringify({ ...config, yca: { ...config.yca,
+    reviewLaunchAuthority: path.join(root, 'review-authority.json') } }), 'utf8');
+  assert.equal(loadConfig(file).yca.reviewLaunchAuthority, path.join(root, 'review-authority.json'));
 });
 
 test('serialized repeated starts, dependency order, stop intent and manager restart', async t => {
