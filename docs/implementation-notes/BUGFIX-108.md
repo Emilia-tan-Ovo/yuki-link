@@ -38,3 +38,13 @@
 - Expansion triggers：若注入测试资源不能复用现有 UI root seam、服务器关闭顺序仍泄漏、或修复要求变动生产安全行为，扩大调查并将安全变动作为 blocker。
 
 设计决定均由现有 Ticket、代码与既有安全契约确定；无待 Owner 选择的实现方向。Ready for fresh implementation；本轮不执行实现。
+
+## Implementation Handoff（2026-09-23）
+
+- 来源：GitHub #108；本 Notes 的 Implementation Decisions；`docs/specs/yuki-harness-v0.md` 的测试与安全边界。
+- 身份：worktree `.local/worktrees/bugfix-108`，branch `codex/bugfix-108-harness-cookie-fixture`；fixed point `ba0995686d6939b0fbc917414994605f87aa3bb7`；开始 HEAD `e4d2c5eff09f9ea4e16140b4d48b5bfb9ab0f25f`。实现提交的精确 SHA 由 post-commit checkpoint 和交回结果定位。
+- 实现：仅改两个目标测试及新增 `test/fixtures/harness-ui.ts`。测试 UI helper 在临时目录创建合法 index、manifest 与 allowlisted asset，并通过既有 `uiRoot` 注入；首页先确认 200 和完整 `yuki_harness` cookie 属性。两个 fixture 的初始化失败和正常关闭共用幂等清理，先关 client/listener/Harness，后移除临时目录；局部失败注入回归验证服务和目录释放。
+- 红灯：无 `dist/harness-ui` 时，原定向测试在首页 cookie 读取处失败，进程因 fixture 初始化失败未清理而挂起，手动中止；修复前环境探测为无该目录。
+- 绿灯：在同一无 UI 构建产物的 worktree 中执行 `node --test test/harness-workflow.test.ts test/harness-conversations.test.ts`，exit 0，20/20 通过，包含两个新增生命周期回归和原有业务断言；`npm.cmd run typecheck` exit 0；`git diff --check` exit 0。完整 `npm test`、真实 SPA 构建与其 UI 测试未由本 implementation session 执行。
+- Review policy：delegated，由 Emilia 在 fresh session 启动 Review；本 session 未自审，Review 与 Acceptance 均 pending，无 finding 结论。
+- 范围与风险：生产 `src/harness/server.ts`、`static-assets.ts`、`tools/control-center` 均未修改。测试资源只证明 fixture 的 cookie/API 入口；真实 SPA 契约仍依赖上层后续验收。交接后由 Emilia 核对 commit、执行 fresh Review 与必要验收；本 session 不 push、不建 PR、不 merge。
