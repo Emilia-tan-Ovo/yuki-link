@@ -5,13 +5,14 @@ import { existsSync, mkdtempSync, mkdirSync, renameSync, rmSync } from 'node:fs'
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
+import { createServer } from 'node:http';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createHttpServer } from '../src/http.js';
 import { Harness } from '../src/harness/harness.ts';
 import { createHarnessServer } from '../src/harness/server.ts';
 import type { SourceEvent, SourceRun, SourceSession } from '../src/harness/model.ts';
-import { closeFixtureResources, createFixtureUi, fixtureCookie } from './fixtures/harness-ui.ts';
+import { closeFixtureResources, closeFixtureServer, createFixtureUi, fixtureCookie, listenFixtureServer } from './fixtures/harness-ui.ts';
 
 type Wire = Record<string, any>;
 const payload = (result: Record<string, unknown>) => result.structuredContent as Wire;
@@ -40,7 +41,8 @@ function workflow(reviewId: string, sessionId: string, runId: string): Wire {
 }
 
 async function fixture(options: { failAfterConnect?: (root: string, mcp: ReturnType<typeof createHttpServer>,
-  ui: ReturnType<typeof createHarnessServer>) => void } = {}) {
+  ui: ReturnType<typeof createHarnessServer>) => void; uiPort?: number;
+  beforeUiListen?: (root: string, mcp: ReturnType<typeof createHttpServer>, ui: ReturnType<typeof createHarnessServer>) => void } = {}) {
   const runtime = mkdtempSync(path.join(os.tmpdir(), 'harness-conversations-'));
   let harness: Harness | undefined;
   let mcp: ReturnType<typeof createHttpServer> | undefined;
@@ -81,8 +83,9 @@ async function fixture(options: { failAfterConnect?: (root: string, mcp: ReturnT
   harness = new Harness(runtime, source);
   const mcpServer = createHttpServer({ harness }); mcp = mcpServer;
   const uiServer = createHarnessServer(harness, undefined, { uiRoot }); ui = uiServer;
-  await new Promise<void>(resolve => mcpServer.listen(0, '127.0.0.1', resolve));
-  await new Promise<void>(resolve => uiServer.listen(0, '127.0.0.1', resolve));
+  await listenFixtureServer(mcpServer);
+  options.beforeUiListen?.(runtime, mcpServer, uiServer);
+  await listenFixtureServer(uiServer, options.uiPort);
   client = new Client({ name: 'conversation-fixture', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(mcpServer.address() as AddressInfo).port}/mcp`)));
   options.failAfterConnect?.(runtime, mcpServer, uiServer);
@@ -111,6 +114,21 @@ test('conversation fixture 初始化失败与重复关闭均释放服务和临�
   assert.equal(f.mcp.listening, false);
   assert.equal(f.ui.listening, false);
   assert.equal(existsSync(f.runtime), false);
+});
+
+test('conversation fixture UI 端口绑定失败时关闭已启动的 MCP 并删除临时目录', async () => {
+  const blocker = createServer();
+  await listenFixtureServer(blocker);
+  let opened: { root: string; mcp: ReturnType<typeof createHttpServer>; ui: ReturnType<typeof createHarnessServer> } | undefined;
+  try {
+    await assert.rejects(fixture({ uiPort: (blocker.address() as AddressInfo).port,
+      beforeUiListen: (root, mcp, ui) => { opened = { root, mcp, ui }; assert.equal(mcp.listening, true); },
+    }), (error: unknown) => (error as NodeJS.ErrnoException).code === 'EADDRINUSE');
+    assert.ok(opened);
+    assert.equal(opened.mcp.listening, false);
+    assert.equal(opened.ui.listening, false);
+    assert.equal(existsSync(opened.root), false);
+  } finally { await closeFixtureServer(blocker); }
 });
 
 test('公开入口把真实 Full Review 记录为独立子 Conversation，且不混入主历史', async t => {

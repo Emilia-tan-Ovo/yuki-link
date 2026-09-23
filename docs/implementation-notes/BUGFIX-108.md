@@ -48,3 +48,11 @@
 - 绿灯：在同一无 UI 构建产物的 worktree 中执行 `node --test test/harness-workflow.test.ts test/harness-conversations.test.ts`，exit 0，20/20 通过，包含两个新增生命周期回归和原有业务断言；`npm.cmd run typecheck` exit 0；`git diff --check` exit 0。完整 `npm test`、真实 SPA 构建与其 UI 测试未由本 implementation session 执行。
 - Review policy：delegated，由 Emilia 在 fresh session 启动 Review；本 session 未自审，Review 与 Acceptance 均 pending，无 finding 结论。
 - 范围与风险：生产 `src/harness/server.ts`、`static-assets.ts`、`tools/control-center` 均未修改。测试资源只证明 fixture 的 cookie/API 入口；真实 SPA 契约仍依赖上层后续验收。交接后由 Emilia 核对 commit、执行 fresh Review 与必要验收；本 session 不 push、不建 PR、不 merge。
+
+## Finding Fix Handoff（2026-09-23）
+
+- 来源：`.local/workflow-state/BUGFIX-108-review.md` 唯一 P2；修复基线 `a58a0afa66c133ba25ba7dc371a4cdab945528a6`。仅处理两个 fixture 的 `server.listen()` 绑定失败路径。
+- 修复：`test/fixtures/harness-ui.ts` 增加共用 `listenFixtureServer`，同时订阅 `listening` 与 `error`，成功、失败及同步抛错均确定性 settle 并移除监听器。两份 fixture 改用该 helper；绑定失败进入原有 `catch` 和幂等 `closeFixtureResources`，先关闭已启动服务，再删除临时目录。测试复用现有 close helper 关闭占位服务。
+- 回归：两份 fixture 分别用真实 HTTP server 占用 UI 端口，在 MCP 已启动后触发 `EADDRINUSE`；断言 fixture reject、MCP/UI 不再监听、临时根目录不存在。无超时判断。原有初始化失败与重复关闭测试继续通过。
+- 验证：`node --test --test-name-pattern='fixture .*端口绑定失败|fixture 初始化失败' test/harness-workflow.test.ts test/harness-conversations.test.ts`，4/4 pass；`npm.cmd run typecheck` exit 0；`git diff --check` exit 0。未运行完整 `npm test`。
+- 范围：仅 Notes、上述两个测试与现有 test helper；生产 server、static assets、Control Center、MCP schema 零修改。等待一次 fresh focused re-review 和上层 Acceptance；本次不 push、不建 PR、不 merge。

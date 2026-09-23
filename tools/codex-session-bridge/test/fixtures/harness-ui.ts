@@ -24,19 +24,34 @@ export function fixtureCookie(home: Response) {
   return header.split(';')[0];
 }
 
+export function listenFixtureServer(server: http.Server, port = 0) {
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      server.off('listening', onListening);
+      server.off('error', onError);
+    };
+    const onListening = () => { cleanup(); resolve(); };
+    const onError = (error: Error) => { cleanup(); reject(error); };
+    server.once('listening', onListening);
+    server.once('error', onError);
+    try { server.listen(port, '127.0.0.1'); }
+    catch (error) { cleanup(); reject(error); }
+  });
+}
+
 export async function closeFixtureResources(client: Client | undefined, mcp: http.Server | undefined,
   ui: http.Server | undefined, harness: Harness | undefined) {
   try { await client?.close(); }
   finally {
-    try { await closeServer(mcp); }
+    try { await closeFixtureServer(mcp); }
     finally {
-      try { await closeServer(ui); }
+      try { await closeFixtureServer(ui); }
       finally { harness?.close(); }
     }
   }
 }
 
-async function closeServer(server: http.Server | undefined) {
+export async function closeFixtureServer(server: http.Server | undefined) {
   if (!server?.listening) return;
   const closed = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   server.closeAllConnections();
