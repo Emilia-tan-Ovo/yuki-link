@@ -7,7 +7,7 @@ export function loadConfig(file) {
     if (typeof p !== 'string' || !path.isAbsolute(p)) throw fail('ABSOLUTE_PATH_REQUIRED');
   }
   const ports = [c.port, c.yca.port, c.yca.controlPort, ...(c.yca.harnessPort === undefined ? [] : [c.yca.harnessPort])];
-  for (const p of [c.yca.deploymentRoot, c.yca.implementationLaunchAuthority]) {
+  for (const p of [c.yca.deploymentRoot, c.yca.implementationLaunchAuthority, c.yca.reviewLaunchAuthority]) {
     if (p !== undefined && (typeof p !== 'string' || !path.isAbsolute(p))) throw fail('ABSOLUTE_PATH_REQUIRED');
   }
   if ([c.node, c.pwsh, c.codex, c.tunnel.bin].some(p => /\.(cmd|bat|ps1)$/i.test(p))) throw fail('NATIVE_EXECUTABLE_REQUIRED');
