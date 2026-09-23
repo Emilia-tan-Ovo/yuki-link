@@ -1,16 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
+import { createServer } from 'node:http';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createHttpServer } from '../src/http.js';
 import { Harness } from '../src/harness/harness.ts';
 import { createHarnessServer } from '../src/harness/server.ts';
 import type { SourceEvent, SourceRun, SourceSession } from '../src/harness/model.ts';
+import { closeFixtureResources, closeFixtureServer, createFixtureUi, fixtureCookie, listenFixtureServer } from './fixtures/harness-ui.ts';
 
 type Wire = Record<string, any>;
 const payload = (result: Record<string, unknown>) => result.structuredContent as Wire;
@@ -38,8 +40,23 @@ function workflow(reviewId: string, sessionId: string, runId: string): Wire {
   };
 }
 
-async function fixture() {
+async function fixture(options: { failAfterConnect?: (root: string, mcp: ReturnType<typeof createHttpServer>,
+  ui: ReturnType<typeof createHarnessServer>) => void; uiPort?: number;
+  beforeUiListen?: (root: string, mcp: ReturnType<typeof createHttpServer>, ui: ReturnType<typeof createHarnessServer>) => void } = {}) {
   const runtime = mkdtempSync(path.join(os.tmpdir(), 'harness-conversations-'));
+  let harness: Harness | undefined;
+  let mcp: ReturnType<typeof createHttpServer> | undefined;
+  let ui: ReturnType<typeof createHarnessServer> | undefined;
+  let client: Client | undefined;
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    try { await closeFixtureResources(client, mcp, ui, harness); }
+    finally { rmSync(runtime, { recursive: true, force: true }); }
+  };
+  try {
+  const uiRoot = createFixtureUi(runtime);
   const sessions = new Map<string, SourceSession>(), runs = new Map<string, SourceRun[]>(), events = new Map<string, SourceEvent[]>();
   const addExecution = (message: string, options: { thread?: boolean; priorRun?: boolean } = {}) => {
     const session: SourceSession = { id: randomUUID(), cwd: runtime,
@@ -63,21 +80,56 @@ async function fixture() {
   const source = { session: (id: string) => { const value = sessions.get(id); if (!value) throw new Error('session unavailable'); return value; },
     runs: (id: string) => runs.get(id) ?? [], events: (run: SourceRun) => events.get(run.id) ?? [],
     attribution: () => ({ state: 'unknown' }) };
-  const harness = new Harness(runtime, source);
-  const mcp = createHttpServer({ harness });
-  const ui = createHarnessServer(harness);
-  await new Promise<void>(resolve => mcp.listen(0, '127.0.0.1', resolve));
-  await new Promise<void>(resolve => ui.listen(0, '127.0.0.1', resolve));
-  const client = new Client({ name: 'conversation-fixture', version: '1' });
-  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(mcp.address() as AddressInfo).port}/mcp`)));
-  const base = `http://127.0.0.1:${(ui.address() as AddressInfo).port}`;
-  const home = await fetch(base), cookie = home.headers.get('set-cookie')!.split(';')[0];
-  return { runtime, source, session: first.session, run: first.run, addExecution, harness, client, mcp, ui, base, cookie,
+  harness = new Harness(runtime, source);
+  const mcpServer = createHttpServer({ harness }); mcp = mcpServer;
+  const uiServer = createHarnessServer(harness, undefined, { uiRoot }); ui = uiServer;
+  await listenFixtureServer(mcpServer);
+  options.beforeUiListen?.(runtime, mcpServer, uiServer);
+  await listenFixtureServer(uiServer, options.uiPort);
+  client = new Client({ name: 'conversation-fixture', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(mcpServer.address() as AddressInfo).port}/mcp`)));
+  options.failAfterConnect?.(runtime, mcpServer, uiServer);
+  const base = `http://127.0.0.1:${(uiServer.address() as AddressInfo).port}`;
+  const home = await fetch(base), cookie = fixtureCookie(home);
+  return { runtime, source, session: first.session, run: first.run, addExecution, harness, client, mcp: mcpServer, ui: uiServer, base, cookie,
     get: async (route: string) => { const response = await fetch(base + route, { headers: { cookie } });
       assert.equal(response.status, 200); return response.json() as Promise<Wire>; },
-    close: async () => { await client.close(); mcp.close(); mcp.closeAllConnections(); ui.close(); ui.closeAllConnections();
-      harness.close(); rmSync(runtime, { recursive: true, force: true }); } };
+    close };
+  } catch (error) { await close(); throw error; }
 }
+
+test('conversation fixture 初始化失败与重复关闭均释放服务和临时目录', async () => {
+  let opened: { root: string; mcp: ReturnType<typeof createHttpServer>; ui: ReturnType<typeof createHarnessServer> } | undefined;
+  await assert.rejects(fixture({ failAfterConnect: (root, mcp, ui) => {
+    opened = { root, mcp, ui }; throw new Error('injected bootstrap failure');
+  } }), /injected bootstrap failure/);
+  assert.ok(opened);
+  assert.equal(opened.mcp.listening, false);
+  assert.equal(opened.ui.listening, false);
+  assert.equal(existsSync(opened.root), false);
+
+  const f = await fixture();
+  assert.match(f.cookie, /^yuki_harness=/);
+  await f.close(); await f.close();
+  assert.equal(f.mcp.listening, false);
+  assert.equal(f.ui.listening, false);
+  assert.equal(existsSync(f.runtime), false);
+});
+
+test('conversation fixture UI 端口绑定失败时关闭已启动的 MCP 并删除临时目录', async () => {
+  const blocker = createServer();
+  await listenFixtureServer(blocker);
+  let opened: { root: string; mcp: ReturnType<typeof createHttpServer>; ui: ReturnType<typeof createHarnessServer> } | undefined;
+  try {
+    await assert.rejects(fixture({ uiPort: (blocker.address() as AddressInfo).port,
+      beforeUiListen: (root, mcp, ui) => { opened = { root, mcp, ui }; assert.equal(mcp.listening, true); },
+    }), (error: unknown) => (error as NodeJS.ErrnoException).code === 'EADDRINUSE');
+    assert.ok(opened);
+    assert.equal(opened.mcp.listening, false);
+    assert.equal(opened.ui.listening, false);
+    assert.equal(existsSync(opened.root), false);
+  } finally { await closeFixtureServer(blocker); }
+});
 
 test('公开入口把真实 Full Review 记录为独立子 Conversation，且不混入主历史', async t => {
   const f = await fixture(); t.after(f.close);

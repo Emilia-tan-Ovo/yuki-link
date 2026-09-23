@@ -2,16 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
+import { createServer } from 'node:http';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createHttpServer } from '../src/http.js';
 import { Harness } from '../src/harness/harness.ts';
 import { createHarnessServer } from '../src/harness/server.ts';
 import { Presentation } from '../src/harness/presentation.ts';
+import { closeFixtureResources, closeFixtureServer, createFixtureUi, fixtureCookie, listenFixtureServer } from './fixtures/harness-ui.ts';
 
 type Wire = Record<string, any>;
 const payload = (result: Record<string, unknown>) => result.structuredContent as Wire;
@@ -31,10 +33,25 @@ function git(cwd: string, ...args: string[]) {
   return execFileSync('git', ['-c', 'core.fsmonitor=false', ...args], { cwd, encoding: 'utf8' }).trim();
 }
 
-async function fixture() {
+async function fixture(options: { failAfterConnect?: (root: string, mcp: ReturnType<typeof createHttpServer>,
+  ui: ReturnType<typeof createHarnessServer>) => void; uiPort?: number;
+  beforeUiListen?: (root: string, mcp: ReturnType<typeof createHttpServer>, ui: ReturnType<typeof createHarnessServer>) => void } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'harness-workflow-'));
+  let harness: Harness | undefined;
+  let mcp: ReturnType<typeof createHttpServer> | undefined;
+  let ui: ReturnType<typeof createHarnessServer> | undefined;
+  let client: Client | undefined;
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    try { await closeFixtureResources(client, mcp, ui, harness); }
+    finally { rmSync(root, { recursive: true, force: true }); }
+  };
+  try {
   const worktree = path.join(root, 'repo');
   const runtime = path.join(root, 'runtime');
+  const uiRoot = createFixtureUi(root);
   mkdirSync(worktree); mkdirSync(runtime);
   git(worktree, 'init', '-b', 'main');
   git(worktree, 'config', 'user.name', 'Fixture');
@@ -49,20 +66,55 @@ async function fixture() {
     session: () => { throw new Error('No Codex session'); }, runs: () => [], events: () => [],
     attribution: () => ({ state: 'unknown' }),
   };
-  const harness = new Harness(runtime, source, undefined, { git: () => 'git' });
-  const mcp = createHttpServer({ harness });
-  const ui = createHarnessServer(harness);
-  await new Promise<void>(resolve => mcp.listen(0, '127.0.0.1', resolve));
-  await new Promise<void>(resolve => ui.listen(0, '127.0.0.1', resolve));
-  const client = new Client({ name: 'workflow-fixture', version: '1' });
-  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(mcp.address() as AddressInfo).port}/mcp`)));
-  const home = await fetch(`http://127.0.0.1:${(ui.address() as AddressInfo).port}/`);
-  const cookie = home.headers.get('set-cookie')!.split(';')[0];
-  return { root, worktree, runtime, head, checkpoint, source, harness, client, mcp, ui, cookie,
-    base: `http://127.0.0.1:${(ui.address() as AddressInfo).port}`,
-    close: async () => { await client.close(); mcp.close(); mcp.closeAllConnections(); ui.close(); ui.closeAllConnections();
-      harness.close(); rmSync(root, { recursive: true, force: true }); } };
+  harness = new Harness(runtime, source, undefined, { git: () => 'git' });
+  const mcpServer = createHttpServer({ harness }); mcp = mcpServer;
+  const uiServer = createHarnessServer(harness, undefined, { uiRoot }); ui = uiServer;
+  await listenFixtureServer(mcpServer);
+  options.beforeUiListen?.(root, mcpServer, uiServer);
+  await listenFixtureServer(uiServer, options.uiPort);
+  client = new Client({ name: 'workflow-fixture', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(mcpServer.address() as AddressInfo).port}/mcp`)));
+  options.failAfterConnect?.(root, mcpServer, uiServer);
+  const home = await fetch(`http://127.0.0.1:${(uiServer.address() as AddressInfo).port}/`);
+  const cookie = fixtureCookie(home);
+  return { root, worktree, runtime, head, checkpoint, source, harness, client, mcp: mcpServer, ui: uiServer, cookie,
+    base: `http://127.0.0.1:${(uiServer.address() as AddressInfo).port}`,
+    close };
+  } catch (error) { await close(); throw error; }
 }
+
+test('workflow fixture 初始化失败与重复关闭均释放服务和临时目录', async () => {
+  let opened: { root: string; mcp: ReturnType<typeof createHttpServer>; ui: ReturnType<typeof createHarnessServer> } | undefined;
+  await assert.rejects(fixture({ failAfterConnect: (root, mcp, ui) => {
+    opened = { root, mcp, ui }; throw new Error('injected bootstrap failure');
+  } }), /injected bootstrap failure/);
+  assert.ok(opened);
+  assert.equal(opened.mcp.listening, false);
+  assert.equal(opened.ui.listening, false);
+  assert.equal(existsSync(opened.root), false);
+
+  const f = await fixture();
+  assert.match(f.cookie, /^yuki_harness=/);
+  await f.close(); await f.close();
+  assert.equal(f.mcp.listening, false);
+  assert.equal(f.ui.listening, false);
+  assert.equal(existsSync(f.root), false);
+});
+
+test('workflow fixture UI 端口绑定失败时关闭已启动的 MCP 并删除临时目录', async () => {
+  const blocker = createServer();
+  await listenFixtureServer(blocker);
+  let opened: { root: string; mcp: ReturnType<typeof createHttpServer>; ui: ReturnType<typeof createHarnessServer> } | undefined;
+  try {
+    await assert.rejects(fixture({ uiPort: (blocker.address() as AddressInfo).port,
+      beforeUiListen: (root, mcp, ui) => { opened = { root, mcp, ui }; assert.equal(mcp.listening, true); },
+    }), (error: unknown) => (error as NodeJS.ErrnoException).code === 'EADDRINUSE');
+    assert.ok(opened);
+    assert.equal(opened.mcp.listening, false);
+    assert.equal(opened.ui.listening, false);
+    assert.equal(existsSync(opened.root), false);
+  } finally { await closeFixtureServer(blocker); }
+});
 
 // Validation tests need only the public MCP seam; the UI cookie fixture is unrelated.
 async function validationFixture() {
