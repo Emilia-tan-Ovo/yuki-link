@@ -586,6 +586,43 @@ test('unknown candidate evidence leaves requested-only and never stops it', asyn
   assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested']);
 });
 
+test('accepted old stop with unknown outcome keeps a requested-only receipt', async t => {
+  const x = switchFixture(t), { m, u } = x;
+  u.stop = async function() { this.stops++; this.running = null; throw fail('STOP_TIMEOUT'); };
+  const operation = { operationId: '11111111-1111-4111-8111-111111111111', action: 'update-and-restart', target: 'yca' };
+  await assert.rejects(m.updateDeployment(x.prepare, { restart: true, operation }), e => e.operationOutcome === 'unknown');
+  assert.equal(u.stops, 1); assert.equal(u.starts, 0);
+  assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested']);
+});
+
+test('accepted old stop that then errors restores the verified previous release', async t => {
+  const x = switchFixture(t), { m, u } = x;
+  u.stop = async function() { this.stops++; this.running = false; this.healthy = false; throw fail('STOP_TIMEOUT'); };
+  const operation = { operationId: '22222222-2222-4222-8222-222222222222', action: 'update-and-restart', target: 'yca' };
+  await assert.rejects(m.updateDeployment(x.prepare, { restart: true, operation }), { code: 'STOP_TIMEOUT' });
+  assert.equal(u.stops, 1); assert.equal(u.starts, 1); assert.equal(u.commit, x.old); assert.equal(u.healthy, true);
+  assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested', 'failed']);
+});
+
+test('rejected old stop leaves the verified previous release untouched', async t => {
+  const x = switchFixture(t), { m, u } = x;
+  u.stop = async function() { this.stops++; throw fail('STOP_REJECTED'); };
+  const operation = { operationId: '33333333-3333-4333-8333-333333333333', action: 'update-and-restart', target: 'yca' };
+  await assert.rejects(m.updateDeployment(x.prepare, { restart: true, operation }), { code: 'STOP_REJECTED' });
+  assert.equal(u.stops, 1); assert.equal(u.starts, 0); assert.equal(u.running, true); assert.equal(u.commit, x.old);
+  assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested', 'failed']);
+});
+
+test('known startup identity conflict does not wait for diagnostics', async t => {
+  const { manager: m, units } = setup(t);
+  m.startupMs = 1000;
+  units.yca.start = async () => { m.state.units.yca.ownership.instance = 'new-instance';
+    m.state.units.yca.ownership.process = { pid: 123, created: 'original' }; };
+  units.yca.observe = async () => ({ running: true, healthy: false, authenticated: false,
+    code: 'OWNERSHIP_CHANGED' });
+  await assert.rejects(m.startOne('yca'), { code: 'OWNERSHIP_CHANGED' });
+});
+
 test('authenticated candidate with wrong tools and idle activity is stopped before restoring A', async t => {
   const x = switchFixture(t), { m, u } = x;
   const start = u.start.bind(u);

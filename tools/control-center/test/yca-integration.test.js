@@ -118,6 +118,10 @@ test('YCA observation binds OS identity to the current authenticated instance an
   assert.deepEqual(state.process, actual);
   state.process = { ...actual, created: 'previous-process' };
   assert.equal((await unit.observe()).owned, false, 'PID alone never grants ownership');
+  denied = true;
+  observation = await unit.observe();
+  assert.equal(observation.code, 'OWNERSHIP_CHANGED', 'known OS identity mismatch stays a hard conflict without diagnostics');
+  denied = false;
   state.process = { ...actual };
   assert.equal((await unit.observe()).healthy, true, 'manual recheck recovers after diagnostics do');
 });

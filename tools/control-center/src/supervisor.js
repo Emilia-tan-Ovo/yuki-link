@@ -175,7 +175,9 @@ export class Supervisor {
             || (previous.wasRunning && ((o?.pid ?? null) !== previous.pid || (o?.created ?? null) !== previous.created))) throw fail('DEPLOYMENT_CURRENT_CHANGED');
         const s = this.state.units.yca; s.desired = 'running'; s.blocked = null; s.nextAt = null; this.persist();
         if (previous.wasRunning) {
-          this.busy = 'yca:update-stop'; await this.units.yca.stop(confirm); rollbackEligible = true; this.events.add('yca', 'update-stopped-old');
+          // A stop may be accepted before the adapter throws while observing its outcome.
+          rollbackEligible = true;
+          this.busy = 'yca:update-stop'; await this.units.yca.stop(confirm); this.events.add('yca', 'update-stopped-old');
         } else rollbackEligible = true;
         candidate = { commit: prepared.commit, instance: randomUUID() };
         this.busy = 'yca:update-start'; await this.observe(); await this.startOne('yca', { commit: prepared.commit, instance: candidate.instance });

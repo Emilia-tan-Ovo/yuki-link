@@ -52,3 +52,12 @@ Ticket：https://github.com/Emilia-tan-Ovo/yuki-link/issues/109 ；现场来源�
 - 已知测试限制：另一次完整运行这 3 个定向文件为 39/40，既有 `real isolated YCA` 用例在 Harness 首页收到 503、原断言要求 200；Bridge 的静态资源实现注明缺少 UI build 会返回 503。该用例后续未作为本票通过证据，也未在本票安装依赖或构建 Bridge UI。未跑完整 Control Center suite。
 - Review policy：delegated 给 Emilia；fresh Review pending，尚无 Review finding 结论。真实 #101/#102 rollout 逐次诊断响应不可用；本实现是代码与定向夹具验证，生产真实切换仍需部署后验收。
 - 下一步：Emilia 按 fixed point 与本次提交的实际 diff 启动 fresh Review，再做确定性 Acceptance；不在本 session push、建 PR、merge 或 deploy。
+
+## Finding Fix Handoff（2026-09-23）
+
+- 基线：primary Review HEAD `b986b9a47b89528146f8d6b2caf1935e0fe1ddfa`；只处理 Review 报告中的 S1/S2，提交 SHA 以本轮 Git HEAD 为准。
+- S1：在调用旧 A 的 `stop()` 前进入回退核验分支。即使 stop 已被接受、随后观察抛错，也重查当前状态：A 仍可验证则保留；A 已停则按原安全路径恢复；其他实例冲突则拒绝操作；证据不足则保持 requested-only/unknown，不强制结束进程。`YcaUnit.stop()` 的归属与活动门禁未改。
+- S2：已有持久化进程记录时，新鲜 OS PID 或创建时间不一致直接投影 `OWNERSHIP_CHANGED`，即使认证诊断暂不可达也作为硬冲突；尚未捕获进程的诊断短窗仍沿用原 startup pending 语义。`startupMs` 未变。
+- 红→绿：新增 stop 抛错后结果未知、A 已停恢复，以及进程身份不一致且诊断不可达的直接回归；基线分别复现错误 terminal、跳过恢复、`ACTIVITY_UNKNOWN`，修复后通过。另覆盖 stop 拒绝且 A 仍可验证、`startOne()` 对硬冲突即时拒绝。
+- 验证：`node --test tools/control-center/test/supervisor.test.js tools/control-center/test/server.test.js` 41/41；YCA integration 按 `YCA observation binds|diagnostic stop refuses|legacy runtime lock` 定向 3/3；四个改动 JS 文件 `node --check` 与 `git diff --check` 均通过。未运行完整 `npm test`。
+- 交接：review_policy 为 delegated；交 Emilia 做一次 fresh focused re-review 与后续确定性验收。本轮不 push、建 PR、merge 或 deploy。#101/#102 的真实 production rollout 触发时序和部署后切换仍需独立验收，隔离测试不能替代。

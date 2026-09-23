@@ -32,6 +32,7 @@ export class YcaUnit {
       return { running: false, owned: false, healthy: false, deployment, code: oldLock && oldLock.token !== this.state.lock?.token ? 'LEGACY_RUNTIME_LOCK' : deploymentCode, lastExit: this.state.lastExit ?? null };
     }
     const processMatches = matches(p, this.state.process);
+    const identityChanged = this.state.process && (p.pid !== this.state.process.pid || p.created !== this.state.process.created);
     let owned = false;
     let diagnostic;
     try {
@@ -61,7 +62,7 @@ export class YcaUnit {
     return { running: true, owned, authenticated: Boolean(diagnostic), instance: diagnostic?.instance ?? null,
       pid: p.pid, created: p.created, healthy: Boolean(health && owned && validActivity && !diagnostic.closing && (!expected || verified)), deployment,
       activity: validActivity ? activity : null, tools: validTools ? diagnostic.tools : null, lastBridge: diagnostic?.lastBridge ?? null,
-      code: !diagnostic ? 'ACTIVITY_UNKNOWN' : !owned ? 'OBSERVED_UNOWNED' : !validActivity ? 'ACTIVITY_UNKNOWN'
+      code: identityChanged ? 'OWNERSHIP_CHANGED' : !diagnostic ? 'ACTIVITY_UNKNOWN' : !owned ? 'OBSERVED_UNOWNED' : !validActivity ? 'ACTIVITY_UNKNOWN'
         : expected && !runningSource ? 'DEPLOYMENT_OBSERVATION_PENDING' : expected && !verified ? 'DEPLOYMENT_UNVERIFIED'
           : !health ? 'HEALTH_FAILED' : deploymentCode };
   }
