@@ -27,6 +27,12 @@ const scalar = (front: string, name: string) => {
 interface GitResult { status: number | null; stdout: string; stderr: string }
 export interface WorkflowSourceOptions { git?: () => string }
 
+export type WorkflowValidationIssue = { field: string; path: string; reason: string };
+export class WorkflowPathError extends Error {
+  readonly issues: WorkflowValidationIssue[];
+  constructor(issues: WorkflowValidationIssue[]) { super('invalid workflow path'); this.issues = issues; }
+}
+
 export class WorkflowSource {
   source: Source;
   git: () => string;
@@ -37,17 +43,34 @@ export class WorkflowSource {
   validate(ticket: Ticket, snapshot: WorkflowSnapshot) {
     if (!ticket.expected_worktree) return;
     const root = path.resolve(ticket.expected_worktree);
-    for (const artifact of snapshot.artifacts) {
+    const issues: WorkflowValidationIssue[] = [];
+    const add = (field: string, location: string, reason: string) => {
+      if (issues.length < 8) issues.push({ field, path: location, reason });
+    };
+    for (const [index, artifact] of snapshot.artifacts.entries()) {
       if (artifact.kind !== 'file') continue;
-      if (!path.isAbsolute(artifact.location) || /[\x00-\x1f]/.test(artifact.location)) throw new Error('unsafe artifact path');
+      if (!path.isAbsolute(artifact.location) || /[\x00-\x1f]/.test(artifact.location)) {
+        add('location', `snapshot.artifacts[${index}].location`, 'UNSAFE_PATH');
+        continue;
+      }
       const target = path.resolve(artifact.location), relative = path.relative(root, target);
-      if (!inside(root, target) || relative.split(path.sep).some(part => protectedPart.test(part))) throw new Error('protected artifact path');
+      if (!inside(root, target) || relative.split(path.sep).some(part => protectedPart.test(part))) {
+        add('location', `snapshot.artifacts[${index}].location`, 'PROTECTED_PATH');
+      }
     }
-    for (const item of [...snapshot.subject.staged, ...snapshot.subject.unstaged, ...snapshot.subject.untracked]) {
-      if (path.isAbsolute(item.path) || /[\x00-\x1f]/.test(item.path)) throw new Error('unsafe subject path');
-      const target = path.resolve(root, item.path), relative = path.relative(root, target);
-      if (!inside(root, target) || relative.split(path.sep).some(part => protectedPart.test(part))) throw new Error('protected subject path');
+    for (const kind of ['staged', 'unstaged', 'untracked'] as const) {
+      for (const [index, item] of snapshot.subject[kind].entries()) {
+        if (path.isAbsolute(item.path) || /[\x00-\x1f]/.test(item.path)) {
+          add('path', `snapshot.subject.${kind}[${index}].path`, 'UNSAFE_PATH');
+          continue;
+        }
+        const target = path.resolve(root, item.path), relative = path.relative(root, target);
+        if (!inside(root, target) || relative.split(path.sep).some(part => protectedPart.test(part))) {
+          add('path', `snapshot.subject.${kind}[${index}].path`, 'PROTECTED_PATH');
+        }
+      }
     }
+    if (issues.length) throw new WorkflowPathError(issues);
   }
   private runGit(cwd: string, args: string[]): GitResult {
     const result = spawnSync(this.git(), ['--no-optional-locks', '-c', 'core.hooksPath=', '-c', 'core.fsmonitor=false',

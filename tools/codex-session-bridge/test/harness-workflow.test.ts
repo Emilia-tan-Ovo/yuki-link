@@ -64,7 +64,33 @@ async function fixture() {
       harness.close(); rmSync(root, { recursive: true, force: true }); } };
 }
 
-function snapshot(f: Awaited<ReturnType<typeof fixture>>, phase = 'review'): Wire {
+// Validation tests need only the public MCP seam; the UI cookie fixture is unrelated.
+async function validationFixture() {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'harness-validation-'));
+  const worktree = path.join(root, 'repo'), runtime = path.join(root, 'runtime');
+  mkdirSync(worktree); mkdirSync(runtime);
+  git(worktree, 'init', '-b', 'main');
+  git(worktree, 'config', 'user.name', 'Fixture');
+  git(worktree, 'config', 'user.email', 'fixture@example.invalid');
+  writeFileSync(path.join(worktree, 'tracked.txt'), 'baseline\n', 'utf8');
+  git(worktree, 'add', 'tracked.txt'); git(worktree, 'commit', '-m', 'baseline');
+  const head = git(worktree, 'rev-parse', 'HEAD');
+  const checkpoint = path.join(worktree, '.local', 'workflow-state', 'HARNESS-005.md');
+  mkdirSync(path.dirname(checkpoint), { recursive: true });
+  writeFileSync(checkpoint, `---\nschema_version: 1\nticket: "HARNESS-005 / GitHub #45"\nphase: review\nworktree: "${worktree.replaceAll('\\', '/')}"\nbranch: "main"\nfixed_point: "${head}"\nhead: "${head}"\n---\n`, 'utf8');
+  const source = { session: () => { throw new Error('No Codex session'); }, runs: () => [], events: () => [],
+    attribution: () => ({ state: 'unknown' }) };
+  const harness = new Harness(runtime, source, undefined, { git: () => 'git' });
+  const mcp = createHttpServer({ harness });
+  await new Promise<void>(resolve => mcp.listen(0, '127.0.0.1', resolve));
+  const client = new Client({ name: 'validation-fixture', version: '1' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(mcp.address() as AddressInfo).port}/mcp`)));
+  return { root, worktree, runtime, head, checkpoint, harness, client,
+    close: async () => { await client.close(); mcp.close(); mcp.closeAllConnections();
+      harness.close(); rmSync(root, { recursive: true, force: true }); } };
+}
+
+function snapshot(f: Pick<Awaited<ReturnType<typeof fixture>>, 'worktree' | 'head' | 'checkpoint'>, phase = 'review'): Wire {
   const at = new Date().toISOString();
   return {
     phase,
@@ -91,6 +117,71 @@ function checkpointPhase(f: Awaited<ReturnType<typeof fixture>>, phase: string) 
   const current = readFileSync(f.checkpoint, 'utf8');
   writeFileSync(f.checkpoint, current.replace(/^phase: .*$/m, `phase: ${phase}`), 'utf8');
 }
+
+test('公开 MCP Workflow validation 返回有界诊断且不写入失败记录', async t => {
+  const f = await validationFixture(); t.after(f.close);
+  const ticket = payload(await f.client.callTool({ name: 'harness_register_ticket', arguments: {
+    project_key: 'validation', project_name: 'validation', ticket_key: 'HARNESS-005',
+    title: 'Workflow validation', reference: 'issue:45', expected_worktree: f.worktree,
+  } }));
+  const record = (value: Wire, requestId = randomUUID(), revision: number | null = null) =>
+    f.client.callTool({ name: 'harness_record_workflow', arguments: {
+      ticket_id: ticket.ticket_id, request_id: requestId, expected_revision: revision,
+      schema_version: 1, snapshot: value,
+    } });
+  const baseline = f.harness.journal.records.length;
+  const secret = 'password=fixturePrivateValue';
+  const malformed = snapshot(f);
+  malformed.subject.staged = Array.from({ length: 12 }, () => ({ path: secret, sha256: 'invalid-hash' }));
+  const schemaFailure = payload(await record(malformed));
+  assert.equal(schemaFailure.error.code, 'INVALID_WORKFLOW_RECORD');
+  assert.equal(schemaFailure.error.message, 'INVALID_WORKFLOW_RECORD');
+  assert.equal(schemaFailure.error.details.issues.length, 8);
+  assert.deepEqual(schemaFailure.error.details.issues[0], {
+    field: 'sha256', path: 'snapshot.subject.staged[0].sha256', reason: 'INVALID_FORMAT',
+  });
+  assert.ok(!JSON.stringify(schemaFailure).includes(secret));
+  assert.equal(f.harness.journal.records.length, baseline);
+  assert.equal((f.harness.workflowHistory.summary(ticket.ticket_id) as Wire).state, 'unavailable');
+  const missing = payload(await f.client.callTool({ name: 'harness_record_workflow', arguments: {} }));
+  assert.equal(missing.error.code, 'INVALID_WORKFLOW_RECORD');
+  assert.deepEqual(missing.error.details.issues[0], {
+    field: 'ticket_id', path: 'ticket_id', reason: 'INVALID_TYPE',
+  });
+  const mismatchedPhase = snapshot(f);
+  mismatchedPhase.checkpoint.phase = 'acceptance';
+  const relationFailure = payload(await record(mismatchedPhase));
+  assert.deepEqual(relationFailure.error.details.issues, [{
+    field: 'phase', path: 'snapshot.checkpoint.phase', reason: 'PHASE_MISMATCH',
+  }]);
+  assert.equal(f.harness.journal.records.length, baseline);
+
+  const valid = snapshot(f), requestId = randomUUID();
+  const recorded = payload(await record(valid, requestId));
+  assert.equal(recorded.workflow_revision, 1);
+  assert.equal(recorded.deduplicated, false);
+  const retry = payload(await record(valid, requestId));
+  assert.equal(retry.workflow_revision, 1);
+  assert.equal(retry.deduplicated, true);
+  assert.equal(retry.cursor, recorded.cursor);
+  const afterSuccess = f.harness.journal.records.length;
+
+  const unsafe = snapshot(f);
+  unsafe.artifacts.push({ ...unsafe.artifacts[0], artifact_id: 'protected',
+    location: path.join(f.worktree, '.git', 'config'), revision: null });
+  unsafe.subject.staged = [{ path: path.join(f.worktree, 'tracked.txt'), sha256: null }];
+  unsafe.subject.untracked = [{ path: '../outside.txt', sha256: null }];
+  const pathFailure = payload(await record(unsafe, randomUUID(), 1));
+  assert.equal(pathFailure.error.code, 'INVALID_WORKFLOW_RECORD');
+  assert.deepEqual(pathFailure.error.details.issues, [
+    { field: 'location', path: 'snapshot.artifacts[1].location', reason: 'PROTECTED_PATH' },
+    { field: 'path', path: 'snapshot.subject.staged[0].path', reason: 'UNSAFE_PATH' },
+    { field: 'path', path: 'snapshot.subject.untracked[0].path', reason: 'PROTECTED_PATH' },
+  ]);
+  assert.ok(!JSON.stringify(pathFailure).includes(f.worktree));
+  assert.equal(f.harness.journal.records.length, afterSuccess);
+  assert.equal((f.harness.workflowHistory.summary(ticket.ticket_id) as Wire).revision, 1);
+});
 
 test('finding projection preserves distinct Review ownership for duplicate finding IDs', async t => {
   const f = await fixture(); t.after(f.close);
