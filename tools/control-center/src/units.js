@@ -31,12 +31,16 @@ export class YcaUnit {
         state: deploymentCode ? 'invalid-target' : !this.config.deploymentRoot ? 'unmanaged' : target?.commit !== expected?.commit ? 'update-pending' : 'stopped' };
       return { running: false, owned: false, healthy: false, deployment, code: oldLock && oldLock.token !== this.state.lock?.token ? 'LEGACY_RUNTIME_LOCK' : deploymentCode, lastExit: this.state.lastExit ?? null };
     }
-    let owned = matches(p, this.state.process);
+    const processMatches = matches(p, this.state.process);
+    const identityChanged = this.state.process && (p.pid !== this.state.process.pid || p.created !== this.state.process.created);
+    let owned = false;
     let diagnostic;
     try {
-      diagnostic = (await get(`http://127.0.0.1:${this.config.controlPort}/status`, { token: this.state.token })).json;
+      const response = await get(`http://127.0.0.1:${this.config.controlPort}/status`, { token: this.state.token });
+      diagnostic = response.status === 200 ? response.json : null;
       if (diagnostic?.instance !== this.state.instance || diagnostic?.pid !== p.pid || diagnostic?.service !== 'yuki-local-control') diagnostic = null;
     } catch { /* unknown activity is not idle */ }
+    owned = processMatches && Boolean(diagnostic);
     if (!this.state.process && this.state.instance && diagnostic) {
       this.state.process = p; this.persist(); owned = true; // recover a spawn/persist interruption with instance authentication
     }
@@ -46,13 +50,21 @@ export class YcaUnit {
       const lock = readJson(path.join(this.config.runtime, 'bridge.lock'), null);
       if (lock?.pid === p.pid) { this.state.lock = lock; this.persist(); }
     }
+    const activity = diagnostic?.active;
+    const validActivity = activity && ['codex', 'computer', 'requests'].every(key => Number.isSafeInteger(activity[key]) && activity[key] >= 0);
     const runningSource = diagnostic?.source ?? null;
-    const verified = expected && runningSource?.commit === expected.commit && runningSource.dirty === false && diagnostic?.tools?.sha256 === expected.tools.sha256;
+    const validTools = diagnostic?.tools && Number.isSafeInteger(diagnostic.tools.count) && diagnostic.tools.count >= 0
+      && /^[a-f0-9]{64}$/.test(diagnostic.tools.sha256 ?? '');
+    const verified = expected && runningSource?.commit === expected.commit && runningSource.dirty === false
+      && validTools && diagnostic.tools.sha256 === expected.tools.sha256 && diagnostic.tools.count === expected.tools.count;
     const deployment = { running: runningSource, target, launched: expected ?? null,
       state: deploymentCode ? 'invalid-target' : !this.config.deploymentRoot ? 'unmanaged' : !verified ? 'unverified' : target?.commit !== expected.commit ? 'update-pending' : 'verified' };
-    return { running: true, owned, pid: p.pid, created: p.created, healthy: Boolean(health && diagnostic && !diagnostic.closing && (!expected || verified)), deployment,
-      activity: diagnostic?.active ?? null, tools: diagnostic?.tools ?? null, lastBridge: diagnostic?.lastBridge ?? null,
-      code: !owned ? 'OBSERVED_UNOWNED' : !diagnostic ? 'ACTIVITY_UNKNOWN' : expected && !verified ? 'DEPLOYMENT_UNVERIFIED' : !health ? 'HEALTH_FAILED' : deploymentCode };
+    return { running: true, owned, authenticated: Boolean(diagnostic), instance: diagnostic?.instance ?? null,
+      pid: p.pid, created: p.created, healthy: Boolean(health && owned && validActivity && !diagnostic.closing && (!expected || verified)), deployment,
+      activity: validActivity ? activity : null, tools: validTools ? diagnostic.tools : null, lastBridge: diagnostic?.lastBridge ?? null,
+      code: identityChanged ? 'OWNERSHIP_CHANGED' : !diagnostic ? 'ACTIVITY_UNKNOWN' : !owned ? 'OBSERVED_UNOWNED' : !validActivity ? 'ACTIVITY_UNKNOWN'
+        : expected && !runningSource ? 'DEPLOYMENT_OBSERVATION_PENDING' : expected && !verified ? 'DEPLOYMENT_UNVERIFIED'
+          : !health ? 'HEALTH_FAILED' : deploymentCode };
   }
   async start({ commit = null, recovery = false, instance = null } = {}) {
     const before = await this.observe();
