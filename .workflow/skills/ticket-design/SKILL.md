@@ -85,11 +85,13 @@ Ask the user to confirm shared understanding. After confirmation, inspect the cu
 
 ### Context Plan
 
-- Core: <current Ticket/AC + applicable invariants + direct code/test entry points>
-- Related: <only known-high-relevance Spec/Ticket/interface/source + why it is relevant>
-- Retrieval: <cold sources or keywords/symbols to search if more context is needed>
-- Expansion triggers: <uncertainty/risk signals that require broader investigation>
+- **Core:** <current Ticket/AC, invariants, direct code/test entry points>
+- **Related:** <relevant Spec/Ticket/interface/source and why>
+- **Retrieval:** <cold references and search symbols>
+- **Expansion triggers:** <risk signals requiring broader investigation>
 ```
+
+Generate the four machine labels with `node tools/codex-session-bridge/scripts/validate-context-plan.mjs --template`; keep their ASCII punctuation and English keys exactly. After writing the Notes, run `node tools/codex-session-bridge/scripts/validate-context-plan.mjs <absolute-notes-path>`. Handoff requires `CONTEXT_PLAN_OBSERVED`; fix malformed, empty or duplicate labels before declaring ready. This command uses the same `markdown-context-v0` adapter as Context Packet reads.
 
 Keep the notes concise. Record decisions, not the conversation; include no substantial implementation code and do not repeat requirements already present in the spec. Preserve the ticket's existing structure and all unrelated content.
 

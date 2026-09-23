@@ -7,6 +7,7 @@ import { matches } from './host.js';
 import { tunnelEvents } from './tunnel-events.js';
 import { deploymentTarget, verifyDeployment } from './deployment.js';
 import { resolveCodexExecutable } from '../../codex-session-bridge/src/codex-executable.js';
+import { FileImplementationLaunchAuthoritySource } from '../../codex-session-bridge/src/orchestration/implementation-launcher.ts';
 
 export class YcaUnit {
   constructor(config, host, state, persist, events) { Object.assign(this, { config, host, state, persist, events }); }
@@ -59,6 +60,12 @@ export class YcaUnit {
     if ((commit || recovery) && this.config.deploymentRoot && !pinnedCommit) throw fail('DEPLOYMENT_EXPLICIT_START_REQUIRED');
     const deployment = this.config.deploymentRoot
       ? await verifyDeployment(this.config.deploymentRoot, pinnedCommit ?? undefined, this.config.node) : null;
+    if (this.config.implementationLaunchAuthority) {
+      if (!deployment?.launcherFlags?.implementationLaunchAuthority) throw fail('DEPLOYMENT_LAUNCHER_UNSUPPORTED');
+      new FileImplementationLaunchAuthoritySource(this.config.implementationLaunchAuthority, {
+        forbiddenRoots: [this.config.repo, this.config.deploymentRoot],
+      }).snapshot('', '');
+    }
     const entry = deployment?.entry ?? this.config.entry, cwd = deployment?.cwd ?? this.config.cwd;
     for (const [name, file] of Object.entries({ NODE: this.config.node, YCA_ENTRY: entry, PWSH: this.config.pwsh })) if (!existsSync(file)) throw fail(`${name}_PATH_MISSING`);
     this.codexResolution = resolveCodexExecutable(this.config.codex);
@@ -86,6 +93,7 @@ export class YcaUnit {
     if (this.config.harnessPort !== undefined) args.push('--harness-port', String(this.config.harnessPort));
     // Older unmanaged YCA entries may not understand the deployment-era option.
     if (deployment) for (const root of this.config.controlRoots ?? []) args.push('--control-root', root);
+    if (this.config.implementationLaunchAuthority) args.push('--implementation-launch-authority', this.config.implementationLaunchAuthority);
     const child = spawn(this.config.node, args, { cwd, shell: false, windowsHide: true, detached: true,
       env: { ...process.env, YUKI_CONTROL_TOKEN: this.state.token }, stdio: ['ignore', 'ignore', 'ignore'] });
     const launchedInstance = this.state.instance;

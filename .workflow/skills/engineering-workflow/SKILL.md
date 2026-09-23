@@ -60,12 +60,7 @@ checkpoint 的 `phase` 表示**下一步要进行的工作**，不是已经完�
 implementation prompt 引用 Context Plan 与持久化来源，从 Core 开始、Related 按需展开；显著超出计划时只需在 handoff/checkpoint 说明扩张原因和新增关键来源，不维护逐文件阅读账本。Codex 自身的 compaction、cache、history/notes 或其他原生 context management 仍由 Codex 管理；YCA/Workflow **不另建竞争性的模型记忆或压缩状态**。工程 source of truth 继续是 Git、Ticket/Notes、checkpoint 与可核验外部事实。
 #### 模型路由
 
-- 默认主力：`gpt-5.6-sol medium`，适用于普通 ticket-design、implementation、finding fix、focused review。
-- 复杂跨模块实现、复杂调试或 full review 可使用 `gpt-5.6-sol high`。
-- `gpt-6-astra` 只用于最困难的并发/一致性/安全/跨系统疑难问题，或已有事实证明 Sol high 不足的任务；**每次启动 Astra 前必须向 Owner 说明升级理由并取得明确批准**。
-- `gpt-5.6-luna` 与 `gpt-5.6-terra` 禁止使用。其他未列模型只有 Owner 明确改变策略后才可使用。
-- `xhigh/max/ultra` 默认禁止；任何模型使用这些档位前都必须取得 Owner 明确批准。
-- 不因“这张票重要”自动使用高成本模型；模型选择按**当前阶段当前问题**的难度决定。
+- 模型路由以仓库根 `AGENTS.md` 的“模型路由固定”为唯一规范。启动前读取当前政策，并按当前阶段难度选择；高层受保护 launch 仍以可信 authority snapshot 与 Codex catalog 共同决定实际 model/reasoning。
 
 #### 0-token 环境 preflight
 

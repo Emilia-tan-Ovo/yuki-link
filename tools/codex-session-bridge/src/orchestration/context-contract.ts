@@ -9,13 +9,15 @@ export type ReadinessState = 'ready' | 'blocked' | 'unknown' | 'unsupported';
 
 export interface SourceFact {
   id: string;
-  kind: 'ticket' | 'git' | 'workflow' | 'checkpoint' | 'implementation-notes' | 'runtime' | 'harness';
+  kind: 'ticket' | 'git' | 'workflow' | 'checkpoint' | 'implementation-notes' | 'runtime' | 'harness' | 'host' | 'spec';
   locator: string;
   revision: string | number | null;
   digest: string | null;
   observed_at: string | null;
   source_updated_at: string | null;
   state: 'observed' | 'missing' | 'malformed' | 'unsupported-version' | 'reference-only' | 'unavailable';
+  provenance?: string;
+  reason?: string;
 }
 
 export interface DocumentFact {
@@ -41,9 +43,15 @@ export interface ContextFacts {
   implementation_notes: DocumentFact;
   execution: { observed: Array<Record<string, unknown> & { source_refs: string[] }>;
     operations: Array<Record<string, unknown> & { source_refs: string[] }>;
-    coverage: { bindings: number; workflow_runtime_refs: number; global: false; complete: boolean }; source_refs: string[] };
+    coverage: { bindings: number; workflow_runtime_refs: number; global: false; complete: boolean };
+    usage?: { state: 'observed' | 'unavailable'; value: null | { runs: number; input_tokens: number;
+      cached_input_tokens: number; output_tokens: number }; source_refs: string[] }; source_refs: string[] };
   recording: { state: string; reason: string | null; source_refs: string[] };
-  references: Array<{ kind: string; location: string; status: 'reference-only'; source_refs: string[] }>;
+  preflight?: { capabilities: Record<string, unknown> | null; dependencies: Array<Record<string, unknown>>;
+    target_packages?: string[]; target_package_source?: string | null;
+    status: 'observed' | 'unavailable'; source_refs: string[] };
+  references: Array<{ kind: string; location: string; status: SourceFact['state']; source_refs: string[];
+    canonical?: boolean; observed_at?: string | null; revision?: string | number | null }>;
   sources: SourceFact[];
 }
 

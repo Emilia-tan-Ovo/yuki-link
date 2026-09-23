@@ -61,6 +61,7 @@ export const implementationPolicySnapshotSchema = z.object({
   model: text, reasoning: text, permission_selection: z.literal('owner-native-default'),
   preflight: z.object({
     required_paths: z.array(text).max(64), required_executables: z.array(text).max(64),
+    dependency_packages: z.array(text).max(16).optional(),
     require_recording: z.literal(true), model_line: z.literal('single'),
   }).strict(),
   authority_refs: z.array(text).min(1).max(32),
@@ -86,7 +87,12 @@ export const implementationExecutableIdentitySchema = z.object({
 const implementationEnvironmentSnapshotSchema = z.union([
   z.object({ required_paths: z.array(text).max(64), required_executables: z.array(text).max(64) }).strict(),
   z.object({ required_paths: z.array(text).max(64),
-    required_executables: z.array(implementationExecutableIdentitySchema).max(64) }).strict(),
+    required_executables: z.array(implementationExecutableIdentitySchema).max(64),
+    dependencies: z.array(z.object({ package_directory: text, manifest_sha256: hash, lock_sha256: hash.nullable(),
+      modules_mtime_ms: z.number().nullable(), node_path: text, node_version: text }).strict()).max(16).optional(),
+    capabilities: z.object({ path_digest: hash, rg_state: z.enum(['available', 'unavailable']),
+      rg_path: z.string().nullable(), rg_version: z.string().nullable(),
+      fallbacks: z.array(z.string()).max(2) }).strict().optional() }).strict(),
 ]);
 
 const deltaSchema = z.object({ ref: text, value: z.string().max(2048).nullable() }).strict();
@@ -94,7 +100,9 @@ export const implementationExecutionProtectionSchema = z.object({
   caller_fingerprint: hash, contract: implementationLaunchContractSchema,
   policy: implementationPolicySnapshotSchema, authorization: implementationAuthorizationSchema,
   authority_source: implementationAuthoritySourceIdentitySchema.optional(),
-  prompt_context: z.object({ references: z.array(text).min(1).max(64), current_delta: z.array(deltaSchema).max(32) }).strict(),
+  prompt_context: z.object({ references: z.array(text).min(1).max(64), current_delta: z.array(deltaSchema).max(32),
+    cost: z.object({ prompt_utf8_bytes: z.number().int().nonnegative(), reference_count: z.number().int().nonnegative(),
+      duplicate_reference_count: z.number().int().nonnegative() }).strict().optional() }).strict(),
   preflight: z.object({
     workflow_revision: z.number().int().positive(), subject_ref: text,
     notes: z.object({ path: text, sha256: hash }).strict(),

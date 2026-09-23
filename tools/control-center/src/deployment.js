@@ -84,6 +84,12 @@ async function probe(node, cwd) {
   return tools;
 }
 
+async function probeLauncherFlags(node, cwd) {
+  const result = await run(node, [path.join(cwd, 'src/main.js'), '--help'], { cwd, timeout: 15_000, limit: 64 * 1024 });
+  if (result.code !== 0) throw fail('DEPLOYMENT_LAUNCHER_PROBE_FAILED');
+  return { implementationLaunchAuthority: result.output.includes('--implementation-launch-authority ABSOLUTE_JSON_PATH') };
+}
+
 export async function readDeployment(root, commit) {
   root = path.resolve(root);
   ownedRoot(root);
@@ -112,7 +118,9 @@ export async function verifyDeployment(root, commit, node = process.execPath) {
   const version = await command(node, ['--version'], manifest.cwd, 'DEPLOYMENT_NODE_UNSUPPORTED');
   if (Number(/^v(\d+)\./.exec(version)?.[1]) !== manifest.nodeMajor) throw fail('DEPLOYMENT_NODE_CHANGED');
   if (JSON.stringify(await probe(node, manifest.cwd)) !== JSON.stringify(manifest.tools)) throw fail('DEPLOYMENT_PROBE_FAILED');
-  return manifest;
+  if (manifest.launcherFlags && JSON.stringify(await probeLauncherFlags(node, manifest.cwd)) !== JSON.stringify(manifest.launcherFlags))
+    throw fail('DEPLOYMENT_LAUNCHER_CHANGED');
+  return { ...manifest, launcherFlags: manifest.launcherFlags ?? { implementationLaunchAuthority: false } };
 }
 
 function claimPreparation(root) {
@@ -176,7 +184,7 @@ export async function prepareDeployment({ repo, root, node = process.execPath, n
       const nodeMajor = Number(/^v(\d+)\./.exec(version)?.[1]);
       if (nodeMajor < 24 || !Number.isInteger(nodeMajor)) throw fail('DEPLOYMENT_NODE_UNSUPPORTED');
       manifest = { version: 1, commit, branch, cwd, entry: path.join(cwd, 'src/main.js'), lockHash: hash(path.join(cwd, 'package-lock.json')),
-        tools: await probe(node, cwd), nodeMajor, uiHash: uiArtifactHash(cwd) };
+        tools: await probe(node, cwd), launcherFlags: await probeLauncherFlags(node, cwd), nodeMajor, uiHash: uiArtifactHash(cwd) };
       await cleanRelease(root, commit);
       saveJson(buildFile, { commit, stage: 'published' });
       saveJson(manifestFile, manifest);

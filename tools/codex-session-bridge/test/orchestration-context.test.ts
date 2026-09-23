@@ -13,6 +13,7 @@ import { ChangesSource } from '../src/harness/changes-source.ts';
 import { Harness } from '../src/harness/harness.ts';
 import { MarkdownContextDocumentAdapter } from '../src/orchestration/document-adapter.ts';
 import { HarnessContextFactsSource } from '../src/orchestration/harness-context-source.ts';
+import { ContextAssembler } from '../src/orchestration/context-assembler.ts';
 
 type Wire = Record<string, any>;
 
@@ -75,11 +76,19 @@ head: "${fixedPoint}"
   const registration = harness.register({ project_key: 'YCA', project_name: 'Yuki Computer Agent', ticket_key: 'ORCH-001',
     title: 'Context Packet', reference: 'https://github.invalid/issues/90', expected_worktree: repo, fixed_point: fixedPoint });
   harness.attach({ ticket_id: registration.ticket_id, session_id: session.id, run_id: run.id });
-  const server = createHttpServer({ harness });
+  const canonicalSpecObservations = new Map<string, any>();
+  let targetPackages: string[] | undefined = [];
+  const manager = { harness, canonicalSpecObservations, implementationLaunchAuthority: {
+    snapshot: () => ({ policy: { preflight: { dependency_packages: targetPackages } },
+      source: { reference: 'fixture-authority' } }),
+  } };
+  const server = createHttpServer(manager);
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const client = new Client({ name: 'context-fixture', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`)));
-  return { root, repo, fixedPoint, harness, client, server, registration, run, source, sideEffects: () => starts, close: async () => {
+  return { root, repo, fixedPoint, harness, client, server, registration, run, source,
+    canonicalSpecObservations, setTargetPackages(value: string[] | undefined) { targetPackages = value; },
+    sideEffects: () => starts, close: async () => {
     await client.close(); server.close(); server.closeAllConnections(); harness.close(); rmSync(root, { recursive: true, force: true });
   } };
 }
@@ -114,6 +123,11 @@ test('public Context tools preserve evidence integrity and remain read-only', as
   assert.notEqual(implementation.subject.identity.payload.index[0].content_id,
     implementation.subject.identity.payload.worktree[0].content_id, 'index content is independent from worktree content');
   assert.equal(implementation.execution.coverage.global, false);
+  assert.equal(implementation.execution.environment.preflight.status, 'observed');
+  assert.ok(implementation.execution.environment.preflight.capabilities.observed_at);
+  assert.equal(implementation.execution.model_usage.state, 'unavailable');
+  assert.equal(implementation.budget.reference_count, implementation.retrieval.references.length);
+  assert.equal(implementation.budget.duplicate_reference_count, 0);
   assert.equal(implementation.execution.active[0].run_id, f.run.id);
   assert.notEqual(implementation.execution.active[0].observed_at, f.run.created_at);
   assert.equal(implementation.execution.active[0].created_at, f.run.created_at);
@@ -209,6 +223,124 @@ test('document adapter degrades incomplete contracts and preserves observation p
     assert.ok(Date.parse(fact.observed_at!) >= before);
     assert.equal(fact.source_updated_at, oldTime.toISOString());
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Packet usage derives from durable run events instead of model text', () => {
+  const runId = randomUUID(), sessionId = randomUUID();
+  const harness = { bindings: new Map([['binding', { ticket_id: 'ticket-1', session_id: sessionId,
+    run_id: runId, scope: 'run', id: 'binding' }]]),
+  source: { runs: () => [{ id: runId, session_id: sessionId, created_at: new Date().toISOString(),
+    status: 'completed', model: 'gpt-6-sol', reasoning: 'medium' }] },
+  journal: { records: [{ data: { kind: 'event', event: { kind: 'codex', run_id: runId,
+    payload: { type: 'turn.completed', usage: { input_tokens: 91, cached_input_tokens: 70,
+      output_tokens: 5 } } } } }] },
+  executionOperations: { observations: () => [] } };
+  const adapter = new HarnessContextFactsSource(harness as never) as Wire;
+  const fact = adapter.execution('ticket-1', undefined, 'runtime', new Date().toISOString());
+  assert.deepEqual(fact.usage.value, { runs: 1, input_tokens: 91, cached_input_tokens: 70, output_tokens: 5 });
+});
+
+test('Context Plan writer contract accepts four canonical labels and rejects variants', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'context-plan-contract-'));
+  try {
+    const file = path.join(root, 'notes.md'), adapter = new MarkdownContextDocumentAdapter();
+    const canonical = '# Notes\n\n## Context Plan\n\n- **Core:** ticket\n- **Related:** spec\n- **Retrieval:** symbols\n- **Expansion triggers:** conflict\n';
+    writeFileSync(file, canonical, 'utf8');
+    assert.deepEqual(adapter.read(root, 'notes.md', 'implementation-notes').context_plan?.core, ['ticket']);
+    for (const variant of [canonical.replace('Core:', 'Core：'), canonical.replace('- **Related:** spec\n', ''),
+      canonical.replace('Core:** ticket', 'Core:** '), canonical.replace('- **Related:** spec', '- **Related:** spec\n- **Related:** duplicate')]) {
+      writeFileSync(file, variant, 'utf8');
+      assert.equal(adapter.read(root, 'notes.md', 'implementation-notes').status, 'malformed');
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('Packet distinguishes a missing local spec mirror from its canonical GitHub reference', async t => {
+  const f = await fixture('completed'); t.after(f.close);
+  const notes = path.join(f.repo, 'docs', 'implementation-notes', 'ORCH-001.md');
+  writeFileSync(notes, '# Notes\n\nSource Spec: https://github.invalid/issues/89\n\n## Context Plan\n\n'
+    + '- **Core:** ticket\n- **Related:** docs/specs/ORCH-001.md\n- **Retrieval:** symbols\n'
+    + '- **Expansion triggers:** conflict\n', 'utf8');
+  const packet = (await f.client.callTool({ name: 'assemble_ticket_context', arguments: {
+    ticket_id: f.registration.ticket_id, requested_action: 'implementation', trigger: 'manual',
+  } })).structuredContent as Wire;
+  assert.ok(packet.retrieval.references.some((value: Wire) => value.kind === 'spec' && value.canonical
+    && value.location === 'https://github.invalid/issues/89' && value.status === 'reference-only'));
+  assert.ok(packet.retrieval.references.some((value: Wire) => value.kind === 'spec-mirror'
+    && value.location === 'docs/specs/ORCH-001.md' && value.status === 'missing'));
+  assert.ok(packet.sources.some((value: Wire) => value.kind === 'spec' && value.state === 'missing'));
+});
+
+test('canonical source observations retain provenance and conflicting Spec references stay visible', async t => {
+  const f = await fixture('completed'); t.after(async () => {
+    f.harness.workflowHistory.current.delete(f.registration.ticket_id); await f.close();
+  });
+  const canonical = 'https://github.invalid/issues/89';
+  const notes = path.join(f.repo, 'docs', 'implementation-notes', 'ORCH-001.md');
+  writeFileSync(notes, '# Notes\n\nSource Spec: ' + canonical + '\n\n## Context Plan\n\n'
+    + '- **Core:** ticket\n- **Related:** spec\n- **Retrieval:** symbols\n- **Expansion triggers:** conflict\n');
+  f.harness.workflowHistory.current.set(f.registration.ticket_id, { workflow_revision: 2, fingerprint: 'a'.repeat(64),
+    snapshot: { phase: 'implementation', subject: { spec_ref: 'https://github.invalid/issues/88', subject_id: 'subject' },
+      findings: [], runtime_refs: [] } } as any);
+  const observations = new Map<string, { status: 'observed' | 'unavailable'; revision: string | null;
+    observed_at: string; digest: string | null; url: string; provenance: string }>([[canonical,
+    { status: 'observed', revision: 'github-revision-1', observed_at: new Date().toISOString(),
+      digest: 'sha256:' + 'b'.repeat(64), url: canonical, provenance: 'outer-reader:fixture' }]]);
+  const source = new HarnessContextFactsSource(f.harness, new MarkdownContextDocumentAdapter(), observations);
+  const packet = new ContextAssembler(source).assemble({ ticket_id: f.registration.ticket_id,
+    requested_action: 'implementation', trigger: 'manual' });
+  assert.equal(packet.sources.find((value: Wire) => value.id === 'spec-canonical').state, 'observed');
+  assert.equal(packet.retrieval.references.find((value: Wire) => value.kind === 'spec').revision, 'github-revision-1');
+  assert.ok(packet.integrity.conflicts.some((value: Wire) => value.code === 'SPEC_REFERENCE_CONFLICT'));
+  observations.set(canonical, { status: 'unavailable', revision: null, observed_at: new Date().toISOString(),
+    digest: null, url: canonical, provenance: 'outer-reader:fixture' });
+  assert.equal(source.collect(f.registration.ticket_id).sources.find(value => value.id === 'spec-canonical')?.state,
+    'unavailable');
+});
+
+test('public Packet uses the trusted authority target list and shows missing package readiness', async t => {
+  const f = await fixture(); t.after(f.close);
+  const pkg = path.join(f.repo, 'tools', 'package'); mkdirSync(pkg, { recursive: true });
+  writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ dependencies: { sample: '1.0.0' } }));
+  writeFileSync(path.join(pkg, 'package-lock.json'), JSON.stringify({ packages: { '': {
+    dependencies: { sample: '1.0.0' } } } }));
+  f.setTargetPackages(['tools/package']);
+  const packet = (await f.client.callTool({ name: 'assemble_ticket_context', arguments: {
+    ticket_id: f.registration.ticket_id, requested_action: 'implementation', trigger: 'manual',
+  } })).structuredContent as Wire;
+  assert.deepEqual(packet.execution.environment.preflight.target_packages, ['tools/package']);
+  assert.equal(packet.execution.environment.preflight.target_package_source, 'fixture-authority');
+  assert.equal(packet.execution.environment.preflight.dependencies[0].state, 'missing');
+  assert.ok(packet.attention.blockers.some((value: Wire) => value.code === 'DEPENDENCY_NOT_READY'));
+  f.setTargetPackages(undefined);
+  const unknown = (await f.client.callTool({ name: 'assemble_ticket_context', arguments: {
+    ticket_id: f.registration.ticket_id, requested_action: 'implementation', trigger: 'manual',
+  } })).structuredContent as Wire;
+  assert.equal(unknown.execution.environment.preflight.status, 'unavailable');
+});
+
+test('public Packet consumes trusted outer canonical Spec observations with provenance', async t => {
+  const f = await fixture(); t.after(f.close);
+  const canonical = 'https://github.invalid/issues/89';
+  const notes = path.join(f.repo, 'docs', 'implementation-notes', 'ORCH-001.md');
+  writeFileSync(notes, '# Notes\n\nSource Spec: ' + canonical + '\n\n## Context Plan\n\n'
+    + '- **Core:** ticket\n- **Related:** spec\n- **Retrieval:** symbols\n- **Expansion triggers:** conflict\n');
+  const call = async () => (await f.client.callTool({ name: 'assemble_ticket_context', arguments: {
+    ticket_id: f.registration.ticket_id, requested_action: 'implementation', trigger: 'manual',
+  } })).structuredContent as Wire;
+  assert.equal((await call()).sources.find((value: Wire) => value.id === 'spec-canonical').state, 'reference-only');
+  f.canonicalSpecObservations.set(canonical, { url: canonical, status: 'observed',
+    revision: 'github-revision-1', observed_at: new Date().toISOString(),
+    digest: 'sha256:' + 'a'.repeat(64), provenance: 'outer-reader:fixture' });
+  const observed = await call();
+  assert.equal(observed.sources.find((value: Wire) => value.id === 'spec-canonical').state, 'observed');
+  assert.equal(observed.sources.find((value: Wire) => value.id === 'spec-canonical').provenance, 'outer-reader:fixture');
+  f.canonicalSpecObservations.set(canonical, { url: canonical, status: 'unavailable',
+    revision: null, observed_at: new Date().toISOString(), digest: null,
+    provenance: 'outer-reader:fixture', reason: 'remote-read-failed' });
+  const unavailable = await call();
+  assert.equal(unavailable.sources.find((value: Wire) => value.id === 'spec-canonical').state, 'unavailable');
+  assert.equal(unavailable.sources.find((value: Wire) => value.id === 'spec-canonical').reason, 'remote-read-failed');
 });
 
 test('unsupported action and incomplete protected identity stay explicit', async t => {

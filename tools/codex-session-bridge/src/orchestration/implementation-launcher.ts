@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { inspectDependency, inspectHostCapabilities } from './preflight.ts';
 import { z } from 'zod';
 import { HarnessError } from '../harness/model.ts';
 import { executionContentIdentitySchema, implementationAuthorizationSchema, implementationAuthoritySourceIdentitySchema,
@@ -48,6 +49,17 @@ export interface ImplementationLaunchAuthoritySource {
     authorization: z.infer<typeof implementationAuthorizationSchema> | null;
     source: z.infer<typeof implementationAuthoritySourceIdentitySchema>;
   };
+}
+
+export function targetDependencyPackages(policy: z.infer<typeof implementationPolicySnapshotSchema>): string[] {
+  const packages = policy.preflight.dependency_packages;
+  if (!packages || new Set(packages).size !== packages.length || packages.some(value =>
+    !/^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(value))) {
+    throw new HarnessError('IMPLEMENTATION_ENVIRONMENT_CONFLICT', {
+      observed: 'target-packages-unknown', reprepare_required: true,
+    });
+  }
+  return packages;
 }
 
 export class FileImplementationLaunchAuthoritySource implements ImplementationLaunchAuthoritySource {
@@ -108,6 +120,10 @@ export class FileImplementationLaunchAuthoritySource implements ImplementationLa
 interface EnvironmentSource {
   observe(cwd: string, policy: z.infer<typeof implementationPolicySnapshotSchema>, notes: { path: string; sha256: string }): {
     required_paths: string[]; required_executables: Array<z.infer<typeof implementationExecutableIdentitySchema>>;
+    dependencies?: Array<{ package_directory: string; manifest_sha256: string; lock_sha256: string | null;
+      modules_mtime_ms: number | null; node_path: string; node_version: string }>;
+    capabilities?: { path_digest: string; rg_state: 'available' | 'unavailable'; rg_path: string | null;
+      rg_version: string | null; fallbacks: string[] };
   };
 }
 
@@ -171,7 +187,20 @@ export class HostImplementationEnvironmentSource implements EnvironmentSource {
         source: 'host-path', refresh: 'preflight-and-dispatch-guard',
       });
     });
-    return { required_paths: [...policy.preflight.required_paths], required_executables: requiredExecutables };
+    const dependencies = targetDependencyPackages(policy).map(directory => {
+      const fact = inspectDependency(root, directory);
+      if (fact.state !== 'ready') throw new HarnessError('IMPLEMENTATION_ENVIRONMENT_CONFLICT', {
+        source: directory, observed: fact.reason, reprepare_required: true });
+      return { package_directory: directory, manifest_sha256: fact.manifest_sha256,
+        lock_sha256: fact.lock_sha256, modules_mtime_ms: fact.modules_mtime_ms,
+        node_path: fact.node.path, node_version: fact.node.version };
+    });
+    const host = inspectHostCapabilities(root);
+    const capabilities = { path_digest: host.path_digest, rg_state: host.rg.state,
+      rg_path: host.rg.state === 'available' ? host.rg.canonical_path : null,
+      rg_version: host.rg.state === 'available' ? host.rg.version : null, fallbacks: host.fallbacks };
+    return { required_paths: [...policy.preflight.required_paths], required_executables: requiredExecutables,
+      ...(dependencies.length ? { dependencies } : {}), capabilities };
   }
 }
 
@@ -268,16 +297,20 @@ export class ImplementationLauncher {
         expected: frozen.environment, observed: environment, reprepare_required: true,
       });
     }
-    const references = [ticket.reference, ...(workflow.snapshot?.artifacts ?? []).map((value: any) => value.location)]
+    const rawReferences = [ticket.reference, authorization.notes.path,
+      ...(workflow.snapshot?.artifacts ?? []).map((value: any) => value.location)]
       .filter((value: unknown): value is string => typeof value === 'string' && value.length > 0);
     return { ticket, policy, authorization, authority, workflow, observedIdentity, environment,
-      references: [...new Set(references)] };
+      references: [...new Set(rawReferences)], duplicateReferences: rawReferences.length - new Set(rawReferences).size };
   }
 
   private prompt(snapshot: ReturnType<ImplementationLauncher['current']>, input: z.infer<typeof startTicketImplementationInputSchema>) {
     return [
       '执行 Ticket implementation。仅从以下持久化引用恢复上下文：',
       ...snapshot.references.map(value => `- ${value}`),
+      `- fixed_point: ${snapshot.ticket.comparison_baseline.commit_oid}`,
+      `环境事实：${JSON.stringify(snapshot.environment.capabilities ?? null)}`,
+      `依赖事实：${JSON.stringify(snapshot.environment.dependencies ?? [])}`,
       '当前 delta：', ...input.current_delta.map(value => `- ${value.ref}: ${value.value ?? 'null'}`),
       '结构化 workflow contract：review_policy=delegated；destination=Ticket Main；session=fresh。',
       '完成实现、最小定向测试、commit 与 Implementation Handoff 后停止；不要执行 Review。',
@@ -304,7 +337,9 @@ export class ImplementationLauncher {
     const protection = {
       caller_fingerprint: callerFingerprint, contract, policy: snapshot.policy, authorization: snapshot.authorization,
       authority_source: snapshot.authority.source,
-      prompt_context: { references: snapshot.references, current_delta: input.current_delta },
+      prompt_context: { references: snapshot.references, current_delta: input.current_delta,
+        cost: { prompt_utf8_bytes: Buffer.byteLength(prompt, 'utf8'), reference_count: snapshot.references.length,
+          duplicate_reference_count: snapshot.duplicateReferences } },
       preflight: { workflow_revision: snapshot.workflow.workflow_revision, subject_ref: input.expected.subject_ref,
         notes: snapshot.authorization.notes, environment: snapshot.environment },
     };

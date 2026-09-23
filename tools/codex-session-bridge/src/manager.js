@@ -4,6 +4,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { BridgeError, publicError, redact } from './errors.js';
 import { isProcessAlive } from './process.js';
 import { permissionSelectionFingerprint, sessionPermissionSnapshot, validatePermissionSelection } from './permissions.js';
+import { DEFAULT_MODEL, DEFAULT_REASONING } from './model-policy.js';
 
 const ACTIVE = new Set(['queued', 'running', 'stopping']);
 const fingerprint = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -97,7 +98,7 @@ export class SessionManager {
     const cwd = this.cwd(input.cwd);
     if (!this.permissionResolver) throw new BridgeError('PERMISSION_RESOLUTION_FAILED', 'No Codex permission resolver is configured.');
     const [config, permissions] = await Promise.all([
-      this.catalog.validate(input.model ?? 'gpt-5.6-sol', input.reasoning ?? 'medium'),
+      this.catalog.validate(input.model ?? DEFAULT_MODEL, input.reasoning ?? DEFAULT_REASONING),
       this.permissionResolver.resolve(cwd, input.permissions),
     ]);
     // Recheck after asynchronous capability/config discovery: two clients can retry together.

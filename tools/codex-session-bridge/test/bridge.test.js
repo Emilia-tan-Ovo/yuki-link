@@ -82,6 +82,7 @@ function setup(t, options = {}) {
   const catalog = new ModelCatalog();
   catalog.snapshot = { checked_at: new Date().toISOString(), models: [
     { model: 'gpt-6-astra', reasoning: ['low', 'high', 'ultra'] },
+    { model: 'gpt-6-sol', reasoning: ['low', 'medium', 'high'] },
     { model: 'gpt-5.6-sol', reasoning: ['low', 'medium', 'high'] },
   ] };
   const executor = new FakeExecutor();
@@ -108,7 +109,7 @@ test('async acceptance, concurrent dedup, session lock, inheritance and explicit
   const threadId = manager.session(a.session_id).codex_thread_id;
   const nextInput = { request_id: randomUUID(), session_id: a.session_id, prompt: '继续' };
   const [c, d] = await Promise.all([manager.send(nextInput), manager.send(nextInput)]);
-  assert.equal(c.run_id, d.run_id); assert.equal(c.model, 'gpt-5.6-sol'); assert.equal(c.reasoning, 'medium');
+  assert.equal(c.run_id, d.run_id); assert.equal(c.model, 'gpt-6-sol'); assert.equal(c.reasoning, 'medium');
   await tick(); executor.complete(1);
   const e = await manager.send({ ...nextInput, request_id: randomUUID(), model: 'gpt-5.6-sol', reasoning: 'low' });
   await tick(); executor.complete(2);
@@ -453,7 +454,10 @@ test('real MCP HTTP clients reconnect to durable runs; host/origin checks and ex
   const url = new URL(`http://127.0.0.1:${server.address().port}/mcp`);
   const client = new Client({ name: 'test', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(url));
-  assert.equal((await client.listTools()).tools.length, 13);
+  const toolList = await client.listTools();
+  assert.equal(toolList.tools.length, 13);
+  assert.match(toolList.tools.find(tool => tool.name === 'codex_start_session').inputSchema.properties.model.description,
+    /Start default: gpt-6-sol/);
   const started = await client.callTool({ name: 'codex_start_session', arguments: input() });
   assert.equal(started.isError, undefined);
   const { run_id, session_id } = started.structuredContent;
