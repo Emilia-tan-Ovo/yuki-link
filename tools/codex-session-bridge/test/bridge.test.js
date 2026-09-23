@@ -455,7 +455,8 @@ test('real MCP HTTP clients reconnect to durable runs; host/origin checks and ex
   const client = new Client({ name: 'test', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(url));
   const toolList = await client.listTools();
-  assert.equal(toolList.tools.length, 13);
+  assert.equal(toolList.tools.length, 14);
+  assert.ok(toolList.tools.some(tool => tool.name === 'start_ticket_review'));
   assert.match(toolList.tools.find(tool => tool.name === 'codex_start_session').inputSchema.properties.model.description,
     /Start default: gpt-6-sol/);
   const started = await client.callTool({ name: 'codex_start_session', arguments: input() });

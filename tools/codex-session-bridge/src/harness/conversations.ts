@@ -25,6 +25,7 @@ export class ConversationHistory {
   relations = new Map<string, ChildConversation>();
   requests = new Map<string, ChildConversationAssociationRecord>();
   assessments = new Map<string, IsolationAssessment>();
+  assessmentRecords = new Map<string, RecordEntry>();
   constructor(journal: Journal, source: Source, workflow: WorkflowHistory, ticket: (id: string) => Ticket,
     bindings: Map<string, Binding>) {
     this.journal = journal; this.source = source; this.workflow = workflow; this.ticket = ticket; this.bindings = bindings;
@@ -51,7 +52,13 @@ export class ConversationHistory {
         this.conversations.set(conversation.conversation_id, conversation);
         this.relations.set(relationKey(conversation.ticket_id, conversation.relation), conversation);
         this.assessments.set(record.data.binding.id, destination.isolation);
+        this.assessmentRecords.set(record.data.binding.id, record);
       }
+      return;
+    }
+    if (record.data.kind === 'child_isolation_assessed') {
+      this.assessments.set(record.data.binding_id, record.data.isolation);
+      this.assessmentRecords.set(record.data.binding_id, record);
       return;
     }
     if (record.data.kind !== 'child_conversation_associated') return;
@@ -60,6 +67,7 @@ export class ConversationHistory {
     this.relations.set(relationKey(value.conversation.ticket_id, value.conversation.relation), value.conversation);
     this.requests.set(value.conversation.ticket_id + ':' + value.request_id, value);
     this.assessments.set(value.binding.id, value.isolation);
+    this.assessmentRecords.set(value.binding.id, record);
   }
   private relationExecution(input: ChildAssociation) {
     const current = this.workflow.current.get(input.ticket_id)?.snapshot;
@@ -87,7 +95,7 @@ export class ConversationHistory {
     if (!matched) throw new HarnessError('ATTRIBUTION_MISMATCH', { reason: 'workflow-execution-mismatch' });
     return current;
   }
-  private assess(input: ChildAssociation, conversationId: string): IsolationAssessment {
+  assessExecution(sessionId: string, runId: string, conversationId: string): IsolationAssessment {
     const reasons: IsolationAssessment['reasons'] = [];
     let state: IsolationAssessment['state'] = 'verified';
     const add = (next: IsolationAssessment['state'], code: string, source: string) => {
@@ -96,22 +104,22 @@ export class ConversationHistory {
     };
     let session;
     try {
-      session = this.source.session(input.session_id);
-      if (session.id !== input.session_id) add('mismatch', 'SESSION_ID_MISMATCH', 'source.session');
+      session = this.source.session(sessionId);
+      if (session.id !== sessionId) add('mismatch', 'SESSION_ID_MISMATCH', 'source.session');
     } catch { add('unknown', 'SESSION_SOURCE_UNAVAILABLE', 'source.session'); }
     let runs = [] as ReturnType<Source['runs']>;
     try {
-      runs = this.source.runs(input.session_id);
-      const target = runs.find(value => value.id === input.run_id);
-      if (!target || target.session_id !== input.session_id) add('mismatch', 'RUN_SESSION_MISMATCH', 'source.runs');
+      runs = this.source.runs(sessionId);
+      const target = runs.find(value => value.id === runId);
+      if (!target || target.session_id !== sessionId) add('mismatch', 'RUN_SESSION_MISMATCH', 'source.runs');
       const first = [...runs].sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id))[0];
       if (target && first?.id !== target.id) add('mismatch', 'SESSION_REUSED_BEFORE_BOUND_RUN', 'source.runs');
     } catch { add('unknown', 'RUN_SOURCE_UNAVAILABLE', 'source.runs'); }
-    if ([...this.bindings.values()].some(binding => binding.session_id === input.session_id
+    if ([...this.bindings.values()].some(binding => binding.session_id === sessionId
       && binding.conversation_id !== conversationId)) {
       add('mismatch', 'SESSION_BOUND_TO_OTHER_CONVERSATION', 'bindings');
     }
-    const run = runs.find(value => value.id === input.run_id);
+    const run = runs.find(value => value.id === runId);
     if (run) {
       try {
         const events = this.source.events(run);
@@ -167,7 +175,8 @@ export class ConversationHistory {
     const binding: Binding = { id: randomUUID(), ticket_id: ticket.id, conversation_id: conversation.conversation_id,
       source_id: this.journal.sourceId, session_id: input.session_id, scope: 'run', run_id: input.run_id, attached_at: now() };
     const association: ChildConversationAssociationRecord = { request_id: input.request_id, fingerprint, conversation,
-      binding, previous_session_id: previous?.session_id ?? null, isolation: this.assess(input, conversation.conversation_id) };
+      binding, previous_session_id: previous?.session_id ?? null,
+      isolation: this.assessExecution(input.session_id, input.run_id, conversation.conversation_id) };
     const entry = this.journal.append({ kind: 'child_conversation_associated', association });
     this.bindings.set(binding.id, binding); this.apply(entry);
     return this.receipt(association, false);
@@ -182,7 +191,9 @@ export class ConversationHistory {
   }
   private summaryFor(conversation: ChildConversation) {
     const bindings = [...this.bindings.values()].filter(value => value.conversation_id === conversation.conversation_id);
-    const assessments = bindings.map(value => this.assessments.get(value.id)).filter(Boolean) as IsolationAssessment[];
+    const currentAssessments = new Map(bindings.map(binding =>
+      [binding.id, this.refreshedAssessment(binding, conversation.relation.kind === 'review')]));
+    const assessments = [...currentAssessments.values()];
     const isolation = assessments.reduce((result, value) => assessmentPriority[value.state] > assessmentPriority[result.state] ? value : result,
       assessments[0] ?? { state: 'unknown', assessed_at: conversation.created_at,
         reasons: [{ code: 'SOURCE_NOT_PROVIDED', source: 'child conversation binding' }] });
@@ -194,10 +205,34 @@ export class ConversationHistory {
         finding_refs: review?.finding_refs ?? [], workflow_isolated: review?.isolated ?? 'unknown' };
     })() : conversation.relation;
     return { ...conversation, relation, isolation, bindings: bindings.map(binding => ({ ...binding,
-      isolation: this.assessments.get(binding.id) ?? null,
+      isolation: currentAssessments.get(binding.id) ?? null,
+      isolation_provenance: (() => {
+        if (JSON.stringify(currentAssessments.get(binding.id)) !== JSON.stringify(this.assessments.get(binding.id))) return null;
+        const record = this.assessmentRecords.get(binding.id);
+        return record ? { kind: record.data.kind, event_id: record.event_id, cursor: record.cursor,
+          source_id: record.source_id } : null;
+      })(),
       thread_ids: [...new Set(this.journal.records.filter(record => record.data.kind === 'event'
         && record.data.event.binding_id === binding.id && record.data.event.thread_id).map(record =>
           record.data.kind === 'event' ? record.data.event.thread_id : null).filter(Boolean))] })) };
+  }
+  private refreshedAssessment(binding: Binding, review: boolean): IsolationAssessment {
+    const previous = this.assessments.get(binding.id);
+    if (!review || !previous || !binding.run_id) return previous ?? { state: 'unknown', assessed_at: now(),
+      reasons: [{ code: 'SOURCE_NOT_PROVIDED', source: 'child conversation binding' }] };
+    // Runtime session/run/events are the current source of truth. The bound operation remains an immutable snapshot.
+    const observed = this.assessExecution(binding.session_id, binding.run_id, binding.conversation_id);
+    if (previous.state === observed.state && JSON.stringify(previous.reasons) === JSON.stringify(observed.reasons)) return previous;
+    try {
+      const record = this.journal.append({ kind: 'child_isolation_assessed', binding_id: binding.id,
+        isolation: observed });
+      this.apply(record);
+      return observed;
+    } catch {
+      // A changed result without durable provenance must never expose an old verified assessment as current.
+      return { state: 'unknown', assessed_at: observed.assessed_at,
+        reasons: [{ code: 'ASSESSMENT_REFRESH_NOT_RECORDED', source: 'journal' }] };
+    }
   }
   summary(ticketId: string) {
     return [...this.conversations.values()].filter(value => value.ticket_id === ticketId).map(value => this.summaryFor(value));

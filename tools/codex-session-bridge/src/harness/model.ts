@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { taskRecordSchema } from './task-model.ts';
 import { workflowObservationRecordSchema, workflowSnapshotRecordSchema } from './workflow-model.ts';
-import { childConversationAssociationRecordSchema } from './conversation-model.ts';
+import { childConversationAssociationRecordSchema, isolationAssessmentSchema } from './conversation-model.ts';
 import { executionOperationBoundRecordSchema, executionOperationReservedRecordSchema,
   executionOperationTransitionedRecordSchema } from './execution-model.ts';
 
@@ -88,6 +88,8 @@ export const recordSchema = z.object({
     z.object({ kind: z.literal('workflow_snapshot'), workflow: workflowSnapshotRecordSchema }),
     z.object({ kind: z.literal('workflow_observation'), workflow: workflowObservationRecordSchema }),
     z.object({ kind: z.literal('child_conversation_associated'), association: childConversationAssociationRecordSchema }),
+    z.object({ kind: z.literal('child_isolation_assessed'), binding_id: id,
+      isolation: isolationAssessmentSchema }).strict(),
     executionOperationReservedRecordSchema,
     executionOperationTransitionedRecordSchema,
     executionOperationBoundRecordSchema,

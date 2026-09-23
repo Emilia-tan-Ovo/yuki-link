@@ -80,6 +80,8 @@ export class Harness {
       currentIdentity: ticket => ticket.comparison_baseline ? this.changes.facts.currentIdentity(ticket.comparison_baseline) : null,
       existingChild: (ticketId, relation) => this.conversations.relations.get(ticketId + ':' + relation.kind + ':'
         + (relation.kind === 'review' ? relation.review_id + ':' + relation.participant : relation.acceptance_id)),
+      assessChild: (sessionId, runId, conversationId) =>
+        this.conversations.assessExecution(sessionId, runId, conversationId),
       authorizationValidator: executionOptions.authorizationValidator,
       onApplied: record => this.conversations.apply(record),
     });
