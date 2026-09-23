@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, cpSync, unlinkSync, renameSync, symlinkSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import net from 'node:net';
+import { randomUUID } from 'node:crypto';
 import { Client } from '../../codex-session-bridge/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';
 import { StreamableHTTPClientTransport } from '../../codex-session-bridge/node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js';
 import { YcaUnit } from '../src/units.js';
@@ -59,6 +60,27 @@ test('prepare follows remote HEAD beside a dirty developer branch and reuses one
   assert.equal(git(f.repo, 'branch', '--show-current'), 'unfinished');
   assert.equal(git(f.repo, 'status', '--porcelain'), before);
   assert.equal(readFileSync(path.join(f.bridge, 'src/main.js'), 'utf8'), '// uncommitted work\n');
+});
+
+test('selected release records launcher flag support and rejects a changed claim', async t => {
+  const f = fixture(t);
+  const unsupported = await prepareDeployment(f.options);
+  assert.equal(unsupported.launcherFlags.implementationLaunchAuthority, false);
+  const trusted = path.join(f.directory, 'trusted'); mkdirSync(trusted);
+  const authority = path.join(trusted, 'authority.json'); writeFileSync(authority, '{}');
+  const config = { node: process.execPath, pwsh: process.execPath, codex: process.execPath,
+    entry: path.join(f.bridge, 'src/main.js'), cwd: f.bridge, repo: f.repo, runtime: path.join(f.directory, 'runtime'),
+    deploymentRoot: f.root, implementationLaunchAuthority: authority, port: await port(), controlPort: await port() };
+  const host = { inspect: async () => [], free: async () => {} };
+  await assert.rejects(new YcaUnit(config, host, {}, () => {}, new Events(f.directory)).start(),
+    { code: 'DEPLOYMENT_LAUNCHER_UNSUPPORTED' });
+  writeFileSync(path.join(f.bridge, 'src/main.js'), "if (process.argv.includes('--help')) console.log('--implementation-launch-authority ABSOLUTE_JSON_PATH');\n");
+  git(f.repo, 'add', '.'); git(f.repo, 'commit', '-m', 'launcher support'); git(f.repo, 'push', 'origin', 'merged');
+  const supported = await prepareDeployment(f.options);
+  assert.equal(supported.launcherFlags.implementationLaunchAuthority, true);
+  assert.equal((await verifyDeployment(f.root)).launcherFlags.implementationLaunchAuthority, true);
+  await selectDeployment(f.root, unsupported.commit);
+  assert.equal((await verifyDeployment(f.root)).launcherFlags.implementationLaunchAuthority, false);
 });
 
 test('remote default branch changes create a new release and preserve the previous source', async t => {
@@ -163,9 +185,17 @@ test('real deployed YCA reports the target commit and YCA-002 contract; preparat
   const workspace = path.join(f.directory, 'workspace'); mkdirSync(workspace);
   const controlRoot = path.join(f.directory, 'private-control'); mkdirSync(controlRoot);
   writeFileSync(path.join(controlRoot, 'config.json'), '{"local":"private"}');
+  const authority = path.join(controlRoot, 'implementation-authority.json');
+  writeFileSync(authority, JSON.stringify({ schema_version: 1, active_policy: {
+    schema_version: 1, policy_id: 'fixture-policy', revision: 1, project_key: 'YCA', action: 'ticket-implementation',
+    workflow_phase: 'implementation', supported_contract_versions: [1], model: 'gpt-6-sol', reasoning: 'medium',
+    permission_selection: 'owner-native-default', preflight: { required_paths: [], required_executables: [],
+      require_recording: true, model_line: 'single' }, authority_refs: ['fixture-control'],
+  }, authorizations: [] }));
   const pwsh = process.env.CC_TEST_PWSH ?? (await run('pwsh.exe', ['-NoProfile', '-Command', '[Console]::Write((Get-Process -Id $PID).Path)'])).output.trim();
   const config = { node: process.execPath, pwsh, codex: process.execPath, entry: path.join(f.bridge, 'src/main.js'), cwd: f.bridge,
-    repo: workspace, runtime: path.join(f.directory, 'service'), deploymentRoot: f.root, controlRoots: [controlRoot], port: await port(), controlPort: await port() };
+    repo: workspace, runtime: path.join(f.directory, 'service'), deploymentRoot: f.root, controlRoots: [controlRoot],
+    implementationLaunchAuthority: authority, port: await port(), controlPort: await port() };
   const state = {}, host = new WindowsHost(pwsh), events = new Events(f.directory);
   let unit = new YcaUnit(config, host, state, () => {}, events);
   const client = new Client({ name: 'deployment-acceptance', version: '1' });
@@ -174,7 +204,18 @@ test('real deployed YCA reports the target commit and YCA-002 contract; preparat
     const running = await until(async () => { const o = await unit.observe(); return o.healthy && o; });
     assert.equal(running.deployment.state, 'verified'); assert.equal(running.deployment.running.commit, first.commit);
     assert.equal(running.tools.sha256, first.tools.sha256);
+    assert.equal((await host.inspect(config.node, [first.entry, '--implementation-launch-authority', authority], running.pid))[0]?.matches,
+      true, 'the owned process receives the configured authority path from the selected release');
     await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${config.port}/mcp`)));
+    const rejected = await client.callTool({ name: 'start_ticket_implementation', arguments: {
+      schema_version: 1, ticket_id: randomUUID(), request_id: 'unregistered-ticket', authorization_ref: 'fixture',
+      expected: { workflow_revision: 1, subject_ref: 'fixture', content_identity: {
+        scheme: 'yuki-git-subject', version: 1, scope: null, completeness: 'complete', digest: 'sha256:' + 'a'.repeat(64),
+      }, policy: { policy_id: 'fixture-policy', revision: 1, digest: 'a'.repeat(64) },
+      notes: { path: 'docs/notes.md', sha256: 'a'.repeat(64) } }, current_delta: [],
+    } });
+    assert.match(JSON.stringify(rejected.structuredContent), /TICKET_NOT_FOUND/,
+      'an unregistered Ticket remains fail-closed through the public MCP seam');
     const tool = (await client.listTools()).tools.find(tool => tool.name === 'filesystem_read');
     assert.match(tool.description, /outside read roots/);
     const outside = path.join(f.directory, 'outside.txt'); writeFileSync(outside, '区外 UTF-8 样本\r\n');

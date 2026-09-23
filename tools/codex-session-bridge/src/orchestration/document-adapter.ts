@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import type { DocumentFact } from './context-contract.ts';
+import { parseContextPlan } from './context-plan-contract.ts';
 
 const digest = (bytes: Buffer) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const empty = (status: DocumentFact['status'], location: string, observedAt: string | null = null,
@@ -9,7 +10,6 @@ const empty = (status: DocumentFact['status'], location: string, observedAt: str
   adapter: 'markdown-context-v0', location, digest: null, observed_at: observedAt, source_updated_at: sourceUpdatedAt,
   fields: {}, context_plan: null,
   declarations: { unknown_side_effects: [], next_action: [] } });
-const split = (value: string) => value.split(/[；;]/).map(item => item.trim()).filter(Boolean);
 const section = (text: string, heading: string) => {
   const lines = text.split(/\r?\n/), start = lines.findIndex(line => new RegExp(`^#{1,4} +${heading} *$`, 'i').test(line.trim()));
   if (start < 0) return [];
@@ -62,19 +62,13 @@ export class MarkdownContextDocumentAdapter {
           declarations: { unknown_side_effects: sideEffects, next_action: nextAction } };
       }
       const plan = section(text, 'Context Plan');
-      if (!plan.length) return { ...empty('malformed', location), digest: digest(bytes), observed_at: observedAt,
+      const sourceSpecRef = /^Source Spec[：:]\s*(https:\/\/\S+)\s*$/m.exec(text)?.[1] ?? null;
+      const contextPlan = parseContextPlan(plan);
+      if (!contextPlan) return { ...empty('malformed', location), digest: digest(bytes), observed_at: observedAt,
         source_updated_at: sourceUpdatedAt };
-      const field = (label: string) => {
-        const line = plan.find(value => new RegExp(`^\\s*[-*] +\\*\\*${label}:\\*\\*`, 'i').test(value));
-        return line ? { present: true, values: split(line.replace(new RegExp(`^\\s*[-*] +\\*\\*${label}:\\*\\* *`, 'i'), '')) }
-          : { present: false, values: [] as string[] };
-      };
-      const core = field('Core'), related = field('Related'), retrieval = field('Retrieval'), expansion = field('Expansion triggers');
-      if (![core, related, retrieval, expansion].every(value => value.present)) return { ...empty('malformed', location),
-        digest: digest(bytes), observed_at: observedAt, source_updated_at: sourceUpdatedAt };
       return { status: 'observed', adapter: 'markdown-context-v0', location, digest: digest(bytes), observed_at: observedAt,
-        source_updated_at: sourceUpdatedAt, fields: {}, context_plan: { core: core.values, related: related.values,
-          retrieval: retrieval.values, expansion_triggers: expansion.values }, declarations: { unknown_side_effects: [], next_action: [] } };
+        source_updated_at: sourceUpdatedAt, fields: { source_spec_ref: sourceSpecRef }, context_plan: contextPlan,
+        declarations: { unknown_side_effects: [], next_action: [] } };
     } catch { return empty('malformed', location, observedAt); }
   }
 }

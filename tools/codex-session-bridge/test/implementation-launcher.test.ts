@@ -12,6 +12,7 @@ import { Harness } from '../src/harness/harness.ts';
 import { createHttpServer } from '../src/http.js';
 import { FileImplementationLaunchAuthoritySource, HostImplementationEnvironmentSource, ImplementationLauncher,
   digestImplementationPolicy } from '../src/orchestration/implementation-launcher.ts';
+import { HarnessContextFactsSource } from '../src/orchestration/harness-context-source.ts';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 
@@ -20,6 +21,7 @@ function fixture(t: test.TestContext) {
   const repo = path.join(root, 'repo'); mkdirSync(repo);
   git(repo, 'init'); git(repo, 'config', 'user.email', 'fixture@example.invalid'); git(repo, 'config', 'user.name', 'Fixture');
   mkdirSync(path.join(repo, 'docs')); writeFileSync(path.join(repo, 'subject.txt'), 'base\n', 'utf8');
+  writeFileSync(path.join(repo, '.gitignore'), 'node_modules/\n', 'utf8');
   const notes = 'confirmed implementation notes\n'; writeFileSync(path.join(repo, 'docs', 'notes.md'), notes, 'utf8');
   git(repo, 'add', '.'); git(repo, 'commit', '-m', 'base');
   const fixedPoint = git(repo, 'rev-parse', 'HEAD');
@@ -40,7 +42,7 @@ function fixture(t: test.TestContext) {
     conversation_id: registration.conversation_id, workflow_revision: 2, previous_revision: 1,
     request_id: 'workflow-2', fingerprint: 'a'.repeat(64), snapshot: {
       phase: 'implementation', subject: { subject_id: 'subject-implementation', fixed_point: fixedPoint, head: fixedPoint },
-      checkpoint: { worktree: repo }, artifacts: [
+      checkpoint: { worktree: repo }, findings: [], runtime_refs: [], artifacts: [
         { role: 'ticket', location: 'https://github.invalid/issues/94', revision: null },
         { role: 'implementation-notes', location: 'docs/notes.md', revision: null },
         { role: 'checkpoint', location: '.local/workflow-state/ORCH-004.md', revision: null },
@@ -51,7 +53,8 @@ function fixture(t: test.TestContext) {
     schema_version: 1, policy_id: 'implementation-policy', revision: 7, project_key: 'YCA',
     action: 'ticket-implementation', workflow_phase: 'implementation', supported_contract_versions: [1],
     model: 'gpt-5.6-sol', reasoning: 'medium', permission_selection: 'owner-native-default',
-    preflight: { required_paths: [], required_executables: [], require_recording: true, model_line: 'single' },
+    preflight: { required_paths: [], required_executables: [], dependency_packages: [],
+      require_recording: true, model_line: 'single' },
     authority_refs: ['service-config:test'],
   };
   let sourceRevision = 1;
@@ -73,11 +76,13 @@ function fixture(t: test.TestContext) {
     },
   };
   let starts = 0;
+  let lastPrompt = '';
   let beforeGuard: (() => void) | null = null;
   const manager = {
     harness,
     async startGuarded(input: any, guard: (dispatch: any) => unknown) {
       starts++;
+      lastPrompt = input.prompt;
       assert.equal(input.permissions, undefined, 'native Owner permissions must be inherited');
       beforeGuard?.(); beforeGuard = null;
       const fingerprint = 'b'.repeat(64);
@@ -113,11 +118,17 @@ function fixture(t: test.TestContext) {
   t.after(() => { harness.workflowHistory.current.clear(); harness.close(); rmSync(root, { recursive: true, force: true }); });
   return { launcher, harness, authority, input, registration, manager, runtime, source, root, repo,
     get starts() { return starts; },
+    get lastPrompt() { return lastPrompt; },
     setAvailable(value: boolean) { available = value; }, changePolicy() { policyBody = { ...policyBody, revision: policyBody.revision + 1 }; },
     changeAuthoritySource() { sourceRevision++; },
     requireExecutable(name: string) { policyBody = { ...policyBody, preflight: {
       ...policyBody.preflight, required_executables: [name],
     } }; },
+    requireDependency(directory: string) { policyBody = { ...policyBody, preflight: {
+      ...policyBody.preflight, dependency_packages: [directory],
+    } }; },
+    omitDependencies() { const { dependency_packages: _ignored, ...preflight } = policyBody.preflight;
+      policyBody = { ...policyBody, preflight }; },
     setBeforeGuard(value: () => void) { beforeGuard = value; } };
 }
 
@@ -138,6 +149,50 @@ test('launches one fresh delegated implementation into Ticket Main and freezes a
   assert.match(result.preflight.environment.required_executables[0].sha256, /^[0-9a-f]{64}$/);
   assert.equal(result.actual_permissions.sandbox_mode, 'danger-full-access');
   assert.equal(f.starts, 1);
+  assert.ok(f.lastPrompt.includes('fixed_point:'));
+  assert.ok(f.lastPrompt.includes('环境事实：'));
+  assert.ok(Buffer.byteLength(f.lastPrompt) < 4096, 'fresh prompt stays bounded to references and facts');
+  assert.equal(result.prompt_cost.prompt_utf8_bytes, Buffer.byteLength(f.lastPrompt));
+  assert.equal(result.prompt_cost.duplicate_reference_count, 2, 'duplicate artifact references are counted');
+});
+
+test('required dependency is checked before reservation and again before dispatch', async t => {
+  const f = fixture(t);
+  const pkg = path.join(f.repo, 'tools', 'package'); mkdirSync(pkg, { recursive: true });
+  writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ dependencies: { sample: '1.0.0' } }));
+  writeFileSync(path.join(pkg, 'package-lock.json'), JSON.stringify({ packages: { '': { dependencies: { sample: '1.0.0' } } } }));
+  f.requireDependency('tools/package');
+  const input = f.input();
+  await assert.rejects(f.launcher.start(input), { code: 'SUBJECT_IDENTITY_CONFLICT' });
+  // The caller must prepare against the changed worktree identity, then resolve dependencies.
+  const identity = f.harness.changes.facts.currentIdentity(f.harness.tickets.get(f.registration.ticket_id)!.comparison_baseline!);
+  const fresh = f.input({ expected: { ...input.expected, content_identity: {
+    scheme: identity.scheme, version: identity.version, scope: identity.scope,
+    completeness: identity.completeness, digest: identity.digest },
+    policy: { policy_id: 'implementation-policy', revision: 7,
+      digest: f.authority.snapshot('ORCH-004', 'owner:#94').policy.digest } } });
+  await assert.rejects(f.launcher.start(fresh), { code: 'IMPLEMENTATION_ENVIRONMENT_CONFLICT' });
+  assert.equal(f.starts, 0);
+  const module = path.join(pkg, 'node_modules', 'sample'); mkdirSync(module, { recursive: true });
+  writeFileSync(path.join(module, 'package.json'), JSON.stringify({ name: 'sample', main: 'index.js' }));
+  writeFileSync(path.join(module, 'index.js'), 'module.exports = true;');
+  f.setBeforeGuard(() => rmSync(path.join(module, 'index.js')));
+  await assert.rejects(f.launcher.start(fresh), { code: 'IMPLEMENTATION_ENVIRONMENT_CONFLICT' });
+  assert.equal(f.starts, 1, 'guard rejects the change before any model dispatch');
+});
+
+test('omitted trusted target package list cannot reserve a fresh implementation', async t => {
+  const f = fixture(t);
+  f.requireDependency('tools/package');
+  const packetFact = new HarnessContextFactsSource(f.harness, undefined, undefined, f.authority)
+    .collect(f.registration.ticket_id).preflight;
+  assert.deepEqual(packetFact?.target_packages, ['tools/package']);
+  assert.notEqual(packetFact?.dependencies[0].state, 'ready');
+  f.omitDependencies();
+  await assert.rejects(f.launcher.start(f.input()), (error: any) =>
+    error.code === 'IMPLEMENTATION_ENVIRONMENT_CONFLICT' && error.details?.observed === 'target-packages-unknown');
+  assert.equal(f.harness.executionOperations.observations(f.registration.ticket_id).length, 0);
+  assert.equal(f.starts, 0);
 });
 
 test('file authority source returns one atomic versioned snapshot with canonical trusted identity', t => {
@@ -206,7 +261,7 @@ test('host executable preflight ignores worktree locator and executable spoofs a
     if (priorNodeOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = priorNodeOptions;
     rmSync(root, { recursive: true, force: true });
   });
-  const policy: any = { preflight: { required_paths: [], required_executables: ['node'] } };
+  const policy: any = { preflight: { required_paths: [], required_executables: ['node'], dependency_packages: [] } };
   const observed = new HostImplementationEnvironmentSource().observe(root, policy, {
     path: 'notes.md', sha256: createHash('sha256').update('notes\n').digest('hex'),
   });
@@ -235,7 +290,7 @@ test('host executable preflight rejects a worktree PATH alias to an external exe
     if (priorPath === undefined) delete process.env.PATH; else process.env.PATH = priorPath;
     rmSync(root, { recursive: true, force: true });
   });
-  const policy: any = { preflight: { required_paths: [], required_executables: ['node'] } };
+  const policy: any = { preflight: { required_paths: [], required_executables: ['node'], dependency_packages: [] } };
   assert.throws(() => new HostImplementationEnvironmentSource().observe(worktree, policy, {
     path: 'notes.md', sha256: createHash('sha256').update('notes\n').digest('hex'),
   }), (error: any) => error.code === 'IMPLEMENTATION_ENVIRONMENT_CONFLICT'

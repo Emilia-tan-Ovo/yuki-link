@@ -40,6 +40,12 @@ test('optional Harness port keeps legacy config valid and participates in local 
   assert.equal(loadConfig(file).yca.harnessPort, 7394);
   writeFileSync(file, JSON.stringify({ ...config, yca: { ...config.yca, harnessPort: 7392 } }), 'utf8');
   assert.throws(() => loadConfig(file), { code: 'PORT_CONFIG_INVALID' });
+  writeFileSync(file, JSON.stringify({ ...config, yca: { ...config.yca,
+    implementationLaunchAuthority: 'relative-authority.json' } }), 'utf8');
+  assert.throws(() => loadConfig(file), { code: 'ABSOLUTE_PATH_REQUIRED' });
+  writeFileSync(file, JSON.stringify({ ...config, yca: { ...config.yca,
+    implementationLaunchAuthority: path.join(root, 'authority.json') } }), 'utf8');
+  assert.equal(loadConfig(file).yca.implementationLaunchAuthority, path.join(root, 'authority.json'));
 });
 
 test('serialized repeated starts, dependency order, stop intent and manager restart', async t => {

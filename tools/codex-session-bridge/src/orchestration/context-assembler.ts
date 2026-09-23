@@ -44,6 +44,14 @@ export class ContextAssembler {
     if (facts.workflow && checkpoint.status === 'observed' && checkpointFields.phase && checkpointFields.phase !== facts.workflow.phase) {
       conflicts.push(issue('PHASE_CONFLICT', 'checkpoint recovery phase differs from recorded Workflow phase', ['checkpoint', 'workflow']));
     }
+    const canonicalSpec = facts.references.find(value => value.kind === 'spec' && value.canonical);
+    const workflowSpec = facts.references.find(value => value.kind === 'spec-workflow');
+    const issueNumber = (value: string) => /(?:issues\/|GitHub #)(\d+)$/.exec(value)?.[1] ?? null;
+    if (canonicalSpec && workflowSpec && canonicalSpec.location !== workflowSpec.location
+      && (!issueNumber(canonicalSpec.location) || issueNumber(canonicalSpec.location) !== issueNumber(workflowSpec.location))) {
+      conflicts.push(issue('SPEC_REFERENCE_CONFLICT', 'Notes and Workflow cite different canonical Spec references',
+        ['implementation-notes', 'workflow']));
+    }
     if (facts.workflow?.assessment === 'stale') staleSources.push(issue('WORKFLOW_STALE', 'Workflow evidence assessment is stale', ['workflow']));
     if (facts.workflow?.assessment === 'mismatch') conflicts.push(issue('WORKFLOW_MISMATCH', 'Workflow evidence assessment reports a mismatch', ['workflow']));
     if (facts.workflow && ['unknown', 'not-applicable'].includes(facts.workflow.assessment)) {
@@ -145,8 +153,9 @@ export class ContextAssembler {
         operations: facts.execution.operations.slice(0, MAX_EXECUTIONS),
         coverage: { ...facts.execution.coverage, source_refs: facts.execution.source_refs },
         model_policy: { value: 'project-policy', retrieval_ref: 'AGENTS.md' },
-        model_usage: { state: 'not-materialized', value: null, source_refs: facts.execution.source_refs },
-        environment: { worktree: facts.identity.scope ?? null, recording: facts.recording },
+        model_usage: facts.execution.usage ?? { state: 'unavailable', value: null, source_refs: facts.execution.source_refs },
+        environment: { worktree: facts.identity.scope ?? null, recording: facts.recording,
+          preflight: facts.preflight ?? { status: 'unavailable', capabilities: null, dependencies: [], source_refs: ['host'] } },
       },
       retrieval: {
         context_plan: { status: facts.implementation_notes.status, adapter: facts.implementation_notes.adapter,
@@ -154,13 +163,15 @@ export class ContextAssembler {
           core: bounded(plan?.core, 'context-plan-core'), related: bounded(plan?.related, 'context-plan-related'),
           retrieval: bounded(plan?.retrieval, 'context-plan-retrieval'), expansion_triggers: bounded(plan?.expansion_triggers, 'context-plan-expansion'),
           source_refs: ['implementation-notes'] },
-        references: facts.references,
+        references: unique(facts.references, value => `${value.kind}:${value.location}`).slice(0, MAX_RETRIEVAL),
       },
       sources: facts.sources,
       integrity,
       action_readiness: readiness,
       recommendation,
-      budget: { policy_version: CONTEXT_POLICY_VERSION, max_bytes: MAX_PACKET_BYTES, actual_bytes: 0 },
+      budget: { policy_version: CONTEXT_POLICY_VERSION, max_bytes: MAX_PACKET_BYTES, actual_bytes: 0,
+        reference_count: facts.references.length,
+        duplicate_reference_count: facts.references.length - unique(facts.references, value => `${value.kind}:${value.location}`).length },
     };
     this.applyBudget(packet, omissions);
     packet.budget.actual_bytes = Buffer.byteLength(JSON.stringify(packet), 'utf8');
@@ -189,6 +200,14 @@ export class ContextAssembler {
     if (sideEffects.length) reasons.push(issue('UNKNOWN_SIDE_EFFECT', 'unknown side effects require reconciliation', ['checkpoint']));
     if (integrity === 'conflicted') reasons.push(issue('EVIDENCE_CONFLICT', 'conflicting evidence must be resolved', ['workflow', 'checkpoint', 'git']));
     if (integrity === 'stale') reasons.push(issue('STALE_EVIDENCE', 'stale recovery evidence must be reconciled', ['checkpoint', 'workflow', 'git']));
+    if (action === 'implementation') {
+      if (facts.preflight?.status !== 'observed') reasons.push(issue('PREFLIGHT_UNAVAILABLE',
+        'host capability and dependency facts require a fresh deterministic observation', ['host']));
+      for (const dependency of facts.preflight?.dependencies ?? []) if (dependency.state !== 'ready') {
+        reasons.push(issue('DEPENDENCY_NOT_READY', `dependency ${String(dependency.package_directory)} is ${String(dependency.state)}`,
+          ['host', 'implementation-notes']));
+      }
+    }
     const openFindings = facts.workflow?.findings.filter(value => ['open', 'fixed', 'fixed-unverified'].includes(String(value.status))) ?? [];
     if (openFindings.length && action !== 'review') reasons.push(issue('OPEN_FINDING',
       'an unresolved finding blocks the requested action', ['workflow']));

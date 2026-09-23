@@ -245,6 +245,7 @@ export class ExecutionOperations {
         authorization: structuredClone(implementation.authorization),
         ...(implementation.authority_source ? { authority_source: structuredClone(implementation.authority_source) } : {}),
         preflight: structuredClone(implementation.preflight),
+        prompt_cost: implementation.prompt_context.cost ? structuredClone(implementation.prompt_context.cost) : null,
         actual_permissions: operation.dispatch ? structuredClone(operation.dispatch.permissions) : null } : {}),
       latest_event_id: latest?.event_id ?? null, latest_cursor: latest?.cursor ?? null, deduplicated,
       recording: { state: this.journal.failure ? 'recording-failed' : 'recording', reason: this.journal.failure,
