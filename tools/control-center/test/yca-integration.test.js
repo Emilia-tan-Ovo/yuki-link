@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
+import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, existsSync, rmSync, writeFileSync } from 'node:fs';
 import { YcaUnit } from '../src/units.js';
@@ -77,4 +78,46 @@ test('diagnostic stop refuses activity until explicit confirmation and schema st
   const status = await get(url + '/status', { token }); assert.equal(status.json.active.codex, 1); assert.ok(!JSON.stringify(status.json).includes(token));
   assert.equal((await get(url + '/stop', { token, method: 'POST', confirm: true })).status, 202);
   await sleep(30); assert.equal(shutdown, 1); assert.equal(drained, true);
+});
+
+test('YCA observation binds OS identity to the current authenticated instance and valid activity', async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'yuki-cc-observe-'));
+  t.after(() => { assert.ok(root.startsWith(path.join(os.tmpdir(), 'yuki-cc-observe-'))); rmSync(root, { recursive: true, force: true }); });
+  const token = 'a'.repeat(64), instance = 'current-instance';
+  const actual = { pid: 12345, created: '2026-01-01T00:00:00Z', matches: true };
+  let diagnostic = { service: 'yuki-local-control', instance, pid: actual.pid,
+    active: { codex: 0, computer: 0, requests: 0 }, tools: { count: 1, sha256: 'b'.repeat(64) } };
+  let denied = false;
+  const server = http.createServer((request, response) => {
+    response.setHeader('content-type', 'application/json');
+    if (request.url === '/healthz') return response.end(JSON.stringify({ service: 'yuki-computer-agent', status: 'ok' }));
+    if (denied || request.headers.authorization !== `Bearer ${token}`) { response.statusCode = 403; return response.end('{}'); }
+    response.end(JSON.stringify(diagnostic));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.close(); server.closeAllConnections(); });
+  const state = { instance, token, process: { ...actual } };
+  const config = { node: process.execPath, entry: process.execPath, runtime: root,
+    port: server.address().port, controlPort: server.address().port };
+  const host = { inspect: async () => [actual], free: async () => {} };
+  const unit = new YcaUnit(config, host, state, () => {}, new Events(root));
+  assert.equal((await unit.observe()).healthy, true);
+  denied = true;
+  let observation = await unit.observe();
+  assert.equal(observation.owned, false); assert.equal(observation.activity, null); assert.equal(observation.healthy, false);
+  await assert.rejects(unit.stop(), { code: 'OBSERVED_UNOWNED' });
+  denied = false; diagnostic = { ...diagnostic, instance: 'previous-instance' };
+  assert.equal((await unit.observe()).owned, false, 'old instance response cannot authenticate this launch');
+  diagnostic = { ...diagnostic, instance, active: { codex: -1, computer: 0, requests: 0 } };
+  observation = await unit.observe();
+  assert.equal(observation.owned, true); assert.equal(observation.activity, null); assert.equal(observation.healthy, false);
+  await assert.rejects(unit.stop(), { code: 'ACTIVITY_UNKNOWN' });
+  diagnostic = { ...diagnostic, active: { codex: 0, computer: 0, requests: 0 } };
+  state.process = null;
+  assert.equal((await unit.observe()).owned, true, 'matching authenticated instance can recover missing OS record');
+  assert.deepEqual(state.process, actual);
+  state.process = { ...actual, created: 'previous-process' };
+  assert.equal((await unit.observe()).owned, false, 'PID alone never grants ownership');
+  state.process = { ...actual };
+  assert.equal((await unit.observe()).healthy, true, 'manual recheck recovers after diagnostics do');
 });

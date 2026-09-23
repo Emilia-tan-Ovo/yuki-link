@@ -313,9 +313,13 @@ test('prepared release stays pending across ordinary restart and switches only t
   const firstTools = { count: 14, sha256: '1'.repeat(64) }, secondTools = { count: 18, sha256: '2'.repeat(64) };
   u.running = true; u.healthy = true; u.commit = first; u.target = first; u.tools = firstTools;
   m.state.units.yca.ownership.deployment = { commit: first, tools: firstTools };
+  m.state.units.yca.ownership.instance = 'first-instance';
+  m.state.units.yca.ownership.process = { pid: 100, created: 'first-process' };
+  u.pid = 100; u.created = 'first-process'; u.instance = 'first-instance';
   u.observe = async function() {
-    return { running: this.running, healthy: this.healthy, owned: true, activity: this.activity,
-      deployment: { running: this.running ? { commit: this.commit } : null, target: { commit: this.target },
+    return { running: this.running, healthy: this.healthy, owned: true, authenticated: true,
+      instance: this.instance, pid: this.pid, created: this.created, activity: this.activity,
+      deployment: { running: this.running ? { commit: this.commit, dirty: false } : null, target: { commit: this.target },
         launched: m.state.units.yca.ownership.deployment, state: this.running && this.commit === this.target ? 'verified' : 'update-pending' },
       tools: this.running ? this.tools : null, controlPlane: { state: 'healthy' } };
   };
@@ -325,6 +329,9 @@ test('prepared release stays pending across ordinary restart and switches only t
     this.commit = input.commit ?? this.target;
     this.tools = this.commit === second ? secondTools : firstTools;
     m.state.units.yca.ownership.deployment = { commit: this.commit, tools: this.tools };
+    this.pid++; this.created = `process-${this.pid}`; this.instance = input.instance ?? 'restart-instance';
+    m.state.units.yca.ownership.instance = this.instance;
+    m.state.units.yca.ownership.process = { pid: this.pid, created: this.created };
   };
   u.stop = async function() { this.stops++; this.running = false; this.healthy = false; };
   const prepare = async () => { u.target = second; return { commit: second, branch: 'merged', tools: secondTools }; };
@@ -508,4 +515,103 @@ test('rollback does not stop an externally replaced process even when it runs th
   assert.equal(stops, 1, 'rollback must not stop the replacement B');
   assert.equal(starts.length, 1); assert.equal(starts[0].commit, second); assert.ok(starts[0].instance);
   assert.equal(u.running, true); assert.equal(u.commit, second); assert.equal(m.state.units.yca.ownership.instance, 'external-instance');
+});
+
+function switchFixture(t) {
+  const f = setup(t), m = f.manager, u = f.units.yca;
+  const old = 'a'.repeat(40), next = 'b'.repeat(40);
+  const oldTools = { count: 14, sha256: '1'.repeat(64) }, nextTools = { count: 18, sha256: '2'.repeat(64) };
+  Object.assign(u, { running: true, healthy: true, owned: true, commit: old, tools: oldTools,
+    pid: 101, created: 'old-process', instance: 'old-instance', activity: { codex: 0, computer: 0, requests: 0 } });
+  Object.assign(m.state.units.yca.ownership, { instance: u.instance, process: { pid: u.pid, created: u.created, matches: true }, deployment: { commit: old, tools: oldTools } });
+  u.observe = async function() { return { running: this.running, healthy: this.healthy, owned: this.owned,
+    authenticated: this.authenticated ?? this.owned, instance: this.authenticated === false ? null : this.instance,
+    pid: this.pid, created: this.created, activity: this.activity,
+    deployment: { running: this.running && this.authenticated !== false ? { commit: this.commit, dirty: false } : null,
+      state: this.running ? 'verified' : 'stopped' }, tools: this.authenticated === false ? null : this.tools,
+    code: this.code }; };
+  u.stop = async function() { this.stops++; this.running = false; this.healthy = false; };
+  u.start = async function(input) {
+    this.starts++; this.running = true; this.healthy = true; this.commit = input.commit; this.tools = input.commit === next ? nextTools : oldTools;
+    this.pid++; this.created = `process-${this.pid}`; this.instance = input.instance ?? 'restored-instance';
+    Object.assign(m.state.units.yca.ownership, { instance: this.instance,
+      process: { pid: this.pid, created: this.created, matches: true }, deployment: { commit: this.commit, tools: this.tools } });
+  };
+  return { f, m, u, old, next, oldTools, nextTools, prepare: async () => ({ commit: next, branch: 'main', tools: nextTools }) };
+}
+
+test('candidate observation gap recovers within the existing startup window', async t => {
+  const x = switchFixture(t), { m, u } = x;
+  m.startupMs = 1000;
+  const observe = u.observe.bind(u); let gaps = 0;
+  u.observe = async function() {
+    const o = await observe();
+    if (this.commit === x.next && gaps++ < 2) return { ...o, owned: false, authenticated: false, instance: null,
+      healthy: false, activity: null, tools: null, code: 'OBSERVED_UNOWNED' };
+    return o;
+  };
+  const operation = { operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', action: 'update-and-restart', target: 'yca' };
+  await m.updateDeployment(x.prepare, { restart: true, operation });
+  assert.equal(u.stops, 1); assert.equal(u.commit, x.next);
+  assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested', 'succeeded']);
+});
+
+test('candidate verified during rollback recheck stays running and succeeds', async t => {
+  const x = switchFixture(t), { m, u } = x;
+  m.startupMs = 0;
+  const observe = u.observe.bind(u); let gaps = 0;
+  u.observe = async function() {
+    const o = await observe();
+    if (this.commit === x.next && gaps++ === 0) return { ...o, healthy: false, code: 'ACTIVITY_UNKNOWN', activity: null };
+    return o;
+  };
+  const operation = { operationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', action: 'update-and-restart', target: 'yca' };
+  await m.updateDeployment(x.prepare, { restart: true, operation });
+  assert.equal(u.stops, 1); assert.equal(u.commit, x.next);
+  assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested', 'succeeded']);
+});
+
+test('unknown candidate evidence leaves requested-only and never stops it', async t => {
+  const x = switchFixture(t), { m, u } = x;
+  m.startupMs = 0;
+  const observe = u.observe.bind(u);
+  u.observe = async function() {
+    const o = await observe();
+    return this.commit === x.next ? { ...o, owned: false, authenticated: false, instance: null,
+      healthy: false, activity: null, tools: null, code: 'OBSERVED_UNOWNED' } : o;
+  };
+  const operation = { operationId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', action: 'update-and-restart', target: 'yca' };
+  await assert.rejects(m.updateDeployment(x.prepare, { restart: true, operation }), e => e.operationOutcome === 'unknown');
+  assert.equal(u.stops, 1); assert.equal(u.commit, x.next);
+  assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested']);
+});
+
+test('authenticated candidate with wrong tools and idle activity is stopped before restoring A', async t => {
+  const x = switchFixture(t), { m, u } = x;
+  const start = u.start.bind(u);
+  u.start = async function(input) {
+    await start(input);
+    if (input.commit === x.next) { this.healthy = false; this.tools = { count: 18, sha256: '9'.repeat(64) }; this.code = 'DEPLOYMENT_UNVERIFIED'; }
+    else this.code = null;
+  };
+  const operation = { operationId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', action: 'update-and-restart', target: 'yca' };
+  await assert.rejects(m.updateDeployment(x.prepare, { restart: true, operation }), { code: 'DEPLOYMENT_UNVERIFIED' });
+  assert.equal(u.stops, 2); assert.equal(u.commit, x.old); assert.equal(u.healthy, true);
+  assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested', 'failed']);
+});
+
+test('verified switch ignores noncritical reporting failure and terminal failure stays unknown', async t => {
+  const x = switchFixture(t), { m, u } = x;
+  const add = m.events.add.bind(m.events);
+  m.events.add = (...args) => { if (args[1] === 'deployment-switched') throw fail('EVENT_WRITE_FAILED'); add(...args); };
+  const operation = { operationId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', action: 'update-and-restart', target: 'yca' };
+  await m.updateDeployment(x.prepare, { restart: true, operation });
+  assert.equal(u.stops, 1); assert.equal(u.commit, x.next);
+  assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested', 'succeeded']);
+  const y = switchFixture(t);
+  const addOperation = y.m.events.addOperation.bind(y.m.events);
+  y.m.events.addOperation = (...args) => { if (args[3] === 'succeeded') throw fail('EVENT_WRITE_FAILED'); addOperation(...args); };
+  await assert.rejects(y.m.updateDeployment(y.prepare, { restart: true, operation: {
+    operationId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', action: 'update-and-restart', target: 'yca' } }), e => e.operationOutcome === 'unknown');
+  assert.equal(y.u.stops, 1); assert.equal(y.u.commit, y.next);
 });

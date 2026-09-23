@@ -42,3 +42,13 @@ Ticket：https://github.com/Emilia-tan-Ovo/yuki-link/issues/109 ；现场来源�
 | `test/supervisor.test.js` + `test/server.test.js`，receipt | 副作用后的状态/terminal 写入失败、连接终态前中断仍 unknown；已验证成功后的非关键报告故障不触发回退；持久事件与 HTTP 回执一致，重启读取 requested-only 仍 unknown，recheck 不补造旧 terminal。 |
 
 低风险细节（辅助函数名、错误码内部映射和夹具组织）交实现阶段按现有风格决定。若现场逐次响应表明另一原因，先更新根因证据与最小设计，再改实现。下一步：fresh implementation session 从本 Notes、fixed point 与当前 Git 事实启动；本设计不包含实现授权。
+
+## Implementation Handoff（2026-09-23）
+
+- 来源：GitHub #109、本 Notes；worktree `.local/worktrees/bugfix-109`，分支 `codex/bugfix-109-control-center-projection`，fixed point `ba0995686d6939b0fbc917414994605f87aa3bb7`，实现开始 HEAD `b2ca8d944a5d8073360e48b20758339dddda8536`。实现提交的精确 SHA 见本轮最终交接与 Git HEAD。
+- 修改：`tools/control-center/src/units.js` 将 OS 身份与当前实例的 HTTP 200 认证诊断共同作为 ownership 证据，校验 activity 非负整数与工具摘要结构；`src/supervisor.js` 在原 `startupMs` 内重查候选观察缺口，回退前按 instance、OS 身份、认证诊断、commit/tools/activity 重新判定 B 成功、安全回退 A、外部冲突或 unknown；成功后的报告事件故障不再进入回退。对应回归在 `test/supervisor.test.js`、`test/yca-integration.test.js`。未修改 Bridge、token、启动期限或停止安全门。
+- 红→绿：先加入候选观察缺口测试；首次运行被当前 worktree 缺少 Bridge 的 `zod` 依赖阻断。随后使用本机主仓库已有 `tools/codex-session-bridge/node_modules` 的只读临时 Node 解析 hook（位于系统 TEMP，不纳入 Git），用临时 baseline 源码执行该用例，确认失败为 `DEPLOYMENT_ROLLBACK_CONFLICT`（1 项红）；修复后同用例通过。临时 baseline 文件已移除。
+- 最终定向验证：Node `v24.18.1`；`node --test tools/control-center/test/supervisor.test.js tools/control-center/test/server.test.js`：37/37 通过；`node --test --test-name-pattern='YCA observation binds|diagnostic stop refuses|legacy runtime lock' tools/control-center/test/yca-integration.test.js`：3/3 通过；修改的 4 个 JS 文件 `node --check`、`git diff --check` 通过。测试均使用上述只读依赖 hook；无 typecheck 脚本。
+- 已知测试限制：另一次完整运行这 3 个定向文件为 39/40，既有 `real isolated YCA` 用例在 Harness 首页收到 503、原断言要求 200；Bridge 的静态资源实现注明缺少 UI build 会返回 503。该用例后续未作为本票通过证据，也未在本票安装依赖或构建 Bridge UI。未跑完整 Control Center suite。
+- Review policy：delegated 给 Emilia；fresh Review pending，尚无 Review finding 结论。真实 #101/#102 rollout 逐次诊断响应不可用；本实现是代码与定向夹具验证，生产真实切换仍需部署后验收。
+- 下一步：Emilia 按 fixed point 与本次提交的实际 diff 启动 fresh Review，再做确定性 Acceptance；不在本 session push、建 PR、merge 或 deploy。
