@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -78,7 +78,7 @@ head: "${fixedPoint}"
   harness.attach({ ticket_id: registration.ticket_id, session_id: session.id, run_id: run.id });
   const canonicalSpecObservations = new Map<string, any>();
   let targetPackages: string[] | undefined = [];
-  const manager = { harness, canonicalSpecObservations, implementationLaunchAuthority: {
+  const manager = { harness, store: { directory: path.join(root, 'runtime') }, canonicalSpecObservations, implementationLaunchAuthority: {
     snapshot: () => ({ policy: { preflight: { dependency_packages: targetPackages } },
       source: { reference: 'fixture-authority' } }),
   } };
@@ -92,6 +92,35 @@ head: "${fixedPoint}"
     await client.close(); server.close(); server.closeAllConnections(); harness.close(); rmSync(root, { recursive: true, force: true });
   } };
 }
+
+test('public Memory write and Context retrieval keep diagnostics local', async t => {
+  const f = await fixture(); t.after(f.close);
+  const context = async () => (await f.client.callTool({ name: 'assemble_ticket_context', arguments: {
+    ticket_id: f.registration.ticket_id, requested_action: 'implementation', trigger: 'manual',
+  } })).structuredContent as Wire;
+  const before = await context();
+  assert.equal(existsSync(path.join(f.root, 'runtime', 'engineering-memory')), false,
+    'Context assembly never creates an empty Memory store');
+  const record = { id: randomUUID(), logical_key: 'lesson-context', type: 'Lesson', summary: 'Keep facts bounded',
+    scope: { project_key: 'YCA' }, applicability: { actions: ['implementation'] },
+    sources: [{ reference: 'https://example.invalid/issue/92' }],
+    payload: { observation: 'Long context', recommendation: 'Use short records' } };
+  const written = await f.client.callTool({ name: 'engineering_memory_create', arguments: { record } });
+  assert.equal(written.isError, undefined);
+  const after = await context();
+  assert.equal(after.retrieval.engineering_memory.items[0].id, record.id);
+  assert.equal(after.integrity.state, before.integrity.state);
+  assert.equal(after.action_readiness.state, before.action_readiness.state);
+  const invalidated = await f.client.callTool({ name: 'engineering_memory_invalidate', arguments: {
+    id: record.id, reason: 'Obsolete', source: { reference: 'https://example.invalid/issue/93' },
+  } });
+  assert.equal(invalidated.isError, undefined);
+  assert.equal((await context()).retrieval.engineering_memory.items.length, 0);
+  const history = (await f.client.callTool({ name: 'engineering_memory_query', arguments: {
+    project_key: 'YCA', actions: 'implementation', history: true,
+  } })).structuredContent as Wire;
+  assert.equal(history.records[0].lifecycle, 'invalidated');
+});
 
 test('public Context tools preserve evidence integrity and remain read-only', async t => {
   const f = await fixture(); t.after(f.close);

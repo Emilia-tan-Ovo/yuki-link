@@ -11,9 +11,13 @@ import { startTicketImplementationInputSchema } from './orchestration/implementa
 import { DEFAULT_MODEL, DEFAULT_REASONING } from './model-policy.js';
 import { startTicketReviewInputSchema } from './orchestration/review-launcher.ts';
 import { WorkflowAgentLauncher, startWorkflowAgentInputSchema } from './orchestration/workflow-agent-launcher.ts';
+import { EngineeringMemoryStore, RuleAuthorityVerifier, memoryDraft, memoryQuery } from './orchestration/engineering-memory.ts';
 
 export function createMcpServer(manager, computer) {
   const server = new McpServer({ name: 'yuki-computer-agent', version: '0.2.0' });
+  // HTTP creates one MCP server per request; the runtime owner must share one projection/writer.
+  const memory = manager.store?.directory
+    ? (manager.engineeringMemory ??= new EngineeringMemoryStore(manager.store.directory)) : null;
   const withGateEvidence = (result, gate) => {
     if (!gate.evidence_gap) return result;
     const response = result && typeof result === 'object' && !Array.isArray(result) ? result : { result };
@@ -103,8 +107,34 @@ export function createMcpServer(manager, computer) {
     const observations = manager.canonicalSpecObservations instanceof Map
       ? manager.canonicalSpecObservations : new Map();
     return new ContextAssembler(new HarnessContextFactsSource(manager.harness, undefined, observations,
-      manager.implementationLaunchAuthority ?? null));
+      manager.implementationLaunchAuthority ?? null), memory);
   };
+  const requireMemory = () => { if (!memory) throw new Error('MEMORY_UNAVAILABLE'); return memory; };
+  register('new-side-effect', 'engineering_memory_create', 'Explicitly create one typed Engineering Memory record.',
+    z.object({ record: memoryDraft }).strict(), ({ record }) => requireMemory().create(record));
+  register('new-side-effect', 'engineering_memory_supersede', 'Atomically replace one active Engineering Memory record.',
+    z.object({ old_id: z.string().uuid(), record: memoryDraft }).strict(), ({ old_id, record }) => requireMemory().supersede(old_id, record));
+  register('new-side-effect', 'engineering_memory_invalidate', 'Invalidate one active Engineering Memory record with reason and source.',
+    z.object({ id: z.string().uuid(), reason: z.string().min(1).max(240), source: z.object({ reference: z.string().min(1).max(512),
+      digest: z.string().regex(/^sha256:[0-9a-f]{64}$/).optional() }).strict() }).strict(),
+    ({ id, reason, source }) => requireMemory().invalidate(id, reason, source));
+  register('observe', 'engineering_memory_query', 'Read active applicable Engineering Memory, or explicitly include history.',
+    memoryQuery, input => {
+      const result = requireMemory().query(input);
+      const ticket = [...(manager.harness?.tickets?.values() ?? [])]
+        .find(ticket => manager.harness.projects.get(ticket.project_id)?.key === input.project_key);
+      const root = ticket?.comparison_baseline?.worktree_root ?? ticket?.expected_worktree;
+      const verifier = root ? new RuleAuthorityVerifier(root, ticket?.comparison_baseline?.repository_id ?? null,
+        ticket?.reference ?? null) : null;
+      const stale = [];
+      const records = result.records.filter(record => {
+        if (record.type !== 'Rule' || input.history) return true;
+        const status = verifier?.verify(record) ?? { status: 'stale', reason: 'UNVERIFIABLE_AUTHORITY' };
+        if (status.status === 'valid') return true;
+        stale.push({ id: record.id, reason: status.reason }); return false;
+      });
+      return { ...result, records, stale };
+    }, true);
   register('observe', 'assemble_ticket_context', 'Assemble a bounded, versioned Context Packet from current durable facts. This is read-only and does not refresh sources, start execution, advance Workflow, or write the Context Plan.',
     contextInput, input => contextAssembler().assemble(input), true);
   register('observe', 'prepare_ticket_resume', 'Prepare a read-only recovery projection and deterministic next-action recommendation from a Context Packet. This never starts or resumes execution, advances Workflow, or replays side effects.',
