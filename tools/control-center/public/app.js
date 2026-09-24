@@ -40,8 +40,9 @@ async function refresh() {
     $('#checked').textContent = '最近检测：' + new Date(state.at).toLocaleTimeString();
     for (const id of ['yca', 'tunnel']) {
       const o = state.units[id], card = $('#' + id);
+      const ownership = o.owned ? '由控制中心管理' : o.running && o.code === 'ACTIVITY_UNKNOWN' ? '实例存在，归属暂不可验证' : o.running ? '观察到外部实例' : '未发现受管进程';
       card.querySelector('.status').textContent = o.status; card.querySelector('.status').dataset.status = o.status;
-      card.querySelector('.evidence').textContent = `期望${o.desired === 'running' ? '运行' : '停止'} · ${o.owned ? '由控制中心管理' : o.running ? '观察到外部实例' : '未发现受管进程'} · ${messages[o.blocked ?? o.code] ?? o.blocked ?? o.code ?? (o.stale ? '证据已过期' : id === 'tunnel' && o.healthy && o.status === '降级' ? '本地就绪；远端通信证据不足，不等于断线' : '已取得本地证据')}`;
+      card.querySelector('.evidence').textContent = `期望${o.desired === 'running' ? '运行' : '停止'} · ${ownership} · ${messages[o.blocked ?? o.code] ?? o.blocked ?? o.code ?? (o.stale ? '证据已过期' : id === 'tunnel' && o.healthy && o.status === '降级' ? '本地就绪；远端通信证据不足，不等于断线' : '已取得本地证据')}`;
       card.querySelector('pre').textContent = JSON.stringify(o, null, 2);
     }
     $('#official').hidden = !state.units.tunnel.ui; if (state.units.tunnel.ui) $('#official').href = state.units.tunnel.ui;

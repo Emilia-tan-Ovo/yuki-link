@@ -73,7 +73,7 @@ export class Supervisor {
     const o = this.observations.yca ?? {};
     const recorded = this.state.units.yca.ownership?.deployment?.commit ?? null;
     if (o.running) {
-      if (!o.owned) throw fail('OBSERVED_UNOWNED');
+      if (!o.owned) throw fail(o.code === 'ACTIVITY_UNKNOWN' ? 'ACTIVITY_UNKNOWN' : 'OBSERVED_UNOWNED');
       const running = o.deployment?.running?.commit ?? null;
       if (!running) {
         if (o.deployment?.state === 'unmanaged') return null;
@@ -248,6 +248,11 @@ export class Supervisor {
         if (o.code && !pending && (permanent.has(o.code) || o.code.startsWith('DEPLOYMENT_'))) throw fail(o.code);
         await sleep(200);
       } while (this.clock() < deadline);
+      // One final observation closes the race where readiness lands exactly as
+      // the startup window expires. A verified healthy process must not be
+      // reported as a permanent STARTUP_TIMEOUT.
+      await this.observe();
+      if (this.observations[id]?.healthy) { s.blocked = null; return; }
       throw fail('STARTUP_TIMEOUT');
     } finally { this.busy = null; }
   }
@@ -262,8 +267,15 @@ export class Supervisor {
       const selected = id === 'all' ? ids : [id];
       const stopping = ['stop', 'restart'].includes(action);
       let restartCommit = null;
-      // User stop intent is durable even when stopping is blocked by task safety.
-      if (stopping) { for (const key of selected) { this.state.units[key].desired = 'stopped'; this.state.units[key].nextAt = null; } this.persist(); }
+      // Only an explicit stop changes durable intent to stopped. Restart's
+      // desired end state is still running, even when its safety preflight rejects.
+      if (action === 'stop') {
+        for (const key of selected) { this.state.units[key].desired = 'stopped'; this.state.units[key].nextAt = null; }
+        this.persist();
+      } else if (action === 'restart') {
+        for (const key of selected) { this.state.units[key].desired = 'running'; this.state.units[key].nextAt = null; }
+        this.persist();
+      }
       let failure = null;
       try {
         if (stopping) {
