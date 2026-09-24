@@ -480,8 +480,15 @@ test('real MCP HTTP clients reconnect to durable runs; host/origin checks and ex
   const client = new Client({ name: 'test', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(url));
   const toolList = await client.listTools();
-  assert.equal(toolList.tools.length, 14);
-  assert.ok(toolList.tools.some(tool => tool.name === 'start_ticket_review'));
+  for (const name of ['start_workflow_agent', 'start_ticket_implementation', 'start_ticket_review']) {
+    assert.ok(toolList.tools.some(tool => tool.name === name), `${name} must be publicly discoverable`);
+  }
+  for (const name of ['codex_start_session', 'harness_attach', 'harness_associate_child_conversation']) {
+    const tool = toolList.tools.find(candidate => candidate.name === name);
+    assert.ok(tool, `${name} remains available for explicit compatibility use`);
+    assert.match(tool.description, /Compatibility, diagnostic or administrator/);
+    assert.match(tool.description, /start_workflow_agent/);
+  }
   assert.match(toolList.tools.find(tool => tool.name === 'codex_start_session').inputSchema.properties.model.description,
     /Start default: gpt-6-sol/);
   const started = await client.callTool({ name: 'codex_start_session', arguments: input() });
