@@ -123,12 +123,10 @@ export class EngineeringMemoryStore {
   query(q: MemoryQuery) {
     this.ready(); let input!: MemoryQuery;
     try { input = memoryQuery.parse(q); } catch { fail('MEMORY_QUERY_INVALID'); }
-    const allActive = [...this.records.values()].filter(r => r.lifecycle === 'active');
-    const conflicts = [...new Set(allActive.filter(r => r.scope.project_key === input.project_key
-      && allActive.some(other => other.id !== r.id && overlaps(r, other)))
-      .map(r => r.logical_key))];
     const selected = [...this.records.values()].filter(r => matches(r, input));
     const active = selected.filter(r => r.lifecycle === 'active');
+    const conflicts = [...new Set(active.filter(r => active.some(other => other.id !== r.id && overlaps(r, other)))
+      .map(r => r.logical_key))];
     return { records: structuredClone((input.history ? selected : active.filter(r => !conflicts.includes(r.logical_key)))
       .sort((a, b) => a.logical_key.localeCompare(b.logical_key) || a.id.localeCompare(b.id))), conflicts };
   }
@@ -151,11 +149,13 @@ export class RuleAuthorityVerifier {
   root: string;
   repositoryId: string | null;
   ticketReference: string | null;
-  specReference: string | null;
-  specObservations: Map<string, { url?: string; status?: string; digest?: string | null; content?: string; provenance?: string }>;
+  specReference: { location: string; status: string; revision?: string | number | null; observed_at?: string | null } | null;
+  specObservations: Map<string, { url?: string; status?: string; revision?: string | null; observed_at?: string | null;
+    digest?: string | null; content?: string; provenance?: string }>;
   constructor(root: string, repositoryId: string | null = null, ticketReference: string | null = null,
-    specReference: string | null = null,
-    specObservations = new Map<string, { url?: string; status?: string; digest?: string | null; content?: string; provenance?: string }>()) {
+    specReference: { location: string; status: string; revision?: string | number | null; observed_at?: string | null } | null = null,
+    specObservations = new Map<string, { url?: string; status?: string; revision?: string | null; observed_at?: string | null;
+      digest?: string | null; content?: string; provenance?: string }>()) {
     this.root = root; this.repositoryId = repositoryId; this.ticketReference = ticketReference;
     this.specReference = specReference; this.specObservations = specObservations;
   }
@@ -172,7 +172,11 @@ export class RuleAuthorityVerifier {
       let content: string;
       if (githubSpec) {
         const observed = this.specObservations.get(ref.path);
-        if (ref.path !== this.specReference || observed?.url !== ref.path || observed.status !== 'observed'
+        if (ref.path !== this.specReference?.location || this.specReference.status !== 'observed'
+          || observed?.url !== ref.path || observed.status !== 'observed'
+          || !observed.revision || observed.revision !== this.specReference.revision
+          || !observed.observed_at || observed.observed_at !== this.specReference.observed_at
+          || !Number.isFinite(Date.parse(observed.observed_at))
           || !observed.provenance || typeof observed.content !== 'string'
           || Buffer.byteLength(observed.content, 'utf8') > 128 * 1024
           || observed.digest !== 'sha256:' + createHash('sha256').update(observed.content).digest('hex'))

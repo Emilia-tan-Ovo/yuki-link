@@ -201,7 +201,7 @@ export class ContextAssembler {
         workflow_phases: facts.workflow?.phase });
       result.status = 'observed'; result.integrity = queried.conflicts.length ? 'conflicted' : 'complete';
       result.conflicts = queried.conflicts;
-      const specReference = facts.references.find(ref => ref.kind === 'spec' && ref.canonical)?.location ?? null;
+      const specReference = facts.references.find(ref => ref.kind === 'spec' && ref.canonical) ?? null;
       const verifier = root ? new RuleAuthorityVerifier(root, identityScope?.repository_id ?? null,
         facts.ticket.reference, specReference, this.specObservations) : null;
       for (const record of queried.records) {

@@ -131,7 +131,7 @@ export function createMcpServer(manager, computer) {
         ? manager.canonicalSpecObservations : new Map();
       const specReference = ticket && result.records.some(record => record.type === 'Rule')
         ? new HarnessContextFactsSource(manager.harness, undefined, observations)
-        .collect(ticket.id).references.find(ref => ref.kind === 'spec' && ref.canonical)?.location ?? null : null;
+        .collect(ticket.id).references.find(ref => ref.kind === 'spec' && ref.canonical) ?? null : null;
       const verifier = root ? new RuleAuthorityVerifier(root, ticket?.comparison_baseline?.repository_id ?? null,
         ticket?.reference ?? null, specReference, observations) : null;
       const stale = [];

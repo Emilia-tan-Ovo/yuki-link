@@ -175,6 +175,12 @@ test('public Context retrieves a Rule verified from trusted GitHub Spec content'
   } })).structuredContent as Wire;
   assert.equal(packet.retrieval.engineering_memory.items[0]?.id, record.id,
     JSON.stringify(packet.retrieval.engineering_memory));
+  f.canonicalSpecObservations.set(url, { ...f.canonicalSpecObservations.get(url), revision: null });
+  const stalePacket = (await f.client.callTool({ name: 'assemble_ticket_context', arguments: {
+    ticket_id: f.registration.ticket_id, requested_action: 'implementation', trigger: 'manual',
+  } })).structuredContent as Wire;
+  assert.equal(stalePacket.retrieval.engineering_memory.items.length, 0);
+  assert.equal(stalePacket.retrieval.engineering_memory.stale[0]?.id, record.id);
 });
 
 test('public Context tools preserve evidence integrity and remain read-only', async t => {
