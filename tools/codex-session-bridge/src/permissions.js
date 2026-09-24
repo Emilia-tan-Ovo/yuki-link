@@ -5,6 +5,7 @@ import { resolveCodexExecutable } from './codex-executable.js';
 export const SANDBOX_MODE_VALUES = Object.freeze(['read-only', 'workspace-write', 'danger-full-access']);
 export const APPROVAL_POLICY_VALUES = Object.freeze(['on-request', 'never']);
 export const APPROVAL_REVIEWER_VALUES = Object.freeze(['user', 'auto_review', 'guardian_subagent']);
+export const DEFAULT_PERMISSION_RESOLUTION_TIMEOUT_MS = 30_000;
 const SANDBOX_MODES = new Set(SANDBOX_MODE_VALUES);
 const APPROVAL_POLICIES = new Set(APPROVAL_POLICY_VALUES);
 const APPROVAL_REVIEWERS = new Set(APPROVAL_REVIEWER_VALUES);
@@ -123,7 +124,7 @@ export function sessionPermissionSnapshot(session) {
 }
 
 export class PermissionResolver {
-  constructor(executable = 'codex', { timeoutMs = 10_000, resolveExecutable = resolveCodexExecutable, spawnChild = spawnDirect } = {}) {
+  constructor(executable = 'codex', { timeoutMs = DEFAULT_PERMISSION_RESOLUTION_TIMEOUT_MS, resolveExecutable = resolveCodexExecutable, spawnChild = spawnDirect } = {}) {
     this.executable = executable;
     this.timeoutMs = timeoutMs;
     this.resolveExecutable = resolveExecutable;
