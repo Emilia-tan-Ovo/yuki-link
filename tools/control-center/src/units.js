@@ -13,6 +13,7 @@ import { FileWorkflowAgentAuthoritySource } from '../../codex-session-bridge/src
 import { redact } from '../../codex-session-bridge/src/errors.js';
 
 const CRASH_TAIL_BYTES = 16 * 1024;
+const YCA_LOCAL_PROBE_TIMEOUT_MS = 5000;
 function crashTail(chunks) {
   if (!chunks.length) return null;
   const raw = Buffer.concat(chunks);
@@ -47,7 +48,7 @@ export class YcaUnit {
     let owned = false;
     let diagnostic, diagnosticCode = null;
     try {
-      const response = await get(`http://127.0.0.1:${this.config.controlPort}/status`, { token: this.state.token, timeout: 5000 });
+      const response = await get(`http://127.0.0.1:${this.config.controlPort}/status`, { token: this.state.token, timeout: YCA_LOCAL_PROBE_TIMEOUT_MS });
       if (response.status === 200) {
         diagnostic = response.json;
         if (diagnostic?.instance !== this.state.instance || diagnostic?.pid !== p.pid || diagnostic?.service !== 'yuki-local-control') {
@@ -62,7 +63,7 @@ export class YcaUnit {
       this.state.process = p; this.persist(); owned = true; // recover a spawn/persist interruption with instance authentication
     }
     let health;
-    try { const h = await get(`http://127.0.0.1:${this.config.port}/healthz`); health = h.status === 200 && h.json?.service === 'yuki-computer-agent' && h.json.status === 'ok'; } catch { health = false; }
+    try { const h = await get(`http://127.0.0.1:${this.config.port}/healthz`, { timeout: YCA_LOCAL_PROBE_TIMEOUT_MS }); health = h.status === 200 && h.json?.service === 'yuki-computer-agent' && h.json.status === 'ok'; } catch { health = false; }
     if (owned && diagnostic && !this.state.lock) {
       const lock = readJson(path.join(this.config.runtime, 'bridge.lock'), null);
       if (lock?.pid === p.pid) { this.state.lock = lock; this.persist(); }
@@ -170,7 +171,7 @@ export class YcaUnit {
     // authenticated needs operator investigation; live tasks are never guessed idle.
     if (!current.activity) throw fail('ACTIVITY_UNKNOWN');
     if (!confirm && Object.values(current.activity).some(n => n > 0)) throw fail('ACTIVE_TASKS');
-    const result = await get(`http://127.0.0.1:${this.config.controlPort}/stop`, { token: this.state.token, method: 'POST', confirm, timeout: 5000 });
+    const result = await get(`http://127.0.0.1:${this.config.controlPort}/stop`, { token: this.state.token, method: 'POST', confirm, timeout: YCA_LOCAL_PROBE_TIMEOUT_MS });
     if (result.status !== 202) throw fail(result.status === 409 ? 'ACTIVE_TASKS' : 'STOP_REJECTED');
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
@@ -189,11 +190,16 @@ export function tunnelHealth(health, ready, system, at = Date.now()) {
   const checked = route?.last_check;
   const checkTime = typeof checked === 'string' ? Date.parse(checked) : Date.parse(checked?.checked_at ?? checked?.at ?? checked?.time);
   const fresh = Number.isFinite(checkTime) && at - checkTime >= -5000 && at - checkTime < 120_000;
-  const readyOK = ready?.status === 200 && ready.body.trim() === 'ready';
+  const readyBody = ready?.body?.trim() ?? '';
+  const authRequired = ready?.status === 401 || ready?.status === 403 || /requires auth/i.test(readyBody);
+  // The pinned native runtime can retain this startup warning after returning
+  // HTTP 200 ready and forwarding MCP calls. Other readiness text stays untrusted.
+  const readyOK = !authRequired && ready?.status === 200 && (readyBody === 'ready'
+    || readyBody === 'ready (mcp startup probe timed out: mcp probe timed out after 2s: context deadline exceeded)');
   const alive = health?.status === 200 && health.body.trim() === 'live';
   return { healthy: alive && readyOK, ready: readyOK, controlPlane: { kind: 'proxy_reachability_not_end_to_end', state: fresh && ['healthy', 'unhealthy', 'direct'].includes(route.health_state) ? route.health_state : 'unknown', evidenceAt: Number.isFinite(checkTime) ? new Date(checkTime).toISOString() : null,
     reason: !fresh ? 'EVIDENCE_UNAVAILABLE_OR_EXPIRED' : null },
-    code: ready?.status === 401 || ready?.status === 403 || /requires auth/i.test(ready?.body ?? '') ? 'AUTH_REQUIRED' : !alive ? 'HEALTH_FAILED' : !readyOK ? 'MCP_NOT_READY' : null };
+    code: authRequired ? 'AUTH_REQUIRED' : !alive ? 'HEALTH_FAILED' : !readyOK ? 'MCP_NOT_READY' : null };
 }
 
 export class TunnelUnit {

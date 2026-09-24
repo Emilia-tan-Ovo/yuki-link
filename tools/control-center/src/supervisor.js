@@ -9,6 +9,21 @@ for (const code of ['CODEX_EXECUTABLE_UNAVAILABLE', 'NODE_PATH_MISSING', 'YCA_EN
 const unknownOperation = error => Object.assign(error, { operationOutcome: 'unknown' });
 const validActivity = activity => Boolean(activity && ['codex', 'computer', 'requests'].every(key => Number.isSafeInteger(activity[key]) && activity[key] >= 0));
 const sameProcess = (a, b) => Boolean(a?.pid && a?.created && b?.pid === a.pid && b?.created === a.created);
+const recoveredYcaStartup = (state, observation) => {
+  if (state.desired !== 'running' || state.blocked !== 'STARTUP_TIMEOUT' || !observation?.running
+    || !observation.healthy || !observation.owned || observation.authenticated !== true || observation.code
+    || !state.ownership?.instance || observation.instance !== state.ownership.instance
+    || !sameProcess(observation, state.ownership.process) || !validActivity(observation.activity)) return false;
+  const expected = state.ownership.deployment;
+  if (!expected) return observation.deployment?.state === 'unmanaged';
+  const running = observation.deployment?.running;
+  return ['verified', 'update-pending'].includes(observation.deployment?.state)
+    && running?.commit === expected.commit && running.dirty === false
+    && observation.tools?.count === expected.tools?.count && observation.tools?.sha256 === expected.tools?.sha256;
+};
+const recoveredTunnelStartup = (state, observation) => Boolean(state.desired === 'running' && state.blocked === 'STARTUP_TIMEOUT'
+  && observation?.running === true && observation.owned === true && observation.healthy === true && !observation.code
+  && sameProcess(observation, state.ownership?.process));
 
 export class Supervisor {
   constructor({ stateFile, events, createUnits, clock = Date.now, observeOnly = false, startupMs = 30_000, intervalMs = 5000 }) {
@@ -33,6 +48,10 @@ export class Supervisor {
       try { this.observations[id] = { ...await this.units[id].observe(), at: this.clock(), source: id === 'yca' ? 'OS + YCA loopback' : 'native metadata + OS + loopback' }; }
       catch (e) { this.observations[id] = { running: null, healthy: false, code: e.code ?? 'OBSERVATION_FAILED', at: this.clock(), source: 'local observation failed' }; }
     }));
+    let reconciled = false;
+    if (recoveredYcaStartup(this.state.units.yca, this.observations.yca)) { this.state.units.yca.blocked = null; reconciled = true; }
+    if (recoveredTunnelStartup(this.state.units.tunnel, this.observations.tunnel)) { this.state.units.tunnel.blocked = null; reconciled = true; }
+    if (reconciled) this.persist();
   }
   snapshot() {
     const at = this.clock();
@@ -243,7 +262,7 @@ export class Supervisor {
         const o = this.observations[id];
         if (o.healthy) { s.blocked = null; return; }
         const pending = id === 'yca' && startedInstance && this.state.units.yca.ownership.instance === startedInstance
-          && (o.running === false && !o.code || ['ACTIVITY_UNKNOWN', 'OBSERVED_UNOWNED', 'DEPLOYMENT_OBSERVATION_PENDING'].includes(o.code)
+          && (o.running === false && !o.code || ['ACTIVITY_UNKNOWN', 'DEPLOYMENT_OBSERVATION_PENDING'].includes(o.code)
             && !o.authenticated);
         if (o.code && !pending && (permanent.has(o.code) || o.code.startsWith('DEPLOYMENT_'))) throw fail(o.code);
         await sleep(200);
