@@ -1,6 +1,6 @@
 # ORCH-006 — 日常 Orchestrator 能力收口与代表性真实协作链验收
 
-状态：ticket-design 完成；等待 fresh implementation。
+状态：implementation 与 primary Review 已完成；finding-fix 待 fresh focused re-review。
 
 Ticket：[GitHub #95](https://github.com/Emilia-tan-Ovo/yuki-link/issues/95)；Source Spec：[GitHub #89](https://github.com/Emilia-tan-Ovo/yuki-link/issues/89)。#95 所列仓库 Spec 路径 `docs/specs/emilia-orchestration-consistency-v0.md` 在当前 fixed point 不存在；以 GitHub #89 为正式 Spec 来源，不为本票新建镜像。
 
@@ -39,5 +39,5 @@ Fixed point：`8ec4966b7c779745855e8e39c665a4402dbd2f7f`；worktree：`.local/wo
 - **来源与身份：**GitHub #95、Source Spec #89、本 Notes；worktree `.local/worktrees/orch-006`，branch `codex/orch-006-convergence`，fixed point 与实现前 HEAD 均为 `8ec4966b7c779745855e8e39c665a4402dbd2f7f`。提交 SHA 以同 worktree 的 `.local/workflow-state/ORCH-006.md` 为准。
 - **范围：**现有 `tools/codex-session-bridge/README.md` 与 `src/mcp.js` 已将 `start_workflow_agent` 作为正常 Workflow 推荐入口，并明确低层工具的兼容、诊断、管理员边界。没有改动运行逻辑。`tools/codex-session-bridge/test/bridge.test.js` 改为核对公开 tool list 的高层入口和低层描述；移除已过期的 14 工具总数断言。
 - **测试：**`node --test --test-name-pattern='real MCP HTTP clients reconnect' test/bridge.test.js`（在 `tools/codex-session-bridge`，Node v24.18.1）最终 exit 0，1/1 通过。初次运行因旧断言 `19 !== 14` 失败，修正断言后通过。`git diff --check` exit 0。受测源码 `bridge.test.js` SHA-256 为 `ca2b09ef164c2ec04b71bcec1543db48350f6be9863339c9dec8b3ed0cfec8a4`。未运行 full suite 或 typecheck；本次无生产源码变更。
-- **Review：**`review_policy=delegated`，接收方 Ticket Main；fresh primary Review 尚未执行，finding 状态未知。本 handoff 不代表真实链路验收或长期稳定使用。
-- **限制与下一步：**平台仍公开低层 primitives，状态仅为 safe recommended path。上层先以 durable state 对齐 Workflow revision 4 与 `prepare_ticket_resume`，核对本次真实 implementation operation/session/run/Main receipt 和 Context Packet；随后按 #95 使用 `start_ticket_review` 启动 fresh Review，并在后续验收阶段完成服务重启后的只读恢复核验。客户端 stop/timeout 后先 reconcile，不能盲重放。
+- **Review：**`review_policy=delegated`，接收方 Ticket Main；交接时 fresh primary Review 尚未执行。现已完成 primary Review，`standards-stale-notes-state` finding 正在修复，待 fresh focused re-review。本 handoff 不代表真实链路验收或长期稳定使用。
+- **限制与下一步：**平台仍公开低层 primitives，状态仅为 safe recommended path。上层在每次后续阶段启动前，从 Harness 的 durable Workflow snapshot 重新读取当前 revision；任何 Workflow 写入都会使先前读到的 revision 失效。用 `prepare_ticket_resume` 对齐最新状态，核对本次真实 implementation operation/session/run/Main receipt 和 Context Packet；primary Review 已完成，finding-fix 后进行 fresh focused re-review，并在后续验收阶段完成服务重启后的只读恢复核验。客户端 stop/timeout 后先 reconcile，不能盲重放。
