@@ -38,17 +38,22 @@ const genericInput = z.object({ schema_version: z.literal(1), action: workflowAg
     policy: z.object({ policy_id: text, revision: z.number().int().positive(), digest: hash }).strict() }).strict(),
   references: z.array(text).max(32),
   current_delta: z.array(z.object({ ref: text, value: z.string().max(2048).nullable() }).strict()).max(32),
-  review_id: text.optional(), acceptance_id: text.optional(),
+}).strict();
+const findingInput = genericInput.omit({ references: true, current_delta: true }).extend({
   finding: z.object({ origin_review_id: text, finding_id: text, report_ref: text,
-    fix_baseline: text }).strict().optional(),
+    fix_baseline: text }).strict(),
 }).strict();
 export const startWorkflowAgentInputSchema = z.discriminatedUnion('action', [
   startTicketImplementationInputSchema.extend({ action: z.literal('implementation') }).strict(),
   startTicketReviewInputSchema.extend({ action: z.literal('review') }).strict(),
-  ...(['ticket-design', 'finding-fix', 'focused-review', 'acceptance-agent'] as const).map(action =>
-    genericInput.extend({ action: z.literal(action) }).strict()),
+  genericInput.extend({ action: z.literal('ticket-design') }).strict(),
+  findingInput.extend({ action: z.literal('finding-fix') }).strict(),
+  findingInput.extend({ action: z.literal('focused-review'), review_id: text }).strict(),
+  genericInput.extend({ action: z.literal('acceptance-agent'), acceptance_id: text,
+    criteria_ref: text }).strict(),
 ]);
-type GenericInput = z.infer<typeof genericInput>;
+type GenericInput = Extract<z.infer<typeof startWorkflowAgentInputSchema>,
+  { action: 'ticket-design' | 'finding-fix' | 'focused-review' | 'acceptance-agent' }>;
 
 const phases = {
   'ticket-design': { phase: 'ticket-design', destination: 'main', requestedAction: 'ticket-design' },
@@ -155,6 +160,11 @@ export class WorkflowAgentLauncher {
     if (input.action === 'acceptance-agent' && authorization.acceptance_id !== input.acceptance_id) {
       throw new HarnessError('WORKFLOW_AGENT_NOT_AUTHORIZED');
     }
+    if (input.action === 'acceptance-agent'
+      && (authorization.agent_criterion?.criteria_ref !== input.criteria_ref
+        || authorization.agent_criterion?.behavior !== 'agent-session')) {
+      throw new HarnessError('WORKFLOW_AGENT_NOT_AUTHORIZED');
+    }
     if (frozen && !same(authority, frozen.authority)) throw new HarnessError('WORKFLOW_AGENT_AUTHORITY_CONFLICT');
     const workflow = harness.workflowHistory.current.get(input.ticket_id);
     if (!workflow || workflow.workflow_revision !== input.expected.workflow_revision
@@ -191,6 +201,8 @@ export class WorkflowAgentLauncher {
       const finding = snapshot.findings?.find((value: any) => value.origin_review_id === input.finding?.origin_review_id
         && value.finding_id === input.finding?.finding_id);
       if (!review || review.mode !== 'focused' || review.status !== 'pending'
+        || review.subject_ref !== input.expected.subject_ref
+        || review.subject_identity !== input.expected.subject_identity
         || !finding || !['fixed', 'fixed-unverified'].includes(finding.status)
         || !input.finding || !review.finding_refs?.some((value: any) =>
           value.origin_review_id === input.finding?.origin_review_id && value.finding_id === input.finding?.finding_id)) {
@@ -200,7 +212,9 @@ export class WorkflowAgentLauncher {
     if (input.action === 'acceptance-agent') {
       if (!authorization.agent_required || !input.acceptance_id
         || snapshot.acceptance?.acceptance_id !== input.acceptance_id
-        || snapshot.acceptance?.status !== 'pending') {
+        || snapshot.acceptance?.status !== 'pending'
+        || !snapshot.acceptance.criteria?.some((value: any) => value.criteria_ref === input.criteria_ref)
+        || !authorization.agent_criterion?.requirement) {
         throw new HarnessError('WORKFLOW_AGENT_ACCEPTANCE_NOT_REQUIRED');
       }
     }
@@ -225,28 +239,37 @@ export class WorkflowAgentLauncher {
     const snapshot = this.current(input);
     const { phase } = snapshot;
     const narrow = input.action === 'finding-fix' || input.action === 'focused-review';
-    const references = [...new Set([snapshot.ticket.reference, ...input.references,
-      ...(narrow ? [] : snapshot.packet.retrieval.references.map((value: any) => value.location))]
+    const references = [...new Set([snapshot.ticket.reference,
+      ...(narrow ? [input.finding.report_ref, ...(snapshot.authorization.finding_context_refs ?? [])]
+        : [...input.references, ...snapshot.packet.retrieval.references.map((value: any) => value.location)])]
       .filter(Boolean))].slice(0, 64);
-    const finding = input.finding ? [`原 finding：${input.finding.origin_review_id}/${input.finding.finding_id}`,
-      `报告：${input.finding.report_ref}`, `修复基线：${input.finding.fix_baseline}`] : [];
+    const finding = input.action === 'finding-fix' || input.action === 'focused-review'
+      ? [`原 finding：${input.finding.origin_review_id}/${input.finding.finding_id}`,
+        `报告：${input.finding.report_ref}`, `修复基线：${input.finding.fix_baseline}`] : [];
     const instruction = input.action === 'ticket-design' ? '只完成 Ticket implementation design、Implementation Notes 与 Context Plan；不要修改实现代码。'
       : input.action === 'finding-fix' ? '只修复原 finding，做最小定向测试、commit 与 handoff 后停止。'
       : input.action === 'focused-review' ? '只复核原 finding 与 fix delta，报告证据后停止；不要实现。'
       : '只核验明确要求 Agent/session 行为的验收项；不要执行 deterministic Acceptance 的其他工作。';
+    const currentDelta = input.action === 'finding-fix' || input.action === 'focused-review'
+      ? [{ ref: 'fix_baseline', value: input.finding.fix_baseline },
+        { ref: 'subject_head', value: snapshot.workflow.snapshot.subject.head }]
+      : input.current_delta;
+    const criterion = input.action === 'acceptance-agent'
+      ? [`验收项 ${input.criteria_ref}：${snapshot.authorization.agent_criterion!.requirement}`] : [];
     const prompt = [`执行 ${input.action}。仅从持久化引用恢复上下文：`,
       ...references.map(value => `- ${value}`), ...finding,
-      '当前 delta：', ...input.current_delta.map(value => `- ${value.ref}: ${value.value ?? 'null'}`),
+      ...criterion, '当前 delta：', ...currentDelta.map(value => `- ${value.ref}: ${value.value ?? 'null'}`),
       `结构化 contract：session=fresh；destination=${phase.destination}；Owner native permissions。`, instruction].join('\n');
     const destination = phase.destination === 'main' ? { kind: 'main' }
-      : phase.destination === 'review-child' ? { kind: 'child', relation: { kind: 'review',
+      : input.action === 'focused-review' ? { kind: 'child', relation: { kind: 'review',
         review_id: input.review_id, participant: 'coordinator' } }
-        : { kind: 'child', relation: { kind: 'acceptance', acceptance_id: input.acceptance_id } };
+        : { kind: 'child', relation: { kind: 'acceptance',
+          acceptance_id: input.action === 'acceptance-agent' ? input.acceptance_id : undefined } };
     const contract = { schema_version: 1, session: 'fresh', destination: phase.destination,
       review_policy: input.action === 'finding-fix' ? 'delegated' : null };
     const protection = { caller_fingerprint: callerFingerprint, action: input.action, contract,
       policy: snapshot.policy, authorization: snapshot.authorization, authority_source: snapshot.authority.source,
-      prompt_context: { references, current_delta: input.current_delta },
+      prompt_context: { references, current_delta: currentDelta },
       preflight: { workflow_revision: input.expected.workflow_revision, subject_ref: input.expected.subject_ref,
         subject_identity: input.expected.subject_identity, environment: snapshot.environment } };
     const reserved = harness.executionOperations.reserve({ ticket_id: input.ticket_id, request_id: input.request_id,

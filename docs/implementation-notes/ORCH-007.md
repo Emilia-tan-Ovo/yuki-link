@@ -55,3 +55,12 @@ Branch：`codex/orch-007-unified-workflow-agent`
 - **Review policy：** `delegated`；接收方 Ticket Main / fresh primary Review。此 implementation session 未执行 Review，finding 状态未知。
 - **Commit：** 实际 SHA 见本 worktree `.local/workflow-state/ORCH-007.md` 的 post-commit checkpoint；本 handoff 随实现提交。
 - **下一步：** 从 fixed point 与本 handoff 对提交内容做 fresh Review；真实 ticket-design smoke 列为尚未验证的 Ticket AC，由上层安排，勿将本次 fixture 测试提升为真实验收。
+
+## Finding Fix Implementation Handoff（2026-09-24）
+
+- **来源与身份：** GitHub #114、#89 Addendum、上方 Implementation Decisions、`.local/workflow-state/ORCH-007-review.md`；修复基线 `323c5d41f4ee09e6188ff77311f35286ae792fa6`，当前 worktree/branch 沿用上方身份。
+- **修复范围：** ORCH007-STD-001：README 说明 `references/current_delta` 的阶段必填及 finding 阶段禁传契约。ORCH007-SPEC-001：focused Review 必须与当前 subject ref 和 identity 一致。ORCH007-SPEC-002：finding-fix/focused-review 公开输入拒绝 caller 的 `references/current_delta`；从受信任 authorization 的 finding/report/context refs 与 Workflow 当前 subject 生成窄上下文和 fix delta。ORCH007-SPEC-003：acceptance-agent 需绑定受信任 authorization 的具体 `agent_criterion`，并核对 Workflow Acceptance 中有同一 `criteria_ref`。未修改 Review 报告中的非阻断重复代码意见。
+- **测试：** `npm run typecheck` 退出 0；`node --test test/workflow-agent-launcher.test.ts` 10/10 通过；`git diff --check` 退出 0。测试使用 Harness/journal 和临时 Git 仓库的受控 manager adapter，覆盖上述拒绝 gate 与原有 reservation/dedupe；未运行 full suite 或真实 Codex smoke。
+- **Review policy / finding 状态：** delegated，接收方 Ticket Main；四条 finding 已修复待 fresh focused re-review 核验，未自行执行 Review。真实 ticket-design smoke 仍属待验收项。
+- **Commit：** 本修复的实际 SHA 见当前 worktree `.local/workflow-state/ORCH-007.md` 的 post-commit checkpoint；本 handoff 随修复提交。
+- **下一步：** 上层以原 primary Review 报告、修复基线、本修复 commit/diff 及定向测试为输入，启动 fresh focused re-review；本次 fix session 在 handoff/commit 后停止。

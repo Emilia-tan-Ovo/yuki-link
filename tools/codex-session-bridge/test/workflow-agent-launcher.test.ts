@@ -49,8 +49,10 @@ function fixture(t: test.TestContext, action: 'ticket-design' | 'finding-fix' | 
       findings: action === 'finding-fix' ? [{ ...finding, status: 'open' }]
         : action === 'focused-review' ? [{ ...finding, status: 'fixed-unverified' }] : [],
       reviews: action === 'focused-review' ? [{ review_id: 'focused-1', mode: 'focused', status: 'pending',
+        subject_ref: 'subject-007', subject_identity: null,
         finding_refs: [{ origin_review_id: finding.origin_review_id, finding_id: finding.finding_id }] }] : [],
-      acceptance: { acceptance_id: 'acceptance-1', status: 'pending', criteria: [] } } };
+      acceptance: { acceptance_id: 'acceptance-1', status: 'pending',
+        criteria: [{ criteria_ref: '#114-AC-smoke', status: 'not-verified', evidence: [], notes: null }] } } };
   harness.workflowHistory.current.set(registration.ticket_id, workflow as any);
   const policy = { schema_version: 1, policy_id: 'workflow-agent-policy', revision: 1,
     project_key: 'YCA', action, workflow_phase: phase, model: 'gpt-6-sol', reasoning: 'medium',
@@ -59,9 +61,12 @@ function fixture(t: test.TestContext, action: 'ticket-design' | 'finding-fix' | 
   const authorization = { schema_version: 1, authorization_id: 'owner-authorization',
     ticket_key: 'ORCH-007', action, authorization_ref: 'owner:#114', subject_ref: 'subject-007',
     subject_identity: null, authority_refs: ['github:#114'], agent_required: true,
-    ...(action === 'finding-fix' || action === 'focused-review' ? { finding } : {}),
+    ...(action === 'finding-fix' || action === 'focused-review'
+      ? { finding, finding_context_refs: ['review/affected-code.md'] } : {}),
     ...(action === 'focused-review' ? { review_id: 'focused-1' } : {}),
-    ...(action === 'acceptance-agent' ? { acceptance_id: 'acceptance-1' } : {}) };
+    ...(action === 'acceptance-agent' ? { acceptance_id: 'acceptance-1', agent_criterion: {
+      criteria_ref: '#114-AC-smoke', requirement: '真实 ticket-design Agent session smoke',
+      behavior: 'agent-session' } } : {}) };
   const authorityPath = path.join(root, 'authority.json');
   writeFileSync(authorityPath, JSON.stringify({ schema_version: 1, policies: [policy],
     authorizations: [authorization] }), 'utf8');
@@ -95,11 +100,12 @@ function fixture(t: test.TestContext, action: 'ticket-design' | 'finding-fix' | 
       workflow_revision: 2, subject_ref: 'subject-007', subject_identity: null,
       content_identity, policy: { policy_id: policy.policy_id, revision: policy.revision,
         digest: digestWorkflowAgentPolicy(policy) } },
-    references: action === 'ticket-design' ? ['docs/implementation-notes/ORCH-007.md'] : ['review/report.md'],
-    current_delta: [{ ref: 'fixed_point', value: head }],
+    ...(action === 'finding-fix' || action === 'focused-review' ? {} : {
+      references: action === 'ticket-design' ? ['docs/implementation-notes/ORCH-007.md'] : [],
+      current_delta: [{ ref: 'fixed_point', value: head }] }),
     ...(action === 'finding-fix' || action === 'focused-review' ? { finding } : {}),
     ...(action === 'focused-review' ? { review_id: 'focused-1' } : {}),
-    ...(action === 'acceptance-agent' ? { acceptance_id: 'acceptance-1' } : {}) });
+    ...(action === 'acceptance-agent' ? { acceptance_id: 'acceptance-1', criteria_ref: '#114-AC-smoke' } : {}) });
   t.after(() => { harness.close(); rmSync(root, { recursive: true, force: true }); });
   return { input, makeLauncher, manager, registration, repo, source, sessions, runs,
     runtime: path.join(root, 'runtime'),
@@ -145,7 +151,10 @@ test('ticket-design uses fresh Main reservation, native Full Access and durable 
   assert.equal(retry.deduplicated, true);
   assert.equal(retry.operation_id, receipt.operation_id);
   assert.equal(f.starts, 1);
-  await assert.rejects(f.makeLauncher().start({ ...f.input(), action: 'finding-fix' }),
+  const { references, current_delta, ...sameRequest } = f.input();
+  await assert.rejects(f.makeLauncher().start({ ...sameRequest, action: 'finding-fix',
+    finding: { origin_review_id: 'review-1', finding_id: 'finding-1',
+      report_ref: 'review/report.md', fix_baseline: git(f.repo, 'rev-parse', 'HEAD') } }),
     (error: any) => error.code === 'REQUEST_CONFLICT');
   f.harness.close();
   f.harness = new Harness(f.runtime, f.source);
@@ -167,7 +176,41 @@ test('new phase actions use narrow finding context and typed child reservations'
       if (action !== 'acceptance-agent') {
         assert.match(f.lastPrompt, /review\/report\.md/);
         assert.doesNotMatch(f.lastPrompt, /docs\/implementation-notes\/ORCH-007\.md/);
+        assert.match(f.lastPrompt, /review\/affected-code\.md/);
       }
     });
   }
+});
+
+test('finding actions reject caller-supplied broad context', t => {
+  for (const action of ['finding-fix', 'focused-review'] as const) {
+    const f = fixture(t, action);
+    assert.equal(startWorkflowAgentInputSchema.safeParse({ ...f.input(), references: ['unrelated.md'] }).success, false);
+    assert.equal(startWorkflowAgentInputSchema.safeParse({ ...f.input(), current_delta: [
+      { ref: 'unrelated', value: 'injected' }] }).success, false);
+  }
+});
+
+test('focused review rejects a pending review for another subject', async t => {
+  const f = fixture(t, 'focused-review');
+  const workflow = f.harness.workflowHistory.current.get(f.registration.ticket_id)!;
+  workflow.snapshot.reviews[0].subject_ref = 'another-subject';
+  await assert.rejects(f.makeLauncher().start(f.input()),
+    (error: any) => error.code === 'WORKFLOW_AGENT_REVIEW_CONFLICT');
+  workflow.snapshot.reviews[0].subject_ref = 'subject-007';
+  workflow.snapshot.reviews[0].subject_identity = 'a'.repeat(64);
+  await assert.rejects(f.makeLauncher().start(f.input()),
+    (error: any) => error.code === 'WORKFLOW_AGENT_REVIEW_CONFLICT');
+  assert.equal(f.starts, 0);
+});
+
+test('acceptance agent requires a matching Agent session criterion', async t => {
+  const f = fixture(t, 'acceptance-agent');
+  await assert.rejects(f.makeLauncher().start({ ...f.input(), criteria_ref: '#114-AC-other' }),
+    (error: any) => error.code === 'WORKFLOW_AGENT_NOT_AUTHORIZED');
+  const workflow = f.harness.workflowHistory.current.get(f.registration.ticket_id)!;
+  workflow.snapshot.acceptance.criteria = [];
+  await assert.rejects(f.makeLauncher().start(f.input()),
+    (error: any) => error.code === 'WORKFLOW_AGENT_ACCEPTANCE_NOT_REQUIRED');
+  assert.equal(f.starts, 0);
 });
