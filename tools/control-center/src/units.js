@@ -190,11 +190,16 @@ export function tunnelHealth(health, ready, system, at = Date.now()) {
   const checked = route?.last_check;
   const checkTime = typeof checked === 'string' ? Date.parse(checked) : Date.parse(checked?.checked_at ?? checked?.at ?? checked?.time);
   const fresh = Number.isFinite(checkTime) && at - checkTime >= -5000 && at - checkTime < 120_000;
-  const readyOK = ready?.status === 200 && ready.body.trim() === 'ready';
+  const readyBody = ready?.body?.trim() ?? '';
+  const authRequired = ready?.status === 401 || ready?.status === 403 || /requires auth/i.test(readyBody);
+  // The pinned native runtime can retain this startup warning after returning
+  // HTTP 200 ready and forwarding MCP calls. Other readiness text stays untrusted.
+  const readyOK = !authRequired && ready?.status === 200 && (readyBody === 'ready'
+    || readyBody === 'ready (mcp startup probe timed out: mcp probe timed out after 2s: context deadline exceeded)');
   const alive = health?.status === 200 && health.body.trim() === 'live';
   return { healthy: alive && readyOK, ready: readyOK, controlPlane: { kind: 'proxy_reachability_not_end_to_end', state: fresh && ['healthy', 'unhealthy', 'direct'].includes(route.health_state) ? route.health_state : 'unknown', evidenceAt: Number.isFinite(checkTime) ? new Date(checkTime).toISOString() : null,
     reason: !fresh ? 'EVIDENCE_UNAVAILABLE_OR_EXPIRED' : null },
-    code: ready?.status === 401 || ready?.status === 403 || /requires auth/i.test(ready?.body ?? '') ? 'AUTH_REQUIRED' : !alive ? 'HEALTH_FAILED' : !readyOK ? 'MCP_NOT_READY' : null };
+    code: authRequired ? 'AUTH_REQUIRED' : !alive ? 'HEALTH_FAILED' : !readyOK ? 'MCP_NOT_READY' : null };
 }
 
 export class TunnelUnit {

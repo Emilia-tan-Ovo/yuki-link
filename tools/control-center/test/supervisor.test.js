@@ -364,6 +364,47 @@ test('startup rejects an explicit authentication or ownership mismatch', async t
   await assert.rejects(m.startOne('yca'), { code: 'OBSERVED_UNOWNED' });
 });
 
+test('a healthy owned tunnel clears only its stale startup timeout after supervisor reload', async t => {
+  const f = setup(t), m = f.manager, tunnel = f.units.tunnel;
+  const processInfo = { pid: 7070, created: 'current-tunnel-process' };
+  f.units.yca.running = true; f.units.yca.healthy = true;
+  tunnel.start = async function() {
+    this.running = true; this.healthy = false;
+    m.state.units.tunnel.ownership.process = processInfo;
+  };
+  tunnel.observe = async function() {
+    return { running: this.running, owned: this.owned, healthy: this.healthy,
+      ...processInfo, code: this.healthy ? null : 'MCP_NOT_READY',
+      controlPlane: { state: 'healthy' } };
+  };
+  await assert.rejects(m.action('tunnel', 'start'), { code: 'STARTUP_TIMEOUT' });
+  assert.equal(m.snapshot().units.tunnel.blocked, 'STARTUP_TIMEOUT');
+  tunnel.healthy = true;
+  const restarted = new Supervisor(f.options);
+  await restarted.observe();
+  assert.equal(restarted.snapshot().units.tunnel.blocked, null);
+  assert.equal(JSON.parse(readFileSync(f.options.stateFile, 'utf8')).units.tunnel.blocked, null);
+  restarted.state.units.tunnel.blocked = 'AUTH_REQUIRED'; restarted.persist();
+  await restarted.observe();
+  assert.equal(restarted.snapshot().units.tunnel.blocked, 'AUTH_REQUIRED');
+});
+
+test('tunnel startup timeout stays blocked without healthy ownership of the same process', async t => {
+  const { manager: m, units: u } = setup(t);
+  Object.assign(m.state.units.tunnel, { desired: 'running', blocked: 'STARTUP_TIMEOUT' });
+  m.state.units.tunnel.ownership.process = { pid: 7070, created: 'current-tunnel-process' };
+  const good = { running: true, owned: true, healthy: true,
+    pid: 7070, created: 'current-tunnel-process', code: null };
+  for (const bad of [
+    { running: false }, { owned: false }, { healthy: false, code: 'MCP_NOT_READY' },
+    { pid: 7071 }, { created: 'different-process' }, { code: 'AUTH_REQUIRED' },
+  ]) {
+    u.tunnel.observe = async () => ({ ...good, ...bad });
+    await m.observe();
+    assert.equal(m.state.units.tunnel.blocked, 'STARTUP_TIMEOUT');
+  }
+});
+
 test('bounded retries survive supervisor restart; no retries after stop', async t => {
   const f = setup(t); let m = f.manager; const u = f.units;
   await m.action('all', 'start'); await m.setRecovery(true);
@@ -414,8 +455,18 @@ test('missing executable pauses retries and observation mode rejects mutations',
 
 test('readiness content, stale proxy evidence, auth and missing components stay distinct', () => {
   const at = Date.now(), health = { status: 200, body: 'live' };
-  assert.equal(tunnelHealth(health, { status: 200, body: 'ready (mcp initialize requires auth: denied)' }, {}, at).code, 'AUTH_REQUIRED');
-  assert.equal(tunnelHealth(health, { status: 200, body: 'ready (mcp startup probe timed out: timeout)' }, {}, at).healthy, false);
+  const auth = tunnelHealth(health, { status: 200, body: 'ready (mcp initialize requires auth: denied)' }, {}, at);
+  assert.equal(auth.code, 'AUTH_REQUIRED'); assert.equal(auth.healthy, false);
+  const delayed = { status: 200, body: 'ready (mcp startup probe timed out: mcp probe timed out after 2s: context deadline exceeded)' };
+  assert.equal(tunnelHealth(health, delayed, {}, at).healthy, true);
+  const authFailure = tunnelHealth(health, { status: 200, body: 'ready (mcp startup probe timed out: authentication failed)' }, {}, at);
+  assert.equal(authFailure.healthy, false); assert.equal(authFailure.ready, false);
+  assert.equal(authFailure.code, 'MCP_NOT_READY');
+  assert.equal(tunnelHealth(health, { status: 200, body: 'ready (mcp startup probe timed out: unrelated warning)' }, {}, at).healthy, false);
+  assert.equal(tunnelHealth(health, { ...delayed, status: 503 }, {}, at).healthy, false);
+  assert.equal(tunnelHealth(health, { status: 200, body: 'ready-ish' }, {}, at).healthy, false);
+  assert.equal(tunnelHealth(health, { status: 200, body: 'ready (unexpected warning)' }, {}, at).healthy, false);
+  assert.equal(tunnelHealth(health, { status: 200, body: 'ready (mcp startup probe timed out: requires auth)' }, {}, at).healthy, false);
   const ready = { status: 200, body: 'ready' };
   assert.equal(tunnelHealth(health, ready, {}, at).controlPlane.state, 'unknown');
   const system = { proxy_health: [{ route: { kind: 'control_plane' }, health_state: 'unhealthy', last_check: new Date(at).toISOString() }] };

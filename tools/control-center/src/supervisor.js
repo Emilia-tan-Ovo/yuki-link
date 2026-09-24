@@ -21,6 +21,9 @@ const recoveredYcaStartup = (state, observation) => {
     && running?.commit === expected.commit && running.dirty === false
     && observation.tools?.count === expected.tools?.count && observation.tools?.sha256 === expected.tools?.sha256;
 };
+const recoveredTunnelStartup = (state, observation) => Boolean(state.desired === 'running' && state.blocked === 'STARTUP_TIMEOUT'
+  && observation?.running === true && observation.owned === true && observation.healthy === true && !observation.code
+  && sameProcess(observation, state.ownership?.process));
 
 export class Supervisor {
   constructor({ stateFile, events, createUnits, clock = Date.now, observeOnly = false, startupMs = 30_000, intervalMs = 5000 }) {
@@ -45,10 +48,10 @@ export class Supervisor {
       try { this.observations[id] = { ...await this.units[id].observe(), at: this.clock(), source: id === 'yca' ? 'OS + YCA loopback' : 'native metadata + OS + loopback' }; }
       catch (e) { this.observations[id] = { running: null, healthy: false, code: e.code ?? 'OBSERVATION_FAILED', at: this.clock(), source: 'local observation failed' }; }
     }));
-    if (recoveredYcaStartup(this.state.units.yca, this.observations.yca)) {
-      this.state.units.yca.blocked = null;
-      this.persist();
-    }
+    let reconciled = false;
+    if (recoveredYcaStartup(this.state.units.yca, this.observations.yca)) { this.state.units.yca.blocked = null; reconciled = true; }
+    if (recoveredTunnelStartup(this.state.units.tunnel, this.observations.tunnel)) { this.state.units.tunnel.blocked = null; reconciled = true; }
+    if (reconciled) this.persist();
   }
   snapshot() {
     const at = this.clock();

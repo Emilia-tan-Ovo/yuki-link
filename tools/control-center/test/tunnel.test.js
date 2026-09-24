@@ -19,9 +19,9 @@ test('native runtime adapter reuses a fixed tunnel, validates identity and refus
     mcp: { server_urls: [{ channel: 'main', url: target }] } };
   saveJson(profileFile, profile); saveJson(path.join(root, 'aliases.yaml'), { [alias]: { tunnel_id: profile.control_plane.tunnel_id, profile_path: profileFile } });
   saveJson(path.join(root, 'processes.yaml'), {});
-  let actual = null, poison = false;
+  let actual = null, poison = false, readyBody = 'ready';
   const server = http.createServer((req, res) => {
-    const body = req.url === '/healthz' ? 'live' : req.url === '/readyz' ? 'ready' : JSON.stringify(req.url === '/api/status'
+    const body = req.url === '/healthz' ? 'live' : req.url === '/readyz' ? readyBody : JSON.stringify(req.url === '/api/status'
       ? { control_plane_tunnel_id: poison ? 'wrong_tunnel' : profile.control_plane.tunnel_id }
       : { proxy_health: [{ route: { kind: 'control_plane' }, health_state: 'healthy', last_check: new Date().toISOString() }], credential: 'sk-DO_NOT_EXPORT_THIS' });
     res.end(body);
@@ -41,6 +41,8 @@ test('native runtime adapter reuses a fixed tunnel, validates identity and refus
   };
   const unit = new TunnelUnit({ bin: process.execPath, stateRoot: root, alias, target, profile: profileFile, backupDir: root }, host, state, () => {}, new Events(root), invoke);
   await unit.start(); let o = await unit.observe(); assert.equal(o.owned, true); assert.equal(o.healthy, true);
+  readyBody = 'ready (mcp startup probe timed out: mcp probe timed out after 2s: context deadline exceeded)';
+  o = await unit.observe(); assert.equal(o.healthy, true, 'a known native startup warning does not negate HTTP 200 readiness');
   assert.equal(calls[0][1], 'connect'); assert.ok(calls[0].includes('--tunnel-id')); assert.ok(!calls[0].includes('create'));
   assert.ok(!JSON.stringify(o).includes('sk-')); assert.ok(!JSON.stringify(o).includes('tunnel_test_fixture'));
   await unit.start(); assert.equal(calls.length, 1);
