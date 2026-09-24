@@ -64,3 +64,10 @@ Branch：`codex/orch-007-unified-workflow-agent`
 - **Review policy / finding 状态：** delegated，接收方 Ticket Main；四条 finding 已修复待 fresh focused re-review 核验，未自行执行 Review。真实 ticket-design smoke 仍属待验收项。
 - **Commit：** 本修复的实际 SHA 见当前 worktree `.local/workflow-state/ORCH-007.md` 的 post-commit checkpoint；本 handoff 随修复提交。
 - **下一步：** 上层以原 primary Review 报告、修复基线、本修复 commit/diff 及定向测试为输入，启动 fresh focused re-review；本次 fix session 在 handoff/commit 后停止。
+
+## Production Smoke Wiring（2026-09-24）
+
+- fresh focused re-review `orch-007-focused-review-01`：PASS；四条原 finding 均 VERIFIED。Reviewer session/run：`502f5f40-78b3-4261-a2e6-679665dc386d` / `9375ef1c-d039-4224-88b5-bf0925661efd`，隔离 `FRESH_EXECUTION_OBSERVED`。
+- 为满足真实 `ticket-design` smoke，补齐 Control Center 对 `workflowAgentAuthority` 的 config 校验、selected-release launcher flag 探测、受信任 authority 预检与 `--workflow-agent-authority` argv 传递。
+- 定向验证：Control Center config test 1/1 PASS；selected release launcher flag test 1/1 PASS；`config.example.json` 可解析；`units.js` import PASS；Bridge `--help` 暴露 `--workflow-agent-authority`；`git diff --check` PASS。
+- 合并前不把 branch worktree 当 production release；合并后由默认分支部署，再执行真实 ticket-design Full Access / fresh / Main attribution / duplicate-request smoke。
