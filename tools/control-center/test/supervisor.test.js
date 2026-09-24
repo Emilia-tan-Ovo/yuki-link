@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { Supervisor } from '../src/supervisor.js';
 import { Events, fail, claimStateDirectory } from '../src/common.js';
-import { tunnelHealth } from '../src/units.js';
+import { YcaUnit, tunnelHealth } from '../src/units.js';
 import { loadConfig } from '../src/config.js';
 
 function setup(t) {
@@ -23,6 +25,29 @@ function setup(t) {
   return { manager, units, options, root, advance: ms => { time += ms; } };
 }
 
+test('abnormal YCA exit retains only a bounded redacted stderr tail', async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'yuki-cc-crash-tail-'));
+  t.after(() => { assert.ok(root.startsWith(path.join(os.tmpdir(), 'yuki-cc-crash-tail-'))); rmSync(root, { recursive: true, force: true }); });
+  const state = {}; let spawnOptions, spawned = false;
+  const child = new EventEmitter(); child.pid = 4242; child.stderr = new PassThrough(); child.unref = () => {};
+  const host = { async free() {}, async inspect() { return spawned ? [{ pid: child.pid, created: 'fixture', matches: true }] : []; } };
+  const config = { node: process.execPath, pwsh: process.execPath, codex: process.execPath, entry: process.execPath, cwd: root, repo: root,
+    runtime: path.join(root, 'runtime'), port: 57391, controlPort: 57393 };
+  const unit = new YcaUnit(config, host, state, () => {}, { add() {} }, { spawnProcess: (_exe, _args, options) => {
+    spawnOptions = options; spawned = true; queueMicrotask(() => child.emit('spawn')); return child;
+  } });
+  await unit.start();
+  child.stderr.write('x'.repeat(20_000));
+  child.stderr.write('\n' + 'api_' + 'key=fixture-value\nFATAL_MARKER\n');
+  child.emit('exit', 1); child.stderr.end();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(spawnOptions.stdio, ['ignore', 'ignore', 'pipe']);
+  assert.equal(state.lastExit.exitCode, 1);
+  assert.ok(Buffer.byteLength(state.lastExit.stderrTail, 'utf8') <= 16 * 1024);
+  assert.match(state.lastExit.stderrTail, /FATAL_MARKER/);
+  assert.equal(state.lastExit.stderrTail.includes('fixture-value'), false);
+  assert.equal(state.lastExit.stderrTail.includes('[REDACTED]'), true);
+});
 test('optional Harness port keeps legacy config valid and participates in local port conflict validation', t => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'yuki-cc-config-'));
   t.after(() => { assert.ok(root.startsWith(path.join(os.tmpdir(), 'yuki-cc-config-'))); rmSync(root, { recursive: true, force: true }); });

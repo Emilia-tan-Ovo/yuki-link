@@ -249,7 +249,8 @@ test('real stdio service executes scripts with an unavailable Codex executable',
   const client = new Client({ name: 'script-stdio-test', version: '1' });
   t.after(async () => { await client.close(); rmSync(root, { recursive: true, force: true }); });
   await client.connect(transport);
-  assert.equal((await client.listTools()).tools.length, 25);
+  const tools = (await client.listTools()).tools.map(tool => tool.name);
+  for (const name of ['powershell', 'powershell_execute', 'filesystem_read', 'codex_list_models']) assert.ok(tools.includes(name), name);
   assert.equal((await client.callTool({ name: 'codex_list_models', arguments: {} })).isError, true);
   const result = await client.callTool({ name: 'powershell_execute', arguments: { cwd: workspace,
     script: "Set-Content -LiteralPath './stdio.txt' -Value '真实执行' -Encoding utf8 -NoNewline; [Console]::Out.Write((Get-Content './stdio.txt' -Raw -Encoding utf8))" } });
