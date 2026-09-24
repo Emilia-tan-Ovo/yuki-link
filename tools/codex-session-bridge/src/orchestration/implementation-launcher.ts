@@ -128,7 +128,7 @@ interface EnvironmentSource {
 }
 
 export class HostImplementationEnvironmentSource implements EnvironmentSource {
-  observe(cwd: string, policy: z.infer<typeof implementationPolicySnapshotSchema>, notes: { path: string; sha256: string }) {
+  observe(cwd: string, policy: z.infer<typeof implementationPolicySnapshotSchema>, notes: { path: string; sha256: string } | null) {
     const lexicalRoot = path.resolve(cwd);
     let root: string;
     try { root = realpathSync(cwd); }
@@ -147,10 +147,12 @@ export class HostImplementationEnvironmentSource implements EnvironmentSource {
       }
       return candidate;
     };
-    const noteFile = resolveInside(notes.path);
-    if (sha256(readFileSync(noteFile)) !== notes.sha256) {
-      throw new HarnessError('IMPLEMENTATION_NOTES_CONFLICT', { source: notes.path, expected: notes.sha256,
-        observed: sha256(readFileSync(noteFile)), reprepare_required: true });
+    if (notes) {
+      const noteFile = resolveInside(notes.path);
+      if (sha256(readFileSync(noteFile)) !== notes.sha256) {
+        throw new HarnessError('IMPLEMENTATION_NOTES_CONFLICT', { source: notes.path, expected: notes.sha256,
+          observed: sha256(readFileSync(noteFile)), reprepare_required: true });
+      }
     }
     for (const required of policy.preflight.required_paths) {
       resolveInside(required);

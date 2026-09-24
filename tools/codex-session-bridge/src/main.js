@@ -16,6 +16,7 @@ import { sourceVersion } from './source.js';
 import { createHarnessRuntime, createHarnessServer } from './harness/runtime.ts';
 import { FileImplementationLaunchAuthoritySource } from './orchestration/implementation-launcher.ts';
 import { FileReviewLaunchAuthoritySource } from './orchestration/review-launcher.ts';
+import { FileWorkflowAgentAuthoritySource } from './orchestration/workflow-agent-launcher.ts';
 
 const toolRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { values } = parseArgs({ options: {
@@ -34,6 +35,7 @@ const { values } = parseArgs({ options: {
   'services-url': { type: 'string' },
   'implementation-launch-authority': { type: 'string' },
   'review-launch-authority': { type: 'string' },
+  'workflow-agent-authority': { type: 'string' },
 } });
 
 if (values.help) {
@@ -41,6 +43,7 @@ if (values.help) {
   console.log('--services-url URL (optional Control Center daily-services navigation; strict loopback URL only)');
   console.log('--implementation-launch-authority ABSOLUTE_JSON_PATH (trusted versioned policy and Ticket authorization source for start_ticket_implementation)');
   console.log('--review-launch-authority ABSOLUTE_JSON_PATH (trusted versioned policy and Ticket authorization source for start_ticket_review)');
+  console.log('--workflow-agent-authority ABSOLUTE_JSON_PATH (trusted policies and Ticket authorizations for the unified Workflow Agent launcher)');
   console.log('Yuki Computer Agent\n--transport stdio|http (default stdio)\n--port 7391 (HTTP binds only 127.0.0.1)\n--allow-cwd ABSOLUTE_PATH (repeatable; required; Codex cwd and filesystem write roots)\n--read-root ABSOLUTE_PATH (repeatable; optional additional read roots)\n--runtime ABSOLUTE_PATH (default tools/codex-session-bridge/runtime)\n--codex-bin EXECUTABLE (default codex)\n--pwsh-bin EXECUTABLE (default pwsh.exe on Windows)');
 } else {
   let store;
@@ -71,7 +74,8 @@ if (values.help) {
     if (!values['allow-cwd']?.length || !['stdio', 'http'].includes(values.transport)) throw new Error('Specify --allow-cwd and a supported --transport.');
     if (!path.isAbsolute(values.runtime) || [...values['allow-cwd'], ...(values['read-root'] ?? []), ...(values['control-root'] ?? []),
       ...(values['implementation-launch-authority'] ? [values['implementation-launch-authority']] : []),
-      ...(values['review-launch-authority'] ? [values['review-launch-authority']] : [])].some(p => !path.isAbsolute(p))) throw new Error('Runtime, allowlist and authority paths must be absolute.');
+      ...(values['review-launch-authority'] ? [values['review-launch-authority']] : []),
+      ...(values['workflow-agent-authority'] ? [values['workflow-agent-authority']] : [])].some(p => !path.isAbsolute(p))) throw new Error('Runtime, allowlist and authority paths must be absolute.');
     const port = Number(values.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid port.');
     const harnessPort = values['harness-port'] === undefined ? null : Number(values['harness-port']);
@@ -86,6 +90,10 @@ if (values.help) {
       }) : null;
     manager.reviewLaunchAuthority = values['review-launch-authority']
       ? new FileReviewLaunchAuthoritySource(values['review-launch-authority'], {
+        forbiddenRoots: values['allow-cwd'],
+      }) : null;
+    manager.workflowAgentAuthority = values['workflow-agent-authority']
+      ? new FileWorkflowAgentAuthoritySource(values['workflow-agent-authority'], {
         forbiddenRoots: values['allow-cwd'],
       }) : null;
     computer = new ComputerTools({ readRoots: [...values['allow-cwd'], ...(values['read-root'] ?? [])], writeRoots: values['allow-cwd'], runtime: values.runtime, controlRoots: values['control-root'], pwsh: values['pwsh-bin'] });

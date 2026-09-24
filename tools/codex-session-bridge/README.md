@@ -123,8 +123,12 @@ Windows 常驻服务可以显式传入 `--codex-bin 'C:\path\to\codex.exe'`，�
 
 ## 工具
 
+正常 Repository Engineer 模型启动使用 `start_workflow_agent`。`action` 严格限定为 `ticket-design`、`implementation`、`finding-fix`、`review`、`focused-review`、`acceptance-agent`；阶段策略固定 fresh session、Main/Review child/Acceptance child、模型策略及 Owner native permissions。implementation/review 的原有输入经同一入口兼容映射。新增阶段由服务端 `--workflow-agent-authority` 指向工作树外的受信任 JSON，按 action 配置版本化 policy 与 Ticket authorization；未配置时拒绝启动。当前 MCP 平台仍公开低层工具，因此这里只能保证推荐路径，不能宣称低层入口已被物理隐藏。`codex_start_session`、`harness_attach`、`harness_associate_child_conversation` 供兼容、诊断或管理员显式操作。
+
 | 工具 | 主要输入 | 返回 |
 | --- | --- | --- |
+| `start_workflow_agent` | `action, ticket_id, request_id, authorization_ref, expected, references?, current_delta`；阶段特有 `finding/review_id/acceptance_id` | durable operation receipt、实际冻结权限及 Main/child 归属 |
+| `start_ticket_implementation` / `start_ticket_review` | 既有输入 | 兼容 wrapper，receipt 与重启 reconcile 沿用既有记录 |
 | `harness_register_ticket` | `project_key, project_name, ticket_key, title, reference, expected_worktree?` | 稳定 `project_id, ticket_id, conversation_id` |
 | `harness_attach` | `ticket_id, session_id, run_id?` | 显式 Codex 归属与 recording 状态 |
 | `harness_record_workflow` | `ticket_id, request_id, expected_revision, schema_version: 1, snapshot` | `workflow_revision, event_id, cursor, deduplicated, applicability, recording` |

@@ -129,6 +129,7 @@ export class ExecutionOperations {
       authorization_boundary: input.authorization_boundary,
       ...('implementation' in input ? { implementation: input.implementation } : {}),
       ...('review' in input ? { review: input.review } : {}),
+      ...('workflow_agent' in input ? { workflow_agent: input.workflow_agent } : {}),
     };
     return { intent: { ...intent, comparison: { schema_version: 1 as const,
       content_identity_sha256: comparisonDigest('content_identity', input.content_identity),
@@ -204,9 +205,10 @@ export class ExecutionOperations {
       })();
     const implementation = 'implementation' in input;
     const review = 'review' in input;
+    const workflowAgent = 'workflow_agent' in input;
     const operation = executionOperationSchema.parse({
-      schema_version: review ? 3 : implementation ? 2 : 1, operation_id: randomUUID(), ticket_id: input.ticket_id, request_id: input.request_id,
-      fingerprint_version: review ? 'execution-protected-v3' : implementation ? 'execution-protected-v2' : 'execution-protected-v1',
+      schema_version: workflowAgent ? 4 : review ? 3 : implementation ? 2 : 1, operation_id: randomUUID(), ticket_id: input.ticket_id, request_id: input.request_id,
+      fingerprint_version: workflowAgent ? 'execution-protected-v4' : review ? 'execution-protected-v3' : implementation ? 'execution-protected-v2' : 'execution-protected-v1',
       protected_fingerprint: fingerprint, protected_intent: intent,
       destination, state: 'reserved', revision: 1,
       runtime: { request_id: runtimeRequestId('00000000-0000-4000-8000-000000000000'), fingerprint: null,
@@ -241,6 +243,7 @@ export class ExecutionOperations {
       ? 'reconciliation-required' : operation.state;
     const implementation = operation.schema_version === 2 ? operation.protected_intent.implementation : null;
     const review = operation.schema_version === 3 ? operation.protected_intent.review : null;
+    const workflowAgent = operation.schema_version === 4 ? operation.protected_intent.workflow_agent : null;
     return { operation_id: operation.operation_id, ticket_id: operation.ticket_id, request_id: operation.request_id,
       protected_fingerprint: operation.protected_fingerprint, fingerprint_version: operation.fingerprint_version,
       state: operation.state, effective_state: effective, destination: structuredClone(operation.destination),
@@ -256,6 +259,12 @@ export class ExecutionOperations {
         contract: structuredClone(review.contract), policy: structuredClone(review.policy),
         authorization: structuredClone(review.authorization), authority_source: structuredClone(review.authority_source),
         preflight: structuredClone(review.preflight),
+        actual_permissions: operation.dispatch ? structuredClone(operation.dispatch.permissions) : null } : {}),
+      ...(workflowAgent ? { caller_fingerprint: workflowAgent.caller_fingerprint,
+        action: workflowAgent.action, contract: structuredClone(workflowAgent.contract),
+        policy: structuredClone(workflowAgent.policy), authorization: structuredClone(workflowAgent.authorization),
+        authority_source: structuredClone(workflowAgent.authority_source),
+        preflight: structuredClone(workflowAgent.preflight),
         actual_permissions: operation.dispatch ? structuredClone(operation.dispatch.permissions) : null } : {}),
       latest_event_id: latest?.event_id ?? null, latest_cursor: latest?.cursor ?? null, deduplicated,
       recording: { state: this.journal.failure ? 'recording-failed' : 'recording', reason: this.journal.failure,
