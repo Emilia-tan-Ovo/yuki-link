@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PermissionResolver, permissionSnapshotFromConfig, sessionPermissionSnapshot } from '../src/permissions.js';
+import { DEFAULT_PERMISSION_RESOLUTION_TIMEOUT_MS, PermissionResolver, permissionSnapshotFromConfig, sessionPermissionSnapshot } from '../src/permissions.js';
 import { spawnDirect, isProcessAlive } from '../src/process.js';
 import { execArguments } from '../src/executor.js';
 
+test('default permission resolution timeout leaves bounded startup headroom', () => {
+  assert.equal(DEFAULT_PERMISSION_RESOLUTION_TIMEOUT_MS, 30_000);
+});
 test('effective Codex permissions are normalized into a replayable snapshot', () => {
   const full = permissionSnapshotFromConfig({
     sandbox_mode: 'danger-full-access',

@@ -97,10 +97,11 @@ export class SessionManager {
     if (replay) return replay;
     const cwd = this.cwd(input.cwd);
     if (!this.permissionResolver) throw new BridgeError('PERMISSION_RESOLUTION_FAILED', 'No Codex permission resolver is configured.');
-    const [config, permissions] = await Promise.all([
-      this.catalog.validate(input.model ?? DEFAULT_MODEL, input.reasoning ?? DEFAULT_REASONING),
-      this.permissionResolver.resolve(cwd, input.permissions),
-    ]);
+    // Keep Codex app-server discovery sequential: cold model and permission probes
+    // otherwise start two local app-server processes at once and can starve the
+    // shorter permission handshake on slower/contended Windows startups.
+    const config = await this.catalog.validate(input.model ?? DEFAULT_MODEL, input.reasoning ?? DEFAULT_REASONING);
+    const permissions = await this.permissionResolver.resolve(cwd, input.permissions);
     // Recheck after asynchronous capability/config discovery: two clients can retry together.
     const concurrentReplay = this.replay(input.request_id, hash, legacyHash ? [legacyHash] : []);
     if (concurrentReplay) return concurrentReplay;

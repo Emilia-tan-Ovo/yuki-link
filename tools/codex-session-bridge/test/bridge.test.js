@@ -95,6 +95,31 @@ function setup(t, options = {}) {
   return { root, cwd, runtime, catalog, executor, permissionResolver, store, manager, input };
 }
 
+test('fresh session resolves model catalog before permission discovery', async t => {
+  const { manager, executor, input } = setup(t);
+  const order = [];
+  manager.catalog = {
+    async validate(model, reasoning) {
+      order.push('catalog:start');
+      await new Promise(resolve => setTimeout(resolve, 20));
+      order.push('catalog:end');
+      return { model: model ?? 'gpt-6-sol', reasoning: reasoning ?? 'medium', capability_checked_at: new Date().toISOString() };
+    },
+  };
+  manager.permissionResolver = {
+    async resolve() {
+      order.push('permission');
+      return { version: 1, kind: 'native', stored: true, sandbox_mode: 'danger-full-access',
+        approval_policy: 'on-request', approvals_reviewer: 'user', workspace_write: null,
+        source: 'test', resolved_at: new Date().toISOString() };
+    },
+  };
+  const started = await manager.start(input());
+  assert.deepEqual(order, ['catalog:start', 'catalog:end', 'permission']);
+  await tick();
+  executor.complete(0);
+  assert.equal(manager.status({ run_id: started.run_id }).run.status, 'completed');
+});
 test('async acceptance, concurrent dedup, session lock, inheritance and explicit model changes', async t => {
   const { manager, executor, input } = setup(t);
   const message = input();
