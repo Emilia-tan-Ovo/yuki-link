@@ -9,6 +9,7 @@ import { deploymentTarget, verifyDeployment } from './deployment.js';
 import { resolveCodexExecutable } from '../../codex-session-bridge/src/codex-executable.js';
 import { FileImplementationLaunchAuthoritySource } from '../../codex-session-bridge/src/orchestration/implementation-launcher.ts';
 import { FileReviewLaunchAuthoritySource } from '../../codex-session-bridge/src/orchestration/review-launcher.ts';
+import { FileWorkflowAgentAuthoritySource } from '../../codex-session-bridge/src/orchestration/workflow-agent-launcher.ts';
 
 export class YcaUnit {
   constructor(config, host, state, persist, events) { Object.assign(this, { config, host, state, persist, events }); }
@@ -85,6 +86,12 @@ export class YcaUnit {
         forbiddenRoots: [this.config.repo, this.config.deploymentRoot],
       }).snapshot('', '', '');
     }
+    if (this.config.workflowAgentAuthority) {
+      if (!deployment?.launcherFlags?.workflowAgentAuthority) throw fail('DEPLOYMENT_LAUNCHER_UNSUPPORTED');
+      new FileWorkflowAgentAuthoritySource(this.config.workflowAgentAuthority, {
+        forbiddenRoots: [this.config.repo, this.config.deploymentRoot],
+      }).snapshot('', 'ticket-design', '');
+    }
     const entry = deployment?.entry ?? this.config.entry, cwd = deployment?.cwd ?? this.config.cwd;
     for (const [name, file] of Object.entries({ NODE: this.config.node, YCA_ENTRY: entry, PWSH: this.config.pwsh })) if (!existsSync(file)) throw fail(`${name}_PATH_MISSING`);
     this.codexResolution = resolveCodexExecutable(this.config.codex);
@@ -114,6 +121,7 @@ export class YcaUnit {
     if (deployment) for (const root of this.config.controlRoots ?? []) args.push('--control-root', root);
     if (this.config.implementationLaunchAuthority) args.push('--implementation-launch-authority', this.config.implementationLaunchAuthority);
     if (this.config.reviewLaunchAuthority) args.push('--review-launch-authority', this.config.reviewLaunchAuthority);
+    if (this.config.workflowAgentAuthority) args.push('--workflow-agent-authority', this.config.workflowAgentAuthority);
     const child = spawn(this.config.node, args, { cwd, shell: false, windowsHide: true, detached: true,
       env: { ...process.env, YUKI_CONTROL_TOKEN: this.state.token }, stdio: ['ignore', 'ignore', 'ignore'] });
     const launchedInstance = this.state.instance;

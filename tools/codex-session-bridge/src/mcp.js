@@ -7,9 +7,10 @@ import { gateHarnessExecution } from './harness/harness.ts';
 import { childAssociationSchema } from './harness/conversation-model.ts';
 import { ContextAssembler } from './orchestration/context-assembler.ts';
 import { HarnessContextFactsSource } from './orchestration/harness-context-source.ts';
-import { ImplementationLauncher, startTicketImplementationInputSchema } from './orchestration/implementation-launcher.ts';
+import { startTicketImplementationInputSchema } from './orchestration/implementation-launcher.ts';
 import { DEFAULT_MODEL, DEFAULT_REASONING } from './model-policy.js';
-import { ReviewLauncher, startTicketReviewInputSchema } from './orchestration/review-launcher.ts';
+import { startTicketReviewInputSchema } from './orchestration/review-launcher.ts';
+import { WorkflowAgentLauncher, startWorkflowAgentInputSchema } from './orchestration/workflow-agent-launcher.ts';
 
 export function createMcpServer(manager, computer) {
   const server = new McpServer({ name: 'yuki-computer-agent', version: '0.2.0' });
@@ -69,7 +70,7 @@ export function createMcpServer(manager, computer) {
       if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
       return manager.harness.register(input);
     });
-  register('record-only', 'harness_attach', 'Attach an existing Codex session or one run to a registered Ticket. Omit run_id to include ALL existing and future runs of this session; supply run_id for that run only. Conflicting ownership is rejected. No model call or resume.',
+  register('record-only', 'harness_attach', 'Compatibility, diagnostic or administrator attribution path. Normal Repository Engineer Workflow uses start_workflow_agent. Attach an existing Codex session or one run to a registered Ticket; no model call or resume.',
     attachSchema, input => {
       if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
       return manager.harness.attach(input);
@@ -83,7 +84,7 @@ export function createMcpServer(manager, computer) {
       if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
       return manager.harness.recordWorkflow(input);
     });
-  register('record-only', 'harness_associate_child_conversation', 'Record an already-started Review or Acceptance Agent session/run as a Ticket child Conversation. This never starts, sends to, or resumes a model.',
+  register('record-only', 'harness_associate_child_conversation', 'Compatibility, diagnostic or administrator attribution path. Normal Repository Engineer Workflow uses start_workflow_agent. Record an already-started Review or Acceptance Agent run as a child Conversation.',
     childAssociationSchema, input => {
       if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
       return manager.harness.associateChildConversation(input);
@@ -108,19 +109,24 @@ export function createMcpServer(manager, computer) {
     contextInput, input => contextAssembler().assemble(input), true);
   register('observe', 'prepare_ticket_resume', 'Prepare a read-only recovery projection and deterministic next-action recommendation from a Context Packet. This never starts or resumes execution, advances Workflow, or replays side effects.',
     contextInput, input => contextAssembler().prepare(input), true);
-  register('manage-existing', 'start_ticket_implementation', 'Start or reconcile one versioned fresh Ticket implementation operation. The contract fixes delegated Review and Ticket Main destination, compares caller expectations with trusted current authority, inherits native Owner permissions, and returns the durable operation receipt.',
+  const workflowAgent = () => {
+    if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
+    return new WorkflowAgentLauncher({ manager, harness: manager.harness,
+      implementationAuthority: manager.implementationLaunchAuthority,
+      reviewAuthority: manager.reviewLaunchAuthority,
+      workflowAuthority: manager.workflowAgentAuthority });
+  };
+  register('manage-existing', 'start_workflow_agent', 'Preferred high-level typed Workflow Agent launcher. Fixes fresh session, destination, phase policy and Owner native permissions; returns one durable execution receipt.',
+    startWorkflowAgentInputSchema, input => workflowAgent().start(input));
+  register('manage-existing', 'start_ticket_implementation', 'Compatibility wrapper for start_workflow_agent implementation; delegated Review and Ticket Main destination remain fixed.',
     startTicketImplementationInputSchema, input => {
-      if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
-      return new ImplementationLauncher({ manager, harness: manager.harness,
-        authority: manager.implementationLaunchAuthority ?? null }).start(input);
+      return workflowAgent().start({ ...input, action: 'implementation' });
     });
-  register('manage-existing', 'start_ticket_review', 'Start or reconcile one versioned fresh Ticket Review. A durable Review child reservation precedes the model launch; the result identifies the child Conversation, session, run and recording state.',
+  register('manage-existing', 'start_ticket_review', 'Compatibility wrapper for start_workflow_agent Review; a durable Review child reservation precedes model launch.',
     startTicketReviewInputSchema, input => {
-      if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
-      return new ReviewLauncher({ manager, harness: manager.harness,
-        authority: manager.reviewLaunchAuthority ?? null }).start(input);
+      return workflowAgent().start({ ...input, action: 'review' });
     });
-  register('new-side-effect', 'codex_start_session', 'Start a new managed Codex conversation, freeze its effective native Codex permissions, and asynchronously submit the first message. Omit permissions to use the effective local default at creation. Returns run_id without waiting for model completion.', {
+  register('new-side-effect', 'codex_start_session', 'Compatibility, diagnostic or administrator path. Normal Repository Engineer Workflow uses start_workflow_agent. Start a managed Codex conversation and freeze effective native permissions.', {
     cwd: z.string().min(1).describe('Absolute existing working directory inside the administrator allowlist.'), permissions, ...message,
   }, input => manager.start(input));
   register('new-side-effect', 'codex_send_message', 'Submit a new turn to the specified bridge session using its exact saved Codex thread ID. One active run per session. Model/reasoning change only when explicitly provided. Permissions are frozen at session creation; supplying permissions here is rejected.', {

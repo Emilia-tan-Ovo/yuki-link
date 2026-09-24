@@ -16,7 +16,8 @@
     "controlPort": 7393,
     "harnessPort": 7394,
     "implementationLaunchAuthority": "C:\\ProgramData\\yuki-link\\control\\implementation-authority.json",
-    "reviewLaunchAuthority": "C:\\ProgramData\\yuki-link\\control\\review-authority.json"
+    "reviewLaunchAuthority": "C:\\ProgramData\\yuki-link\\control\\review-authority.json",
+    "workflowAgentAuthority": "C:\\ProgramData\\yuki-link\\control\\workflow-agent-authority.json"
   },
   "tunnel": {
     "bin": "D:\\tools\\openai-tunnel-client\\v0.0.14\\tunnel-client.exe",
