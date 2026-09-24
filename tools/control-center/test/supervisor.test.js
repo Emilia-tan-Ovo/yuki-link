@@ -242,10 +242,32 @@ test('activity protection runs before dependent stops; unknown is not idle', asy
   await m.action('all', 'start'); u.yca.activity.computer = 1;
   await assert.rejects(m.action('all', 'restart'), { code: 'ACTIVE_TASKS' });
   assert.equal(u.tunnel.stops, 0); assert.equal(u.yca.stops, 0);
-  assert.equal(m.state.units.yca.desired, 'stopped');
+  assert.equal(m.state.units.yca.desired, 'running', 'rejected restart keeps the intended running state');
+  assert.equal(m.state.units.tunnel.desired, 'running');
   u.yca.activity = null;
   await assert.rejects(m.action('tunnel', 'stop'), { code: 'ACTIVITY_UNKNOWN' });
   await m.action('all', 'stop', true); assert.equal(u.tunnel.stops, 1);
+});
+
+test('unknown diagnostic is not misreported as an external ownership conflict', t => {
+  const { manager: m } = setup(t);
+  m.state.units.yca.ownership.deployment = { commit: 'a'.repeat(40) };
+  m.observations.yca = { running: true, owned: false, code: 'ACTIVITY_UNKNOWN', deployment: { state: 'unverified' } };
+  assert.throws(() => m.currentYcaCommit(), { code: 'ACTIVITY_UNKNOWN' });
+});
+
+test('startup gets one final readiness observation before reporting timeout', async t => {
+  const { manager: m, units: u } = setup(t);
+  m.startupMs = 0;
+  let observations = 0;
+  u.yca.start = async function() { this.starts++; this.running = true; this.healthy = false; };
+  u.yca.observe = async function() {
+    observations++;
+    return { running: true, healthy: observations >= 2, owned: true, authenticated: true,
+      activity: { codex: 0, computer: 0, requests: 0 }, code: null };
+  };
+  await m.startOne('yca');
+  assert.equal(observations, 2);
 });
 
 test('bounded retries survive supervisor restart; no retries after stop', async t => {

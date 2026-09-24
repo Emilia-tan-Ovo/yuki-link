@@ -35,12 +35,18 @@ export class YcaUnit {
     const processMatches = matches(p, this.state.process);
     const identityChanged = this.state.process && (p.pid !== this.state.process.pid || p.created !== this.state.process.created);
     let owned = false;
-    let diagnostic;
+    let diagnostic, diagnosticCode = null;
     try {
-      const response = await get(`http://127.0.0.1:${this.config.controlPort}/status`, { token: this.state.token });
-      diagnostic = response.status === 200 ? response.json : null;
-      if (diagnostic?.instance !== this.state.instance || diagnostic?.pid !== p.pid || diagnostic?.service !== 'yuki-local-control') diagnostic = null;
-    } catch { /* unknown activity is not idle */ }
+      const response = await get(`http://127.0.0.1:${this.config.controlPort}/status`, { token: this.state.token, timeout: 5000 });
+      if (response.status === 200) {
+        diagnostic = response.json;
+        if (diagnostic?.instance !== this.state.instance || diagnostic?.pid !== p.pid || diagnostic?.service !== 'yuki-local-control') {
+          diagnostic = null; diagnosticCode = 'OBSERVED_UNOWNED';
+        }
+      } else {
+        diagnosticCode = [401, 403].includes(response.status) ? 'OBSERVED_UNOWNED' : 'ACTIVITY_UNKNOWN';
+      }
+    } catch { diagnosticCode = 'ACTIVITY_UNKNOWN'; /* unknown activity is not idle */ }
     owned = processMatches && Boolean(diagnostic);
     if (!this.state.process && this.state.instance && diagnostic) {
       this.state.process = p; this.persist(); owned = true; // recover a spawn/persist interruption with instance authentication
@@ -63,7 +69,7 @@ export class YcaUnit {
     return { running: true, owned, authenticated: Boolean(diagnostic), instance: diagnostic?.instance ?? null,
       pid: p.pid, created: p.created, healthy: Boolean(health && owned && validActivity && !diagnostic.closing && (!expected || verified)), deployment,
       activity: validActivity ? activity : null, tools: validTools ? diagnostic.tools : null, lastBridge: diagnostic?.lastBridge ?? null,
-      code: identityChanged ? 'OWNERSHIP_CHANGED' : !diagnostic ? 'ACTIVITY_UNKNOWN' : !owned ? 'OBSERVED_UNOWNED' : !validActivity ? 'ACTIVITY_UNKNOWN'
+      code: identityChanged ? 'OWNERSHIP_CHANGED' : !diagnostic ? (diagnosticCode ?? 'ACTIVITY_UNKNOWN') : !owned ? 'OBSERVED_UNOWNED' : !validActivity ? 'ACTIVITY_UNKNOWN'
         : expected && !runningSource ? 'DEPLOYMENT_OBSERVATION_PENDING' : expected && !verified ? 'DEPLOYMENT_UNVERIFIED'
           : !health ? 'HEALTH_FAILED' : deploymentCode };
   }
@@ -137,12 +143,12 @@ export class YcaUnit {
   async stop(confirm = false) {
     const current = await this.observe();
     if (!current.running) return;
-    if (!current.owned) throw fail('OBSERVED_UNOWNED');
+    if (!current.owned) throw fail(current.code === 'ACTIVITY_UNKNOWN' ? 'ACTIVITY_UNKNOWN' : 'OBSERVED_UNOWNED');
     // No blind taskkill fallback: a wedged process whose activity cannot be
     // authenticated needs operator investigation; live tasks are never guessed idle.
     if (!current.activity) throw fail('ACTIVITY_UNKNOWN');
     if (!confirm && Object.values(current.activity).some(n => n > 0)) throw fail('ACTIVE_TASKS');
-    const result = await get(`http://127.0.0.1:${this.config.controlPort}/stop`, { token: this.state.token, method: 'POST', confirm });
+    const result = await get(`http://127.0.0.1:${this.config.controlPort}/stop`, { token: this.state.token, method: 'POST', confirm, timeout: 5000 });
     if (result.status !== 202) throw fail(result.status === 409 ? 'ACTIVE_TASKS' : 'STOP_REJECTED');
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {

@@ -32,7 +32,9 @@ test('real isolated YCA: duplicate start, authenticated ownership, manager recov
   await unit.start(); let first = await until(async () => { const o = await unit.observe(); return o.healthy && o; });
   const firstInstance = state.instance;
   assert.equal(first.owned, true); assert.deepEqual(first.tools, await toolSummary());
-  assert.equal((await get(`http://127.0.0.1:${config.harnessPort}/`)).status, 200, 'configured Harness listener is readable');
+  const harnessRoot = await get(`http://127.0.0.1:${config.harnessPort}/`);
+  assert.ok([200, 503].includes(harnessRoot.status), 'configured Harness listener is reachable');
+  if (harnessRoot.status === 503) assert.equal(harnessRoot.body, 'UI_BUILD_UNAVAILABLE', 'a missing optional UI build is not YCA unavailability');
   assert.match(first.deployment.running.commit, /^[a-f0-9]{40}$/);
   assert.equal(first.deployment.state, 'unmanaged');
   await unit.start(); assert.equal((await unit.observe()).pid, first.pid);
