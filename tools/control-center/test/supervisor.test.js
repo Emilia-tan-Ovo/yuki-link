@@ -295,6 +295,75 @@ test('startup gets one final readiness observation before reporting timeout', as
   assert.equal(observations, 2);
 });
 
+test('startup waits for a transient health failure on the same managed instance', async t => {
+  const { manager: m, units: u } = setup(t);
+  m.startupMs = 1000;
+  let observations = 0;
+  u.yca.start = async function() { m.state.units.yca.ownership.instance = 'recovering-instance'; };
+  u.yca.observe = async function() {
+    observations++;
+    return { running: true, owned: true, authenticated: true, instance: 'recovering-instance',
+      healthy: observations >= 2, code: observations >= 2 ? null : 'HEALTH_FAILED',
+      activity: { codex: 0, computer: 0, requests: 0 } };
+  };
+  await m.startOne('yca');
+  assert.equal(observations, 2);
+  assert.equal(m.state.units.yca.blocked, null);
+});
+
+test('a later fully verified observation clears only a stale YCA startup timeout', async t => {
+  const f = setup(t), m = f.manager, u = f.units.yca;
+  const commit = 'a'.repeat(40), tools = { count: 14, sha256: 'b'.repeat(64) };
+  const processInfo = { pid: 4242, created: 'current-process' };
+  Object.assign(m.state.units.yca.ownership, { instance: 'current-instance', process: processInfo, deployment: { commit, tools } });
+  let healthy = false;
+  u.start = async () => {};
+  u.observe = async () => ({ running: true, owned: true, authenticated: true, healthy,
+    instance: 'current-instance', ...processInfo, activity: { codex: 0, computer: 0, requests: 0 },
+    tools, deployment: { state: 'update-pending', running: { commit, dirty: false } },
+    code: healthy ? null : 'HEALTH_FAILED' });
+  await assert.rejects(m.action('yca', 'start'), { code: 'STARTUP_TIMEOUT' });
+  assert.equal(m.snapshot().units.yca.blocked, 'STARTUP_TIMEOUT');
+  healthy = true;
+  const restarted = new Supervisor(f.options);
+  await restarted.observe();
+  assert.equal(restarted.snapshot().units.yca.blocked, null);
+  assert.equal(JSON.parse(readFileSync(f.options.stateFile, 'utf8')).units.yca.blocked, null);
+  restarted.state.units.yca.blocked = 'DEPLOYMENT_ROLLBACK_FAILED'; restarted.persist();
+  await restarted.observe();
+  assert.equal(restarted.snapshot().units.yca.blocked, 'DEPLOYMENT_ROLLBACK_FAILED');
+});
+
+test('startup timeout remains blocked without matching ownership and deployment proof', async t => {
+  const f = setup(t), m = f.manager, u = f.units.yca;
+  const commit = 'a'.repeat(40), tools = { count: 14, sha256: 'b'.repeat(64) };
+  Object.assign(m.state.units.yca, { desired: 'running', blocked: 'STARTUP_TIMEOUT' });
+  Object.assign(m.state.units.yca.ownership, { instance: 'current-instance', process: { pid: 4242, created: 'current-process' }, deployment: { commit, tools } });
+  const good = { running: true, owned: true, authenticated: true, healthy: true,
+    instance: 'current-instance', pid: 4242, created: 'current-process',
+    activity: { codex: 0, computer: 0, requests: 0 }, tools,
+    deployment: { state: 'verified', running: { commit, dirty: false } }, code: null };
+  for (const bad of [
+    { authenticated: false }, { owned: false }, { instance: 'other-instance' },
+    { pid: 4243 }, { healthy: false, code: 'HEALTH_FAILED' },
+    { deployment: { state: 'unverified', running: { commit, dirty: false } } },
+    { deployment: { state: 'verified', running: { commit: 'c'.repeat(40), dirty: false } } },
+  ]) {
+    u.observe = async () => ({ ...good, ...bad });
+    await m.observe();
+    assert.equal(m.snapshot().units.yca.blocked, 'STARTUP_TIMEOUT');
+  }
+});
+
+test('startup rejects an explicit authentication or ownership mismatch', async t => {
+  const { manager: m, units: u } = setup(t);
+  m.startupMs = 0;
+  u.yca.start = async function() { m.state.units.yca.ownership.instance = 'expected-instance'; };
+  u.yca.observe = async () => ({ running: true, owned: false, authenticated: false, healthy: false,
+    code: 'OBSERVED_UNOWNED' });
+  await assert.rejects(m.startOne('yca'), { code: 'OBSERVED_UNOWNED' });
+});
+
 test('bounded retries survive supervisor restart; no retries after stop', async t => {
   const f = setup(t); let m = f.manager; const u = f.units;
   await m.action('all', 'start'); await m.setRecovery(true);
@@ -600,7 +669,7 @@ test('candidate observation gap recovers within the existing startup window', as
   u.observe = async function() {
     const o = await observe();
     if (this.commit === x.next && gaps++ < 2) return { ...o, owned: false, authenticated: false, instance: null,
-      healthy: false, activity: null, tools: null, code: 'OBSERVED_UNOWNED' };
+      healthy: false, activity: null, tools: null, code: 'ACTIVITY_UNKNOWN' };
     return o;
   };
   const operation = { operationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', action: 'update-and-restart', target: 'yca' };

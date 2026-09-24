@@ -127,3 +127,30 @@ test('YCA observation binds OS identity to the current authenticated instance an
   state.process = { ...actual };
   assert.equal((await unit.observe()).healthy, true, 'manual recheck recovers after diagnostics do');
 });
+
+test('YCA health probe accepts a healthy response after the generic 2s deadline', async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'yuki-cc-slow-health-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const processInfo = { pid: 12346, created: '2026-01-01T00:00:00Z', matches: true };
+  const state = { instance: 'slow-health-instance', token: 'a'.repeat(64), process: processInfo };
+  const server = http.createServer((request, response) => {
+    response.setHeader('content-type', 'application/json');
+    if (request.url === '/status') return response.end(JSON.stringify({
+      service: 'yuki-local-control', instance: state.instance, pid: processInfo.pid,
+      active: { codex: 0, computer: 0, requests: 0 },
+    }));
+    if (request.url === '/healthz') return setTimeout(() => response.end(JSON.stringify({
+      service: 'yuki-computer-agent', status: 'ok',
+    })), 2300);
+    response.statusCode = 404; response.end();
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.close(); server.closeAllConnections(); });
+  const config = { node: process.execPath, entry: process.execPath, runtime: root,
+    port: server.address().port, controlPort: server.address().port };
+  const unit = new YcaUnit(config, { inspect: async () => [processInfo] }, state, () => {}, new Events(root));
+  const observation = await unit.observe();
+  assert.equal(observation.owned, true);
+  assert.equal(observation.healthy, true);
+  assert.equal(observation.code, null);
+});
