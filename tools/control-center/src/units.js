@@ -10,9 +10,19 @@ import { resolveCodexExecutable } from '../../codex-session-bridge/src/codex-exe
 import { FileImplementationLaunchAuthoritySource } from '../../codex-session-bridge/src/orchestration/implementation-launcher.ts';
 import { FileReviewLaunchAuthoritySource } from '../../codex-session-bridge/src/orchestration/review-launcher.ts';
 import { FileWorkflowAgentAuthoritySource } from '../../codex-session-bridge/src/orchestration/workflow-agent-launcher.ts';
+import { redact } from '../../codex-session-bridge/src/errors.js';
+
+const CRASH_TAIL_BYTES = 16 * 1024;
+function crashTail(chunks) {
+  if (!chunks.length) return null;
+  const raw = Buffer.concat(chunks);
+  const safe = Buffer.from(redact(raw.toString('utf8')), 'utf8');
+  const tail = safe.subarray(Math.max(0, safe.length - CRASH_TAIL_BYTES)).toString('utf8').replace(/^\uFFFD/, '');
+  return tail || null;
+}
 
 export class YcaUnit {
-  constructor(config, host, state, persist, events) { Object.assign(this, { config, host, state, persist, events }); }
+  constructor(config, host, state, persist, events, { spawnProcess = spawn } = {}) { Object.assign(this, { config, host, state, persist, events, spawnProcess }); }
   markers(instance = this.state.instance) { return [this.state.entry ?? this.config.entry, ...(instance ? ['--control-instance', instance] : ['--runtime', this.config.runtime])]; }
   async observe() {
     const found = await this.host.inspect(this.config.node, this.markers());
@@ -128,12 +138,24 @@ export class YcaUnit {
     if (this.config.implementationLaunchAuthority) args.push('--implementation-launch-authority', this.config.implementationLaunchAuthority);
     if (this.config.reviewLaunchAuthority) args.push('--review-launch-authority', this.config.reviewLaunchAuthority);
     if (this.config.workflowAgentAuthority) args.push('--workflow-agent-authority', this.config.workflowAgentAuthority);
-    const child = spawn(this.config.node, args, { cwd, shell: false, windowsHide: true, detached: true,
-      env: { ...process.env, YUKI_CONTROL_TOKEN: this.state.token }, stdio: ['ignore', 'ignore', 'ignore'] });
-    const launchedInstance = this.state.instance;
+    const child = this.spawnProcess(this.config.node, args, { cwd, shell: false, windowsHide: true, detached: true,
+      env: { ...process.env, YUKI_CONTROL_TOKEN: this.state.token }, stdio: ['ignore', 'ignore', 'pipe'] });
+    const launchedInstance = this.state.instance, stderrChunks = [];
+    let stderrBytes = 0;
+    child.stderr?.on('data', chunk => {
+      const buffer = Buffer.from(chunk); stderrChunks.push(buffer); stderrBytes += buffer.length;
+      while (stderrBytes > CRASH_TAIL_BYTES && stderrChunks.length > 1) stderrBytes -= stderrChunks.shift().length;
+      if (stderrBytes > CRASH_TAIL_BYTES && stderrChunks.length === 1) {
+        stderrChunks[0] = stderrChunks[0].subarray(stderrBytes - CRASH_TAIL_BYTES); stderrBytes = stderrChunks[0].length;
+      }
+    });
+    child.stderr?.on('error', () => {});
     child.once('exit', code => {
       this.events.add('yca', 'process-exit', null, code);
-      if (this.state.instance === launchedInstance) { this.state.lastExit = { at: new Date().toISOString(), exitCode: code }; this.persist(); }
+      if (this.state.instance === launchedInstance) {
+        const stderrTail = code === 0 ? null : crashTail(stderrChunks);
+        this.state.lastExit = { at: new Date().toISOString(), exitCode: code, ...(stderrTail ? { stderrTail } : {}) }; this.persist();
+      }
     });
     await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', () => reject(fail('SPAWN_FAILED'))); });
     child.unref();
