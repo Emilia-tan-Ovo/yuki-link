@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { CONTEXT_POLICY_VERSION, CONTEXT_SCHEMA_VERSION, RESUME_POLICY_VERSION } from './context-contract.ts';
 import type { ContextFacts, ContextFactsSource, ContextTrigger, EvidenceState, ReadinessState, RequestedAction } from './context-contract.ts';
+import { RuleAuthorityVerifier } from './engineering-memory.ts';
+import type { EngineeringMemoryStore, MemoryRecord } from './engineering-memory.ts';
 
 const supportedActions = new Set(['discovery', 'spec', 'tickets', 'ticket-design', 'implementation', 'review', 'acceptance', 'closeout']);
 const MAX_PACKET_BYTES = 24 * 1024;
@@ -21,10 +23,16 @@ const stateFor = (conflicts: Issue[], stale: Issue[], unknowns: Issue[]): Eviden
 
 export class ContextAssembler {
   facts: ContextFactsSource;
-  constructor(facts: ContextFactsSource) { this.facts = facts; }
+  memory: EngineeringMemoryStore | null;
+  specObservations: Map<string, { url?: string; status?: string; digest?: string | null; content?: string; provenance?: string }>;
+  constructor(facts: ContextFactsSource, memory: EngineeringMemoryStore | null = null,
+    specObservations = new Map<string, { url?: string; status?: string; digest?: string | null; content?: string; provenance?: string }>()) {
+    this.facts = facts; this.memory = memory; this.specObservations = specObservations;
+  }
 
   assemble(input: { ticket_id: string; requested_action: RequestedAction; trigger: ContextTrigger }) {
     const facts = this.facts.collect(input.ticket_id);
+    const engineeringMemory = this.memoryRetrieval(facts, input.requested_action);
     const conflicts: Issue[] = [], staleSources: Issue[] = [], unknowns: Issue[] = [], omissions: Array<Record<string, unknown>> = [];
     const checkpoint = facts.checkpoint, checkpointFields = checkpoint.fields as Record<string, string | null>;
     const currentHead = (facts.identity.payload as { head?: string | null } | undefined)?.head ?? null;
@@ -158,6 +166,7 @@ export class ContextAssembler {
           preflight: facts.preflight ?? { status: 'unavailable', capabilities: null, dependencies: [], source_refs: ['host'] } },
       },
       retrieval: {
+        engineering_memory: engineeringMemory,
         context_plan: { status: facts.implementation_notes.status, adapter: facts.implementation_notes.adapter,
           location: facts.implementation_notes.location, digest: facts.implementation_notes.digest,
           core: bounded(plan?.core, 'context-plan-core'), related: bounded(plan?.related, 'context-plan-related'),
@@ -177,6 +186,36 @@ export class ContextAssembler {
     packet.budget.actual_bytes = Buffer.byteLength(JSON.stringify(packet), 'utf8');
     packet.budget.actual_bytes = Buffer.byteLength(JSON.stringify(packet), 'utf8');
     return packet;
+  }
+
+  private memoryRetrieval(facts: ContextFacts, action: string) {
+    const result: { status: string; integrity: string; items: Array<Record<string, unknown>>;
+      stale: Array<Record<string, unknown>>; conflicts: string[]; omissions: Array<Record<string, unknown>> } = {
+        status: 'unavailable', integrity: 'unknown', items: [], stale: [], conflicts: [], omissions: [],
+      };
+    if (!this.memory) { result.omissions.push({ reason: 'store-unavailable' }); return result; }
+    try {
+      const identityScope = facts.identity.scope as { worktree_root?: string; repository_id?: string } | null;
+      const root = identityScope?.worktree_root;
+      const queried = this.memory.query({ project_key: facts.project.key, repository: identityScope?.repository_id, actions: action,
+        workflow_phases: facts.workflow?.phase });
+      result.status = 'observed'; result.integrity = queried.conflicts.length ? 'conflicted' : 'complete';
+      result.conflicts = queried.conflicts;
+      const specReference = facts.references.find(ref => ref.kind === 'spec' && ref.canonical) ?? null;
+      const verifier = root ? new RuleAuthorityVerifier(root, identityScope?.repository_id ?? null,
+        facts.ticket.reference, specReference, this.specObservations) : null;
+      for (const record of queried.records) {
+        const authority = verifier?.verify(record) ?? { status: 'stale', reason: 'UNVERIFIABLE_AUTHORITY' };
+        if (record.type === 'Rule' && authority.status !== 'valid') {
+          result.stale.push({ id: record.id, logical_key: record.logical_key, reason: authority.reason }); continue;
+        }
+        if (result.items.length >= 8) { result.omissions.push({ reason: 'item-limit', count: queried.records.length - 8 }); break; }
+        result.items.push({ id: record.id, type: record.type, logical_key: record.logical_key,
+          summary: record.summary.slice(0, 240), sources: record.sources.map(s => s.reference).slice(0, 4) });
+      }
+      if (result.stale.length) result.integrity = result.conflicts.length ? 'conflicted' : 'stale';
+    } catch { result.omissions.push({ reason: 'query-unavailable' }); }
+    return result;
   }
 
   prepare(input: { ticket_id: string; requested_action: RequestedAction; trigger: ContextTrigger }) {
@@ -258,6 +297,8 @@ export class ContextAssembler {
     trim(packet.retrieval.context_plan.related, 'context-plan-related', packet.retrieval.context_plan.location);
     trim(packet.retrieval.context_plan.retrieval, 'context-plan-retrieval', packet.retrieval.context_plan.location);
     trim(packet.retrieval.context_plan.core, 'context-plan-core', packet.retrieval.context_plan.location);
+    trim(packet.retrieval.engineering_memory.items, 'engineering-memory-items', 'engineering-memory');
+    trim(packet.retrieval.engineering_memory.stale, 'engineering-memory-stale', 'engineering-memory');
     trim(packet.subject.identity.payload.untracked, 'subject-identity-untracked', 'git');
     trim(packet.subject.identity.payload.worktree, 'subject-identity-worktree', 'git');
     trim(packet.subject.identity.payload.index, 'subject-identity-index', 'git');
