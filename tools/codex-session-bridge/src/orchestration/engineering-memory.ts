@@ -124,7 +124,8 @@ export class EngineeringMemoryStore {
     this.ready(); let input!: MemoryQuery;
     try { input = memoryQuery.parse(q); } catch { fail('MEMORY_QUERY_INVALID'); }
     const allActive = [...this.records.values()].filter(r => r.lifecycle === 'active');
-    const conflicts = [...new Set(allActive.filter(r => allActive.some(other => other.id !== r.id && overlaps(r, other)))
+    const conflicts = [...new Set(allActive.filter(r => r.scope.project_key === input.project_key
+      && allActive.some(other => other.id !== r.id && overlaps(r, other)))
       .map(r => r.logical_key))];
     const selected = [...this.records.values()].filter(r => matches(r, input));
     const active = selected.filter(r => r.lifecycle === 'active');
@@ -150,23 +151,42 @@ export class RuleAuthorityVerifier {
   root: string;
   repositoryId: string | null;
   ticketReference: string | null;
-  constructor(root: string, repositoryId: string | null = null, ticketReference: string | null = null) {
+  specReference: string | null;
+  specObservations: Map<string, { url?: string; status?: string; digest?: string | null; content?: string; provenance?: string }>;
+  constructor(root: string, repositoryId: string | null = null, ticketReference: string | null = null,
+    specReference: string | null = null,
+    specObservations = new Map<string, { url?: string; status?: string; digest?: string | null; content?: string; provenance?: string }>()) {
     this.root = root; this.repositoryId = repositoryId; this.ticketReference = ticketReference;
+    this.specReference = specReference; this.specObservations = specObservations;
   }
   verify(record: MemoryRecord): { status: 'valid' | 'stale'; reason?: string } {
     if (record.type !== 'Rule') return { status: 'valid' };
     try {
       const ref = payloads.Rule.parse(record.payload).authority;
+      const githubSpec = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/issues\/[1-9][0-9]*$/.test(ref.path);
       if (ref.path !== 'AGENTS.md' && !/^\.workflow\/skills\/[a-z0-9-]+\/SKILL\.md$/.test(ref.path)
-        && ref.path !== 'docs/specs/emilia-orchestration-consistency-v0.md') return { status: 'stale', reason: 'UNTRUSTED_AUTHORITY' };
+        && ref.path !== 'docs/specs/emilia-orchestration-consistency-v0.md' && !githubSpec)
+        return { status: 'stale', reason: 'UNTRUSTED_AUTHORITY' };
       if (this.repositoryId && record.scope.repository !== this.repositoryId)
         return { status: 'stale', reason: 'AUTHORITY_SCOPE_EXCEEDED' };
-      const absolute = path.resolve(this.root, ref.path), relative = path.relative(this.root, absolute);
-      if (relative.startsWith('..') || path.isAbsolute(relative)) return { status: 'stale', reason: 'UNTRUSTED_AUTHORITY' };
-      const stat = lstatSync(absolute);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 128 * 1024
-        || realpathSync.native(absolute) !== absolute) return { status: 'stale', reason: 'UNVERIFIABLE_AUTHORITY' };
-      const lines = readFileSync(absolute, 'utf8').split(/\r?\n/), headings: string[] = [], units: string[] = [];
+      let content: string;
+      if (githubSpec) {
+        const observed = this.specObservations.get(ref.path);
+        if (ref.path !== this.specReference || observed?.url !== ref.path || observed.status !== 'observed'
+          || !observed.provenance || typeof observed.content !== 'string'
+          || Buffer.byteLength(observed.content, 'utf8') > 128 * 1024
+          || observed.digest !== 'sha256:' + createHash('sha256').update(observed.content).digest('hex'))
+          return { status: 'stale', reason: 'UNVERIFIABLE_AUTHORITY' };
+        content = observed.content;
+      } else {
+        const absolute = path.resolve(this.root, ref.path), relative = path.relative(this.root, absolute);
+        if (relative.startsWith('..') || path.isAbsolute(relative)) return { status: 'stale', reason: 'UNTRUSTED_AUTHORITY' };
+        const stat = lstatSync(absolute);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 128 * 1024
+          || realpathSync.native(absolute) !== absolute) return { status: 'stale', reason: 'UNVERIFIABLE_AUTHORITY' };
+        content = readFileSync(absolute, 'utf8');
+      }
+      const lines = content.split(/\r?\n/), headings: string[] = [], units: string[] = [];
       let paragraph: string[] = [];
       const flush = () => { if (paragraph.length && equal(headings, ref.heading_path) && ref.unit_kind === 'paragraph') units.push(paragraph.join(' ').trim()); paragraph = []; };
       for (const line of [...lines, '']) {
@@ -178,12 +198,17 @@ export class RuleAuthorityVerifier {
       }
       const hits = units.filter(unit => 'sha256:' + createHash('sha256').update(unit).digest('hex') === ref.unit_sha256);
       if (hits.length !== 1) return { status: 'stale', reason: 'DIRECTIVE_MISSING_AMBIGUOUS_OR_DRIFTED' };
+      const directive = payloads.Rule.parse(record.payload).directive;
+      if (directive !== hits[0] || record.summary !== hits[0])
+        return { status: 'stale', reason: 'DIRECTIVE_SUMMARY_DRIFTED' };
       if (ref.path.includes('/skills/')) {
-        const action = ref.path.split('/')[2];
+        const skill = ref.path.split('/')[2];
+        const action = ({ 'code-review': 'review', 'review-change': 'review', implement: 'implementation',
+          'pair-with-docs': 'discovery', 'to-spec': 'spec', 'to-tickets': 'tickets' } as Record<string, string>)[skill] ?? skill;
         if (!record.applicability.actions?.length || record.applicability.actions.some(value => value !== action))
           return { status: 'stale', reason: 'AUTHORITY_SCOPE_EXCEEDED' };
       }
-      if (ref.path.startsWith('docs/specs/') && (!record.sources.some(s => s.reference === ref.path)
+      if ((ref.path.startsWith('docs/specs/') || githubSpec) && (!record.sources.some(s => s.reference === ref.path)
         || (this.ticketReference && !record.sources.some(s => s.reference === this.ticketReference))))
         return { status: 'stale', reason: 'AUTHORITY_SCOPE_EXCEEDED' };
       return { status: 'valid' };

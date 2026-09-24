@@ -122,6 +122,61 @@ test('public Memory write and Context retrieval keep diagnostics local', async t
   assert.equal(history.records[0].lifecycle, 'invalidated');
 });
 
+test('public Memory query verifies Rule against the requested repository', async t => {
+  const f = await fixture(); t.after(f.close);
+  const second = path.join(f.root, 'second-repo'); mkdirSync(second);
+  git(second, 'init'); git(second, 'config', 'user.email', 'fixture@example.invalid');
+  git(second, 'config', 'user.name', 'Fixture');
+  writeFileSync(path.join(second, 'AGENTS.md'), '# Rules\n\n- Check the diff.\n');
+  git(second, 'add', 'AGENTS.md'); git(second, 'commit', '-m', 'base');
+  const registration = f.harness.register({ project_key: 'YCA', project_name: 'Yuki Computer Agent',
+    ticket_key: 'ORCH-002', title: 'Second repository', reference: 'https://github.invalid/issues/92',
+    expected_worktree: second, fixed_point: git(second, 'rev-parse', 'HEAD') });
+  const repository = f.harness.tickets.get(registration.ticket_id)!.comparison_baseline!.repository_id;
+  const directive = 'Check the diff.';
+  const record = { id: randomUUID(), logical_key: 'repo-rule', type: 'Rule', summary: directive,
+    scope: { project_key: 'YCA', repository }, applicability: {},
+    sources: [{ reference: 'AGENTS.md' }], payload: { directive, authority: {
+      path: 'AGENTS.md', heading_path: ['Rules'], unit_kind: 'list-item',
+      unit_sha256: 'sha256:' + createHash('sha256').update(directive).digest('hex') } } };
+  const created = await f.client.callTool({ name: 'engineering_memory_create', arguments: { record } });
+  assert.equal(created.isError, undefined);
+  const query = (await f.client.callTool({ name: 'engineering_memory_query', arguments: {
+    project_key: 'YCA', repository,
+  } })).structuredContent as Wire;
+  assert.equal(query.records[0]?.id, record.id);
+  assert.equal(query.stale.length, 0);
+});
+
+test('public Context retrieves a Rule verified from trusted GitHub Spec content', async t => {
+  const f = await fixture(); t.after(f.close);
+  const url = 'https://github.com/Emilia-tan-Ovo/yuki-link/issues/89';
+  const content = '# Rules\n\n- Check the diff.\n';
+  const notes = path.join(f.repo, 'docs', 'implementation-notes', 'ORCH-001.md');
+  writeFileSync(notes, readFileSync(notes, 'utf8').replace('## Implementation Decisions',
+    `Source Spec: ${url}\n\n## Implementation Decisions`));
+  f.canonicalSpecObservations.set(url, { url, status: 'observed', content,
+    provenance: 'GitHub issue body', revision: 'fixture-revision', observed_at: new Date().toISOString(),
+    digest: 'sha256:' + createHash('sha256').update(content).digest('hex') });
+  const facts = new HarnessContextFactsSource(f.harness, undefined, f.canonicalSpecObservations)
+    .collect(f.registration.ticket_id);
+  assert.equal(facts.references.find(ref => ref.canonical)?.location, url,
+    JSON.stringify(facts.implementation_notes));
+  const directive = 'Check the diff.';
+  const repository = f.harness.tickets.get(f.registration.ticket_id)!.comparison_baseline!.repository_id;
+  const record = { id: randomUUID(), logical_key: 'spec-rule', type: 'Rule', summary: directive,
+    scope: { project_key: 'YCA', repository }, applicability: { actions: ['implementation'] },
+    sources: [{ reference: url }, { reference: 'https://github.invalid/issues/90' }],
+    payload: { directive, authority: { path: url, heading_path: ['Rules'], unit_kind: 'list-item',
+      unit_sha256: 'sha256:' + createHash('sha256').update(directive).digest('hex') } } };
+  assert.equal((await f.client.callTool({ name: 'engineering_memory_create', arguments: { record } })).isError, undefined);
+  const packet = (await f.client.callTool({ name: 'assemble_ticket_context', arguments: {
+    ticket_id: f.registration.ticket_id, requested_action: 'implementation', trigger: 'manual',
+  } })).structuredContent as Wire;
+  assert.equal(packet.retrieval.engineering_memory.items[0]?.id, record.id,
+    JSON.stringify(packet.retrieval.engineering_memory));
+});
+
 test('public Context tools preserve evidence integrity and remain read-only', async t => {
   const f = await fixture(); t.after(f.close);
   f.harness.checkedAt = '2000-01-01T00:00:00.000Z';

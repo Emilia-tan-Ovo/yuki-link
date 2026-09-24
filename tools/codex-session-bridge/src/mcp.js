@@ -107,7 +107,7 @@ export function createMcpServer(manager, computer) {
     const observations = manager.canonicalSpecObservations instanceof Map
       ? manager.canonicalSpecObservations : new Map();
     return new ContextAssembler(new HarnessContextFactsSource(manager.harness, undefined, observations,
-      manager.implementationLaunchAuthority ?? null), memory);
+      manager.implementationLaunchAuthority ?? null), memory, observations);
   };
   const requireMemory = () => { if (!memory) throw new Error('MEMORY_UNAVAILABLE'); return memory; };
   register('new-side-effect', 'engineering_memory_create', 'Explicitly create one typed Engineering Memory record.',
@@ -121,11 +121,19 @@ export function createMcpServer(manager, computer) {
   register('observe', 'engineering_memory_query', 'Read active applicable Engineering Memory, or explicitly include history.',
     memoryQuery, input => {
       const result = requireMemory().query(input);
-      const ticket = [...(manager.harness?.tickets?.values() ?? [])]
-        .find(ticket => manager.harness.projects.get(ticket.project_id)?.key === input.project_key);
+      const candidates = [...(manager.harness?.tickets?.values() ?? [])]
+        .filter(ticket => manager.harness.projects.get(ticket.project_id)?.key === input.project_key
+          && (!input.repository || ticket.comparison_baseline?.repository_id === input.repository));
+      const repositories = new Set(candidates.map(ticket => ticket.comparison_baseline?.repository_id).filter(Boolean));
+      const ticket = repositories.size === 1 ? candidates.find(ticket => ticket.comparison_baseline?.repository_id) : null;
       const root = ticket?.comparison_baseline?.worktree_root ?? ticket?.expected_worktree;
+      const observations = manager.canonicalSpecObservations instanceof Map
+        ? manager.canonicalSpecObservations : new Map();
+      const specReference = ticket && result.records.some(record => record.type === 'Rule')
+        ? new HarnessContextFactsSource(manager.harness, undefined, observations)
+        .collect(ticket.id).references.find(ref => ref.kind === 'spec' && ref.canonical)?.location ?? null : null;
       const verifier = root ? new RuleAuthorityVerifier(root, ticket?.comparison_baseline?.repository_id ?? null,
-        ticket?.reference ?? null) : null;
+        ticket?.reference ?? null, specReference, observations) : null;
       const stale = [];
       const records = result.records.filter(record => {
         if (record.type !== 'Rule' || input.history) return true;

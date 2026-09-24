@@ -24,7 +24,11 @@ const stateFor = (conflicts: Issue[], stale: Issue[], unknowns: Issue[]): Eviden
 export class ContextAssembler {
   facts: ContextFactsSource;
   memory: EngineeringMemoryStore | null;
-  constructor(facts: ContextFactsSource, memory: EngineeringMemoryStore | null = null) { this.facts = facts; this.memory = memory; }
+  specObservations: Map<string, { url?: string; status?: string; digest?: string | null; content?: string; provenance?: string }>;
+  constructor(facts: ContextFactsSource, memory: EngineeringMemoryStore | null = null,
+    specObservations = new Map<string, { url?: string; status?: string; digest?: string | null; content?: string; provenance?: string }>()) {
+    this.facts = facts; this.memory = memory; this.specObservations = specObservations;
+  }
 
   assemble(input: { ticket_id: string; requested_action: RequestedAction; trigger: ContextTrigger }) {
     const facts = this.facts.collect(input.ticket_id);
@@ -197,8 +201,9 @@ export class ContextAssembler {
         workflow_phases: facts.workflow?.phase });
       result.status = 'observed'; result.integrity = queried.conflicts.length ? 'conflicted' : 'complete';
       result.conflicts = queried.conflicts;
+      const specReference = facts.references.find(ref => ref.kind === 'spec' && ref.canonical)?.location ?? null;
       const verifier = root ? new RuleAuthorityVerifier(root, identityScope?.repository_id ?? null,
-        facts.ticket.reference) : null;
+        facts.ticket.reference, specReference, this.specObservations) : null;
       for (const record of queried.records) {
         const authority = verifier?.verify(record) ?? { status: 'stale', reason: 'UNVERIFIABLE_AUTHORITY' };
         if (record.type === 'Rule' && authority.status !== 'valid') {
