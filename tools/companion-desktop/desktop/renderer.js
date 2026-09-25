@@ -1,8 +1,9 @@
 const $ = id => document.getElementById(id);
 let generation = 0, service = 'connecting', busy = false, pendingGeneration = null, messages = [];
 let personaPending = null;
-let thinkingPending = false;
-let thinkingDraftVersion = 0, thinkingPendingVersion = null;
+let thinkingCommitted = null, thinkingPending = null, thinkingDesired = null;
+let thinkingDraftVersion = 0;
+let thinkingSyncedVersion = 0, thinkingHasSaved = false;
 const expandedReasoning = new Set();
 let personaDraftVersion = 0, personaPendingVersion = null;
 const host = window.yukiDesktop;
@@ -12,7 +13,31 @@ function state(next) {
   $('model-state').textContent = next === 'offline-preview' ? '离线预览：当前使用确定性本地回复，没有发起 DeepSeek 请求。' : next === 'unconfigured' ? 'DeepSeek 凭据未配置；文字发送不可用。' : next === 'configured' ? '凭据已导入，尚未通过真实请求验证。' : next === 'verified' ? '已完成真实 DeepSeek 文字请求。' : '文字服务状态：' + (label[next] || next);
   $('credential').disabled = next === 'offline-preview';
   $('text').disabled = !['offline-preview', 'configured', 'verified', 'unknown'].includes(next) || busy;
-  $('send').disabled = $('text').disabled;
+  updateSend();
+}
+function updateSend() { $('send').disabled = $('text').disabled || !thinkingCommitted || !!thinkingPending; }
+function thinkingTarget(value) { return { schemaVersion: 1, enabled: value !== 'off', effort: value === 'off' ? thinkingCommitted.effort : value }; }
+function thinkingValue(value) { return value.enabled ? value.effort : 'off'; }
+function thinkingLabel(value) { return value.enabled ? value.effort.toUpperCase() : '关闭'; }
+function sameThinking(a, b) { return a.enabled === b.enabled && a.effort === b.effort; }
+function syncThinkingDraft() {
+  $('thinking-enabled').checked = thinkingCommitted.enabled;
+  $('thinking-effort').value = thinkingCommitted.effort;
+  $('thinking-effort').disabled = !thinkingCommitted.enabled;
+  thinkingSyncedVersion = thinkingDraftVersion;
+}
+function showThinkingCommitted() {
+  $('thinking-quick').value = thinkingValue(thinkingCommitted);
+  $('thinking-quick').disabled = false;
+  updateSend();
+}
+function saveThinking(target, source) {
+  thinkingPending = { target, source, version: thinkingDraftVersion };
+  $('thinking-save').disabled = true;
+  $('thinking-quick-status').textContent = `正在保存思考设置…当前生效：${thinkingLabel(thinkingCommitted)}`;
+  $('thinking-status').textContent = '正在保存思考设置…';
+  updateSend();
+  host.send('thinking-save', target);
 }
 function render() {
   const log = $('messages'); log.replaceChildren();
@@ -80,19 +105,38 @@ host.subscribe(message => {
     }
   }
   if (message.type === 'thinking') {
-    if (message.action === 'load' && !thinkingPending) {
-      $('thinking-enabled').checked = message.thinking.enabled;
-      $('thinking-effort').value = message.thinking.effort;
-      $('thinking-effort').disabled = !message.thinking.enabled;
+    if (message.action === 'load' && !thinkingPending && !thinkingHasSaved) {
+      thinkingCommitted = message.thinking;
+      if (thinkingDraftVersion === thinkingSyncedVersion) syncThinkingDraft();
+      showThinkingCommitted();
+      $('thinking-quick-status').textContent = message.warning || '';
       $('thinking-status').textContent = message.warning || '正在使用已保存的思考设置。';
-    } else if (message.action === 'save') {
-      thinkingPending = false; $('thinking-save').disabled = false;
-      $('thinking-status').textContent = message.error ? message.error + ' 草稿仍保留，原设置继续生效。' : thinkingDraftVersion !== thinkingPendingVersion ? '提交时的思考设置已保存，将从下一条发送开始生效；当前草稿未保存。' : '思考设置已保存，将从下一条发送开始生效。';
-      thinkingPendingVersion = null;
+    } else if (message.action === 'save' && thinkingPending) {
+      const completed = thinkingPending;
+      thinkingPending = null;
+      if (message.error) {
+        thinkingDesired = null;
+        $('thinking-quick-status').textContent = message.error;
+        $('thinking-status').textContent = message.error + ' 草稿仍保留，原设置继续生效。';
+      } else {
+        thinkingCommitted = message.thinking;
+        thinkingHasSaved = true;
+        if (thinkingDraftVersion === thinkingSyncedVersion || (completed.source === 'settings' && thinkingDraftVersion === completed.version)) syncThinkingDraft();
+        const dirty = thinkingDraftVersion !== thinkingSyncedVersion;
+        $('thinking-status').textContent = dirty ? '提交时的思考设置已保存，将从下一条发送开始生效；当前草稿未保存。' : '思考设置已保存，将从下一条发送开始生效。';
+        $('thinking-quick-status').textContent = '思考设置已保存。';
+      }
+      if (thinkingDesired && !message.error && !sameThinking(thinkingTarget(thinkingDesired), thinkingCommitted)) {
+        const next = thinkingTarget(thinkingDesired); thinkingDesired = null; saveThinking(next, 'quick');
+      } else {
+        thinkingDesired = null;
+        $('thinking-save').disabled = false;
+        showThinkingCommitted();
+      }
     }
   }
 });
-$('form').addEventListener('submit', event => { event.preventDefault(); const text = $('text').value.trim(); if (!text || busy || $('text').disabled) return; busy = true; pendingGeneration = generation; $('send').disabled = true; $('text').disabled = true; notice('正在等待 Emilia 回复…'); host.send('submit', { generation, id: crypto.randomUUID(), text }); });
+$('form').addEventListener('submit', event => { event.preventDefault(); const text = $('text').value.trim(); if (!text || busy || $('text').disabled || !thinkingCommitted || thinkingPending) return; busy = true; pendingGeneration = generation; $('send').disabled = true; $('text').disabled = true; notice('正在等待 Emilia 回复…'); host.send('submit', { generation, id: crypto.randomUUID(), text }); });
 $('text').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('form').requestSubmit(); } });
 $('credential').onclick = () => host.send('credential');
 $('workbench-save').onclick = () => host.send('workbench-save', $('workbench-url').value.trim());
@@ -100,10 +144,17 @@ $('workbench-open').onclick = () => host.send('workbench-open');
 for (const id of ['settings', 'about']) { $(id + '-open').onclick = () => { $(id).showModal(); if (id === 'settings') { host.send('persona-load'); host.send('thinking-load'); } }; }
 $('thinking-enabled').onchange = () => { thinkingDraftVersion++; $('thinking-effort').disabled = !$('thinking-enabled').checked; $('thinking-status').textContent = '草稿尚未保存。'; };
 $('thinking-effort').onchange = () => { thinkingDraftVersion++; $('thinking-status').textContent = '草稿尚未保存。'; };
-$('thinking-save').onclick = () => { if (thinkingPending) return; thinkingPending = true; thinkingPendingVersion = thinkingDraftVersion; $('thinking-save').disabled = true; $('thinking-status').textContent = '正在保存思考设置…'; host.send('thinking-save', { schemaVersion: 1, enabled: $('thinking-enabled').checked, effort: $('thinking-effort').value }); };
+$('thinking-save').onclick = () => { if (thinkingPending || !thinkingCommitted) return; saveThinking({ schemaVersion: 1, enabled: $('thinking-enabled').checked, effort: $('thinking-effort').value }, 'settings'); };
+$('thinking-quick').onchange = () => {
+  if (!thinkingCommitted) return;
+  const target = thinkingTarget($('thinking-quick').value);
+  if (thinkingPending) { thinkingDesired = $('thinking-quick').value; return; }
+  if (!sameThinking(target, thinkingCommitted)) saveThinking(target, 'quick');
+};
 $('role-card').addEventListener('input', () => { personaDraftVersion++; roleCardCount(); personaStatus('草稿尚未保存。'); });
 $('role-card-save').onclick = () => { if (personaPending !== null) return; personaPending = $('role-card').value; personaBusy(true); personaStatus('正在保存角色卡…'); host.send('persona-save', { schemaVersion: 1, text: personaPending }); };
 $('role-card-reset').onclick = () => { if (personaPending !== null) return; personaPending = $('role-card').value; personaPendingVersion = personaDraftVersion; personaBusy(true); personaStatus('正在恢复默认角色卡…'); host.send('persona-reset'); };
 document.querySelectorAll('[data-close]').forEach(button => button.onclick = () => $(button.dataset.close).close());
 $('about-open').addEventListener('click', async () => { try { $('license').textContent = await (await fetch('yuki://app/AAAAGENT-LICENSE.txt')).text(); } catch { $('license').textContent = '许可文件暂时无法读取。'; } });
 host.send('ready');
+host.send('thinking-load');

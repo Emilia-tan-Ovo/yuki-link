@@ -80,3 +80,19 @@ test('thinking validates, persists effort while off, and freezes accepted submit
   assert.deepEqual(second.thinking, { schemaVersion: 1, enabled: false, effort: 'max' });
   assert.deepEqual((await SettingsStore.load(file)).snapshot().thinking, second.thinking);
 });
+
+test('failed thinking save keeps committed snapshot; next successful save and reopen use new value', async t => {
+  const file = await fixture(t);
+  const store = await SettingsStore.load(file);
+  await store.saveThinking({ schemaVersion: 1, enabled: true, effort: 'low' });
+  const before = await readFile(file, 'utf8');
+  const rename = store.rename;
+  store.rename = async () => { throw Error('rename failed'); };
+  await assert.rejects(store.saveThinking({ schemaVersion: 1, enabled: true, effort: 'max' }), /rename failed/);
+  assert.deepEqual(store.snapshot().thinking, { schemaVersion: 1, enabled: true, effort: 'low' });
+  assert.equal(await readFile(file, 'utf8'), before);
+  store.rename = rename;
+  await store.saveThinking({ schemaVersion: 1, enabled: false, effort: 'low' });
+  assert.deepEqual(store.snapshot().thinking, { schemaVersion: 1, enabled: false, effort: 'low' });
+  assert.deepEqual((await SettingsStore.load(file)).snapshot().thinking, store.snapshot().thinking);
+});
