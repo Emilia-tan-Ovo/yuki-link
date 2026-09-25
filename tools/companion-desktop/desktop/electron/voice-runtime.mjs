@@ -2,12 +2,13 @@ import { inspectPcmWav, CAPTURE_LIMITS, PLAYBACK_LIMITS } from '../media/wav.mjs
 import { validRequestId } from '../turn-contract.mjs';
 import { MicrophonePermissionIntent } from './voice-readiness.mjs';
 export class VoiceRuntime {
-  constructor({ voice, connection, deliver, settings, readiness, status, preview = false }) { Object.assign(this, { voice, connection, deliver, settings, readiness, status, preview }); this.cleanupPending = null; this.activeModel = null; this.configurationQueue = Promise.resolve(); this.pendingConfigurations = 0; this.permissionIntent = new MicrophonePermissionIntent(); }
+  constructor({ voice, connection, deliver, settings, readiness, status, preview = false }) { Object.assign(this, { voice, connection, deliver, settings, readiness, status, preview }); this.cleanupPending = null; this.activeModel = null; this.configurationQueue = Promise.resolve(); this.configurationEpoch = 0; this.pendingConfigurations = 0; this.permissionIntent = new MicrophonePermissionIntent(); }
   send(value) { return this.connection.send(value, this.connection.generation); }
   state(extra = {}) { this.deliver({ type: 'voice-state', generation: this.connection.generation, scope: this.voice.current?.scope, state: this.voice.state, ...extra }); }
   publish() { const readiness = this.readiness.snapshot(!this.preview && this.connection.state === 'ready' && !['unconfigured','disconnected'].includes(this.status()?.service), this.status()?.service); this.deliver({ type: 'voice-settings', voice: this.settings.snapshot().voice, credentialConfigured: this.credentialConfigured === true, readiness }); this.send({ type: 'media-readiness', readiness }); return readiness; }
-  configure(credentialConfigured) { this.invalidateVoice(); this.credentialConfigured = credentialConfigured; this.readiness.reset(credentialConfigured && this.settings.snapshot().voice.enabled && !this.preview); this.publish(); }
+  configure(credentialConfigured) { ++this.configurationEpoch; this.invalidateVoice(); this.credentialConfigured = credentialConfigured; this.readiness.reset(credentialConfigured && this.settings.snapshot().voice.enabled && !this.preview); this.publish(); }
   reconfigure(commit, readKey) {
+    ++this.configurationEpoch;
     ++this.pendingConfigurations;
     this.invalidateVoice();
     const operation = this.configurationQueue.then(async () => {
@@ -28,6 +29,11 @@ export class VoiceRuntime {
   }
   invalidateVoice() { this.permissionIntent.clear(); this.stopResources(this.voice.current?.scope); this.voice.disconnect(); }
   invalidate() { this.invalidateVoice(); this.activeModel = null; }
+  invalidateRendererGone() {
+    this.invalidate();
+    // The destroyed renderer owned these resources and can no longer acknowledge teardown.
+    this.cleanupPending = null;
+  }
   microphonePermission(request) {
     if (this.preview || this.connection.state !== 'ready' || this.pendingConfigurations || this.cleanupPending || this.voice.state !== 'preparing') { this.permissionIntent.clear(); return false; }
     return this.permissionIntent.allow(request, this.connection.generation, this.voice.current?.scope);
@@ -60,6 +66,7 @@ export class VoiceRuntime {
     if (['capture-ready', 'capture-finished', 'device-error', 'cleaned'].includes(value.event)) this.permissionIntent.clear(value.scope);
     if (value.event === 'cleaned' && this.cleanupPending?.voiceTurnId === value.scope?.voiceTurnId && this.cleanupPending.voiceEpoch === value.scope.voiceEpoch && this.cleanupPending.connectionGeneration === value.scope.connectionGeneration) { this.cleanupPending = null; this.state(); return; }
     if (value.event === 'devices-changed') {
+      if (value.scope && !v.matches(value.scope)) return;
       if (v.current) { const result = v.cancel(v.current.scope); this.stopResources(v.current.scope); if (result.requestId) this.send({ type: 'cancel-model', requestId: result.requestId, origin: 'voice-final', voiceScope: v.current.scope }); }
       this.readiness.facts.capture = 'unknown'; this.readiness.facts.playback = 'unknown'; this.readiness.facts.permission = 'unknown'; this.state(); this.publish(); return;
     }

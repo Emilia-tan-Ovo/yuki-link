@@ -10,6 +10,8 @@ import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as credentialModule from '../desktop/electron/voice-credential.mjs';
+import { EventEmitter } from 'node:events';
+import { runInNewContext } from 'node:vm';
 
 test('packaged credential helper resolves to the installed physical unpacked resource', async () => {
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
@@ -83,6 +85,58 @@ test('main capture intent is one-shot; checks do not consume; cancel/reconnect/t
     assert.equal(h.runtime.microphonePermission(request), false, action);
   }
 });
+test('renderer gone releases impossible cleanup but fences old events and preserves live cleanup acknowledgements', async t => {
+  const main = await readFile(new URL('../desktop/electron/main.mjs', import.meta.url), 'utf8');
+  const gone = main.split('\n').find(line => line.includes("win.webContents.on('render-process-gone'"));
+  const events = main.slice(main.indexOf("ipcMain.on('yuki:voice-event'"), main.indexOf("ipcMain.on('yuki:voice-load'"));
+  for (const state of ['preparing', 'listening']) await t.test(state, async () => {
+    const sent = [], delivered = [], handlers = new Map(), readiness = new VoiceReadiness();
+    const wc = new EventEmitter(); wc.mainFrame = { url: 'yuki://app/index.html' };
+    const request = { webContents: wc, expected: wc, permission: 'media', details: { isMainFrame: true, requestingUrl: 'yuki://app/index.html', mediaTypes: ['audio'] } };
+    const voice = new VoiceTurnCoordinator({ canAttempt: () => true });
+    const connection = { generation: 3, state: 'ready', send: value => { sent.push(value); return true; }, close() { ++this.generation; this.state = 'disconnected'; } };
+    const media = new VoiceRuntime({ voice, readiness, connection, deliver: value => delivered.push(value), settings: { snapshot: () => ({ voice: { ...DEFAULT_VOICE, enabled: true } }) }, status: () => ({ service: 'configured' }) });
+    runInNewContext(`let rendererReady = true; ${gone}\n${events}`, { win: { webContents: wc }, media, connection, trusted: () => true, ipcMain: { on: (name, fn) => handlers.set(name, fn) } });
+    const event = (event, scope, generation = scope.connectionGeneration, extra = {}) => handlers.get('yuki:voice-event')({}, { schemaVersion: 1, event, scope, generation, ...extra });
+    media.configure(true); media.command({ action: 'start' });
+    const oldScope = voice.current.scope;
+    if (state === 'listening') event('capture-ready', oldScope);
+    assert.equal(voice.state, state);
+    wc.emit('render-process-gone');
+    assert.equal(voice.current, null);
+    assert.equal(media.microphonePermission(request), false);
+    assert.ok(sent.some(value => value.type === 'voice-stop' && value.scope === oldScope));
+    ++connection.generation; connection.state = 'ready'; media.configure(true);
+    media.command({ action: 'start' });
+    assert.ok(voice.current, 'replacement renderer must be allowed to start without a dead owner cleaned acknowledgement');
+    const scope = voice.current.scope;
+    assert.equal(delivered.findLast(value => value.type === 'voice-state').outcome, 'accepted');
+    assert.notEqual(scope.voiceEpoch, oldScope.voiceEpoch);
+    const before = structuredClone(readiness.facts);
+    for (const generation of [oldScope.connectionGeneration, connection.generation]) {
+      for (const name of ['cleaned', 'devices-changed', 'device-error', 'capture-ready', 'capture-finished']) event(name, oldScope, generation, { code: 'PERMISSION_DENIED' });
+    }
+    assert.equal(voice.current.scope, scope); assert.equal(voice.state, 'preparing');
+    assert.deepEqual(readiness.facts, before);
+    assert.equal(media.microphonePermission(request), true, 'late old events must not clear the new permission intent');
+    event('capture-ready', scope);
+    media.command({ action: 'cancel-turn', scope });
+    media.command({ action: 'start' }); assert.equal(voice.current.scope, scope);
+    event('cleaned', oldScope);
+    media.command({ action: 'start' }); assert.equal(voice.current.scope, scope);
+    event('cleaned', scope);
+    media.command({ action: 'start' });
+    const liveScope = voice.current.scope; assert.notEqual(liveScope, scope);
+    await media.reconfigure(async () => {}, async () => 'fixture');
+    media.command({ action: 'start' }); assert.equal(voice.current, null, 'live reconfiguration must still wait for cleaned');
+    event('cleaned', scope);
+    media.command({ action: 'start' }); assert.equal(voice.current, null);
+    event('cleaned', liveScope);
+    media.command({ action: 'start' }); assert.ok(voice.current);
+    media.invalidate();
+  });
+});
+
 test('voice credential is a separate encrypted atomic store and fails closed without storage protection', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'yuki-credential-')); t.after(() => rm(dir, { recursive: true, force: true }));
   const source = join(dir, 'input.txt'); await writeFile(source, 'fixture-voice-secret');

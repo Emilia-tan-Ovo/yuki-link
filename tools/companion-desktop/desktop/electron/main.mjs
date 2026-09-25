@@ -55,13 +55,19 @@ async function start() {
   const revision = ++startRevision;
   media.invalidate(); void connection.close();
   deliver({ type: 'connection', state: 'connecting', generation: connection.generation, workbenchUrl: settings.snapshot().workbenchUrl });
-  await media.configurationQueue;
-  const voiceKey = preview ? '' : await voiceCredentials.read();
-  const textKey = preview ? '' : await key();
-  if (revision !== startRevision || quitting) return;
-  media.configure(!!voiceKey);
-  connection.start({ directory: dataDir(), key: textKey, preview, voiceConfig: settings.snapshot().voice, voiceKey, configRevision: readiness.revision });
-  deliver({ type: 'connection', state: 'connecting', generation: connection.generation, workbenchUrl: settings.snapshot().workbenchUrl });
+  while (revision === startRevision && !quitting) {
+    const epoch = media.configurationEpoch;
+    await media.configurationQueue;
+    const voiceKey = preview ? '' : await voiceCredentials.read();
+    const textKey = preview ? '' : await key();
+    if (revision !== startRevision || quitting) return;
+    // Reconfiguration can replace the queue while either credential read is pending.
+    if (epoch !== media.configurationEpoch || media.pendingConfigurations) continue;
+    media.configure(!!voiceKey);
+    connection.start({ directory: dataDir(), key: textKey, preview, voiceConfig: settings.snapshot().voice, voiceKey, configRevision: readiness.revision });
+    deliver({ type: 'connection', state: 'connecting', generation: connection.generation, workbenchUrl: settings.snapshot().workbenchUrl });
+    return;
+  }
 }
 function workbenchUrl(value) {
   try {
@@ -209,7 +215,7 @@ void app.whenReady().then(async () => {
   Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: 'Yuki Link', submenu: [{ role: 'quit' }] }, { role: 'editMenu' }]));
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
-  win.webContents.on('render-process-gone', () => { rendererReady = false; media.invalidate(); void connection.close(); });
+  win.webContents.on('render-process-gone', () => { rendererReady = false; media.invalidateRendererGone(); void connection.close(); });
   win.on('closed', () => app.quit());
   await win.loadURL('yuki://app/index.html');
   if (smoke) {

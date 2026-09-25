@@ -105,6 +105,51 @@ test('voice save while worker is not ready commits locally; normal start takes t
   assert.equal(configurations[0].configRevision, readiness.revision);
 });
 
+test('normal start retries a stale credential snapshot across voice credential/settings reconfiguration', async t => {
+  for (const action of ['voice-credential', 'voice-save']) await t.test(action, async t => {
+    const dir = await mkdtemp(join(tmpdir(), 'yuki-voice-start-race-'));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const store = await SettingsStore.load(join(dir, 'settings.json'));
+    await store.saveVoice({ ...DEFAULT_VOICE, enabled: true, inputDevice: 'old-input' });
+    const oldRead = Promise.withResolvers(), reading = Promise.withResolvers(), saving = Promise.withResolvers(), saveGate = Promise.withResolvers(), notice = Promise.withResolvers();
+    let committedKey = 'old-fixture', reads = 0;
+    const settings = { snapshot: () => store.snapshot(), saveVoice: async value => { saving.resolve(); await saveGate.promise; return store.saveVoice(value); } };
+    const voiceCredentials = { read: () => { if (++reads === 1) { reading.resolve(); return oldRead.promise; } return Promise.resolve(committedKey); }, importFile: async () => { committedKey = 'new-fixture'; } };
+    const commands = [], configurations = [], handlers = new Map(), readiness = new VoiceReadiness();
+    const connection = { generation: 4, state: 'disconnected', send: value => { commands.push(value); return false; }, close() { ++this.generation; }, start: config => configurations.push(config) };
+    const voice = new VoiceTurnCoordinator({ canAttempt: () => true });
+    const media = new VoiceRuntime({ voice, connection, readiness, settings, deliver() {}, status: () => ({ service: 'disconnected' }) });
+    const main = readFileSync(new URL('../desktop/electron/main.mjs', import.meta.url), 'utf8');
+    const source = main.slice(main.indexOf('async function start()'), main.indexOf('function workbenchUrl'));
+    const ipc = main.slice(main.indexOf("ipcMain.on('yuki:voice-save'"), main.indexOf("ipcMain.on('yuki:memory'"));
+    const start = runInNewContext(`let startRevision = 0; ${source}\n${ipc}\nstart`, { media, connection, settings, readiness, voiceCredentials, preview: false, quitting: false,
+      key: async () => 'text-fixture', dataDir: () => dir, win: {}, trusted: () => true, deliver: value => { if (value.type === 'notice') notice.resolve(value); },
+      dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: ['fixture'] }) }, ipcMain: { on: (name, fn) => handlers.set(name, fn) } });
+    const starting = start();
+    await reading.promise;
+    handlers.get('yuki:' + action)({}, { ...DEFAULT_VOICE, enabled: true, inputDevice: 'new-input' });
+    if (action === 'voice-credential') {
+      assert.match((await notice.promise).text, /已.*保存/);
+      assert.equal(committedKey, 'new-fixture');
+      assert.equal(commands.filter(value => value.type === 'voice-configure').length, 1);
+    } else {
+      await saving.promise;
+    }
+    oldRead.resolve('old-fixture');
+    // Let the stale read resume while the settings commit is still pending.
+    await new Promise(resolve => setImmediate(resolve));
+    const startsBeforeCommit = configurations.length;
+    saveGate.resolve();
+    assert.match((await notice.promise).text, /已.*保存/);
+    await starting;
+    if (action === 'voice-save') assert.equal(startsBeforeCommit, 0, 'start must wait for the in-flight settings commit');
+    assert.equal(configurations.length, 1);
+    assert.equal(configurations[0].voiceKey, action === 'voice-credential' ? 'new-fixture' : 'old-fixture');
+    assert.equal(configurations[0].voiceConfig.inputDevice, action === 'voice-save' ? 'new-input' : 'old-input');
+    assert.equal(configurations[0].configRevision, readiness.revision);
+  });
+});
+
 test('worker voice ASR is once per scope; TTS reads committed text only; stale/cancel loses audio', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'yuki-voice-ipc-')), emitted = [], calls = [];
   const handle = createWorkerHandler({ post: m => emitted.push(structuredClone(m)), createSession: () => new BackendSession({ directory: dir, provider: async () => ({ content: '正文', reasoningContent: '仅历史' }) }), createVoice: () => ({ transcribe: async input => { calls.push(['asr', input]); return { text: '问' }; }, synthesize: async input => { calls.push(['tts', input]); return { wav: pcm16Wav(new Float32Array([1]), 8000) }; } }) });
