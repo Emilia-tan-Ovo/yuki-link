@@ -1,15 +1,17 @@
 import { BrowserCapture, BrowserPlayback } from './media/devices.mjs';
-import { sameVoiceScope } from './turn-contract.mjs';
+import { sameVoiceScope, validRequestId } from './turn-contract.mjs';
 import { DEFAULT_VOICE } from './voice-config.mjs';
 // Renderer owns device resources, while main remains the only turn/cancellation owner.
 export class RendererVoice {
-  constructor({ host, element, getGeneration, notice, mediaDevices = globalThis.navigator?.mediaDevices, AudioContext = globalThis.AudioContext }) {
-    Object.assign(this, { host, element, getGeneration, notice, mediaDevices, AudioContext }); this.scope = null; this.state = 'idle'; this.ready = null; this.settings = { ...DEFAULT_VOICE }; this.revision = null; this.queuedStart = false; this.played = false;
+  constructor({ host, element, getGeneration, notice, mediaDevices = globalThis.navigator?.mediaDevices, AudioContext = globalThis.AudioContext, Playback = BrowserPlayback, playbackObserver = () => {} }) {
+    Object.assign(this, { host, element, getGeneration, notice, mediaDevices, AudioContext, Playback, playbackObserver }); this.scope = null; this.state = 'idle'; this.ready = null; this.settings = { ...DEFAULT_VOICE }; this.revision = null; this.queuedStart = false; this.played = false;
     this.mediaDevices?.addEventListener?.('devicechange', () => { void this.dispose().then(() => { this.event('devices-changed'); return this.devices(); }); });
     globalThis.addEventListener?.('beforeunload', () => { void this.dispose(); });
   }
   event(event, extra = {}, scope = this.scope) { this.host.send('voice-event', { schemaVersion: 1, generation: this.getGeneration(), scope, requestId: scope?.requestId, event, ...extra }); }
-  command(action) { this.host.send('voice-command', { schemaVersion: 1, generation: this.getGeneration(), scope: this.scope, action }); }
+  observePlayback(event) { try { this.playbackObserver(event); } catch { /* Avatar failure must not stop audio/text. */ } }
+  closePlaybackSignal() { if (this.playbackSignal) this.playbackSignal.active = false; this.observePlayback({ type: 'reset' }); }
+  command(action) { if (['stop-output','cancel-turn'].includes(action)) this.closePlaybackSignal(); this.host.send('voice-command', { schemaVersion: 1, generation: this.getGeneration(), scope: this.scope, action }); }
   update() {
     const $ = this.element;
     $('voice-start').disabled = !this.ready?.voice.canAttempt || this.queuedStart;
@@ -20,7 +22,7 @@ export class RendererVoice {
     const states = { idle:'空闲', preparing:'正在准备麦克风', listening:'正在录音', transcribing:'正在识别', 'awaiting-submit':'已识别，等待提交', thinking:'正在回复', synthesizing:'正在合成声音', 'playback-pending':'正在准备播放', speaking:'正在播放', cancelling:'取消结果待确认', cancelled:'已取消', error:'语音未完成' };
     $('voice-state').textContent = states[this.state] ?? this.state;
   }
-  async dispose() { const capture = this.capture, playback = this.playback; this.capture = null; this.playback = null; this.retryAudio?.wav.fill(0); this.retryAudio = null; await Promise.all([capture?.cancel(), playback?.stop()]); }
+  async dispose() { this.closePlaybackSignal(); const capture = this.capture, playback = this.playback; this.capture = null; this.playback = null; this.retryAudio?.wav.fill(0); this.retryAudio = null; await Promise.all([capture?.cancel(), playback?.stop()]); }
   async resumePlayback() { const message = this.retryAudio; if (!message || !sameVoiceScope(message.scope, this.scope) || this.state !== 'playback-pending') return; this.retryAudio = null; await this.playAudio(message); }
   resumeQueuedStart() { if (this.queuedStart && this.cleaned && ['cancelled','idle','error'].includes(this.state)) { this.queuedStart = false; this.command('start'); } }
   async start() {
@@ -48,7 +50,8 @@ export class RendererVoice {
     if (message.generation !== undefined && message.generation !== this.getGeneration()) { message.wav?.fill(0); return; }
     if (message.type === 'voice-state' && scope) {
       if (this.scope && scope.voiceEpoch < this.scope.voiceEpoch) return;
-      if (!sameVoiceScope(scope, this.scope)) { this.scope = scope; this.played = false; }
+      if (!sameVoiceScope(scope, this.scope)) { this.closePlaybackSignal(); this.scope = scope; this.played = false; }
+      if (['idle','cancelled','cancelling','error'].includes(message.state)) this.closePlaybackSignal();
       this.state = message.state; if (message.error) this.notice(message.error.code === 'AUDIO_LIMIT' ? '录音或合成音频超限，请缩短内容后重试；已提交文字保留。' : `语音未完成：${message.error.stage} / ${message.error.code}。文字历史保留，不会自动重试。`);
       this.resumeQueuedStart();
       this.update(); return;
@@ -72,14 +75,21 @@ export class RendererVoice {
       finally { await capture.cancel(); if (this.capture === capture) this.capture = null; } return;
     }
     if (message.type === 'voice-play') {
-      if (this.played || this.state !== 'playback-pending') { message.wav?.fill(0); return; } this.played = true;
+      if (this.played || this.state !== 'playback-pending' || !validRequestId(message.requestId)) { message.wav?.fill(0); return; } this.played = true;
       await this.playAudio(message); return;
     }
   }
   async playAudio(message) {
       const scope = message.scope, retryBytes = message.wav.slice();
-      const playback = new BrowserPlayback({ AudioContext: this.AudioContext, emit: event => {
+      this.closePlaybackSignal();
+      const signal = { active: true }, owner = { scope, requestId: message.requestId }; this.playbackSignal = signal;
+      this.observePlayback({ type: 'armed', ...owner });
+      const playback = new this.Playback({ AudioContext: this.AudioContext, emit: event => {
         if (this.playback !== playback || !sameVoiceScope(scope, this.scope)) return;
+        if (signal.active && this.playbackSignal === signal && ['started','amplitude','ended','error'].includes(event.type)) {
+          this.observePlayback({ type: event.type, ...owner, ...(event.type === 'amplitude' ? { value: event.value } : {}) });
+          if (['ended','error'].includes(event.type)) signal.active = false;
+        }
         if (event.type === 'started') this.event('playback-started', { requestId: message.requestId }, scope);
         if (event.type === 'ended') { this.event('playback-ended', { requestId: message.requestId }, scope); void playback.stop(); }
         if (event.type === 'error') this.event('device-error', { code: event.code, requestId: message.requestId }, scope);
@@ -89,6 +99,7 @@ export class RendererVoice {
       let retained = false;
       try { await playback.play(message); }
       catch (e) {
+        if (this.playbackSignal === signal) this.closePlaybackSignal();
         if (this.playback === playback && sameVoiceScope(scope, this.scope) && e.message === 'PLAYBACK_BLOCKED') { this.retryAudio = { ...message, wav: retryBytes }; retained = true; this.event('playback-blocked', { requestId: message.requestId }, scope); this.notice('声音播放被阻止，请点击“播放声音”继续；不会重新调用 TTS。'); }
         else if (this.playback === playback && e.message !== 'CANCELLED') this.event('device-error', { code: e.message }, scope);
       } finally { if (!retained) retryBytes.fill(0); this.update(); }

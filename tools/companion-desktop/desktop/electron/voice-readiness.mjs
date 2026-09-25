@@ -9,6 +9,7 @@ export class VoiceReadiness {
   provider(stage, success) { if (!['asr', 'tts'].includes(stage)) return; this.facts[stage] = success ? 'verified' : 'unknown'; this.checked[stage] = Date.now(); }
   snapshot(connected, textService) {
     const result = initialMediaReadiness(), f = this.facts;
+    if (this.live2d) result.live2d = this.live2d();
     const missing = [];
     if (!this.configured) missing.push('configuration'); if (!connected) missing.push('connection');
     if (f.permission !== 'granted') missing.push('microphone-permission'); if (f.capture !== 'ready') missing.push('capture-verification'); if (f.playback !== 'ready') missing.push('playback-verification');

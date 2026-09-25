@@ -13,6 +13,7 @@ import { validRequestId, VOICE_COMMANDS } from '../turn-contract.mjs';
 import { VoiceTurnCoordinator } from './voice-turn.mjs';
 import { VoiceRuntime } from './voice-runtime.mjs';
 import { VoiceReadiness } from './voice-readiness.mjs';
+import { Live2DResources } from './live2d-runtime.mjs';
 import { VoiceCredentialStore, privateVoiceDirectory } from './voice-credential.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -30,6 +31,9 @@ let win, rendererReady = false, currentStatus, settings, quitting = false, smoke
 const dataDir = () => app.getPath('userData');
 const deliver = message => { if (rendererReady && win && !win.isDestroyed()) win.webContents.send('yuki:delivery', message); };
 const readiness = new VoiceReadiness();
+const avatar = new Live2DResources({ settings: { snapshot: () => settings.snapshot(), saveLive2D: value => settings.saveLive2D(value) } });
+readiness.live2d = () => avatar.snapshot();
+const publishAvatar = () => { deliver({ type: 'live2d-settings', readiness: avatar.snapshot() }); media.publish(); };
 const voice = new VoiceTurnCoordinator({ canAttempt: () => readiness.snapshot(!preview && connection.state === 'ready', currentStatus?.service).voice.canAttempt });
 let voiceCredentials;
 const connection = new BackendConnection({ worker: resolve(here, '../../backend/worker.mjs'), fork: (...args) => utilityProcess.fork(...args), onMessage: (message, generation) => {
@@ -122,6 +126,23 @@ ipcMain.on('yuki:voice-event', (event, value) => {
   media.event(value);
 });
 ipcMain.on('yuki:voice-load', event => { if (trusted(event)) media.publish(); });
+ipcMain.on('yuki:live2d-load', event => { if (trusted(event)) { publishAvatar(); void avatar.refresh().then(publishAvatar); } });
+ipcMain.on('yuki:live2d-refresh', event => { if (trusted(event)) { const pending = avatar.refresh(); publishAvatar(); void pending.then(publishAvatar); } });
+ipcMain.on('yuki:live2d-reset', event => { if (trusted(event)) { avatar.invalidate(); publishAvatar(); } });
+ipcMain.on('yuki:live2d-select', event => {
+  if (!trusted(event)) return;
+  void (async () => {
+    const epoch = avatar.epoch;
+    const result = await dialog.showOpenDialog(win, { title: '选择自备的 Live2D model3 文件（仅引用，不复制）', properties: ['openFile'], filters: [{ name: 'Live2D model3', extensions: ['json'] }] });
+    if (result.canceled || result.filePaths.length !== 1 || avatar.epoch !== epoch) return;
+    const pending = avatar.select(result.filePaths[0]); publishAvatar(); if (!await pending) return;
+    deliver({ type: 'notice', text: '模型候选引用已保存；SDK、实际模型加载、绘制与嘴型仍待验证。' });
+  })().catch(() => deliver({ type: 'notice', text: '模型候选未能保存，请查看 Live2D 资源状态。' })).finally(publishAvatar);
+});
+ipcMain.on('yuki:live2d-disable', event => {
+  if (!trusted(event)) return;
+  void avatar.disable().catch(() => deliver({ type: 'notice', text: 'Live2D 设置未能保存，原配置保留。' })).finally(publishAvatar);
+});
 ipcMain.on('yuki:voice-save', (event, value) => {
   if (!trusted(event)) return;
   void media.reconfigure(() => settings.saveVoice(value), () => voiceCredentials.read()).then(() => deliver({ type: 'notice', text: '语音设置已保存；服务和设备尚待明确使用验证。' })).catch(() => deliver({ type: 'notice', text: '语音设置未能保存，原设置继续生效。' }));
@@ -216,6 +237,7 @@ void app.whenReady().then(async () => {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
   win.webContents.on('render-process-gone', () => { rendererReady = false; media.invalidateRendererGone(); void connection.close(); });
+  win.webContents.on('render-process-gone', () => avatar.invalidate());
   win.on('closed', () => app.quit());
   await win.loadURL('yuki://app/index.html');
   if (smoke) {
@@ -246,6 +268,11 @@ void app.whenReady().then(async () => {
       if (!ready) throw Error('Renderer/backend did not become ready');
       const voiceFailureReady = await win.webContents.executeJavaScript("document.getElementById('voice-start').disabled && document.getElementById('voice-readiness').textContent.includes('未配置/停用')");
       if (!voiceFailureReady) throw Error('Voice unconfigured readiness was not projected');
+      const live2dPending = await win.webContents.executeJavaScript("document.getElementById('live2d-status').dataset.ready === 'false' && document.getElementById('live2d-status').textContent.includes('SDK 未配置') && document.getElementById('live2d-status').textContent.includes('模型未配置') && document.getElementById('live2d-canvas').hidden");
+      if (!live2dPending || media.publish().live2d.ready) throw Error('Missing Live2D resources were not honestly pending');
+      const live2dModules = await win.webContents.executeJavaScript("Promise.all(['live2d-ui.mjs','live2d-loader.mjs','live2d-mouth.mjs'].map(name => fetch('yuki://app/' + name).then(r => r.ok && r.headers.get('content-type') === 'text/javascript'))).then(values => values.every(Boolean))");
+      if (!live2dModules) throw Error('Packaged Live2D wiring modules were not served');
+      console.log('YUKI_LIVE2D_ACTUAL_PENDING sdk/model/draw/talking; missing-resource wiring only');
       const workletMime = await win.webContents.executeJavaScript("fetch('yuki://app/media/recorder-worklet.mjs').then(r => r.ok && r.headers.get('content-type') === 'text/javascript')");
       if (!workletMime) throw Error('Packaged audio worklet was not served');
       if (option('--smoke-phase') === 'first') {
@@ -360,5 +387,6 @@ app.on('before-quit', event => {
   if (quitting) return;
   event.preventDefault(); quitting = true;
   media.invalidate();
+  avatar.invalidate();
   void connection.close().finally(() => { win?.destroy(); app.quit(); });
 });

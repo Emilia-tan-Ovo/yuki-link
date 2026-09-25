@@ -1,5 +1,6 @@
 import { normalizeUserText, sameVoiceScope } from './turn-contract.mjs';
 import { RendererVoice } from './voice-ui.mjs';
+import { RendererLive2D } from './live2d-ui.mjs';
 
 const $ = id => document.getElementById(id);
 let generation = 0, service = 'connecting', busy = false, pendingGeneration = null, messages = [];
@@ -14,7 +15,8 @@ let thinkingSyncedVersion = 0, thinkingHasSaved = false;
 const expandedReasoning = new Set();
 let personaDraftVersion = 0, personaPendingVersion = null;
 const host = window.yukiDesktop;
-const mediaUI = new RendererVoice({ host, element: $, getGeneration: () => generation, notice });
+const avatarUI = new RendererLive2D({ host, element: $ });
+const mediaUI = new RendererVoice({ host, element: $, getGeneration: () => generation, notice, playbackObserver: event => avatarUI.playback(event) });
 let startAfterCancel = false;
 const label = { connecting: '正在连接', unconfigured: '未配置 DeepSeek', configured: '已配置 · 待验证', verified: 'DeepSeek 已验证', unknown: 'DeepSeek 状态待确认', 'offline-preview': '离线预览 · 非真实回复', disconnected: '服务已断开' };
 function state(next) {
@@ -119,6 +121,7 @@ host.subscribe(message => {
   if (message.generation !== undefined && message.generation < generation) { if (message.wav instanceof Uint8Array) message.wav.fill(0); return; }
   if (message.type === 'connection') generation = message.generation;
   void mediaUI.receive(message);
+  avatarUI.receive(message);
   if (message.type === 'connection') { generation = message.generation; voiceScope = null; voiceFinal = null; memoryPending = null; memoryRefreshId = null; memoryBusy(false); renderMemories([]); $('memory-target').disabled = true; $('memory-status').textContent = '有效记忆待重新读取。'; state('connecting'); $('workbench-url').value = message.workbenchUrl || ''; host.send('workbench-check'); }
   if (message.type !== 'ready' && message.generation !== undefined && message.generation !== generation) return;
   if (message.type === 'voice-state' && message.scope?.connectionGeneration === generation) {
@@ -277,3 +280,4 @@ $('about-open').addEventListener('click', async () => { try { $('license').textC
 host.send('ready');
 host.send('thinking-load');
 host.send('voice-load');
+host.send('live2d-load');

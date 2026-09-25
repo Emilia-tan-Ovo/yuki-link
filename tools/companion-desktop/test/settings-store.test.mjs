@@ -11,6 +11,21 @@ import { DEFAULT_VOICE } from '../desktop/voice-config.mjs';
 
 async function fixture(t) { const dir = await mkdtemp(join(tmpdir(), 'yuki-settings-')); t.after(() => rm(dir, { recursive: true, force: true })); return join(dir, 'settings.json'); }
 
+test('Live2D candidates serialize atomically, never persist verification or extra secret fields', async t => {
+  const file = await fixture(t), store = await SettingsStore.load(file);
+  assert.deepEqual(store.snapshot().live2d, { schemaVersion: 1, model: null, sdk: null, mouth: null });
+  const live2d = { schemaVersion: 1, model: { resourceId: 'model-1', root: tmpdir(), entry: 'avatar.model3.json', fingerprint: 'a'.repeat(64) }, sdk: null, mouth: { parameterId: 'Mouth', closed: 0, open: 1, gain: 1.9 } };
+  await Promise.all([store.saveLive2D(live2d), store.saveVoice({ ...DEFAULT_VOICE, enabled: true }), store.saveThinking({ schemaVersion: 1, enabled: true, effort: 'high' }), store.saveRoleCard({ schemaVersion: 1, text: '保留角色卡' }), store.saveWorkbenchUrl('http://127.0.0.1:1234/')]);
+  const saved = (await SettingsStore.load(file)).snapshot(); assert.deepEqual(saved.live2d, live2d); assert.equal(saved.voice.enabled, true); assert.equal(saved.thinking.enabled, true); assert.equal(saved.roleCard.text, '保留角色卡'); assert.equal(saved.workbenchUrl, 'http://127.0.0.1:1234/');
+  saved.live2d.model.root = 'changed'; assert.equal(store.snapshot().live2d.model.root, tmpdir());
+  assert.throws(() => store.saveLive2D({ ...live2d, credential: 'do-not-save' }));
+  assert.throws(() => store.saveLive2D({ ...live2d, ready: true }));
+  assert.throws(() => store.saveLive2D({ ...live2d, model: { ...live2d.model, resourceId: 123 } }));
+  const before = await readFile(file, 'utf8'); store.rename = async () => { throw Error('failed'); };
+  await assert.rejects(store.saveLive2D({ schemaVersion: 1, model: null, sdk: null, mouth: null }));
+  assert.equal(await readFile(file, 'utf8'), before); assert.deepEqual(store.snapshot().live2d, live2d);
+});
+
 test('versioned voice settings serialize with other settings and roll back failed save', async t => {
   const file = await fixture(t), store = await SettingsStore.load(file);
   assert.deepEqual(store.snapshot().voice, DEFAULT_VOICE);

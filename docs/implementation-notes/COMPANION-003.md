@@ -1,5 +1,17 @@
 # COMPANION-003 Implementation Notes
 
+## Phase C 无外部资源代码交付（2026-09-26）
+
+- 基线：`4b81d1e7800608ad82177f81a484998532591894`。只实现资源契约/缺项路径与 mouth code wiring；没有导入或下载 SDK/model，没有真实 provider、麦克风或扬声器调用，没有 DSH。
+- `Live2DConfigV1` 默认未配置，沿用 SettingsStore atomic queue 保存本地引用、fingerprint、SDK candidate binding 与可选 mouth override；拒绝额外字段/持久化 ready。main 的原生选择器提供模型路径，renderer 不提交路径；安全投影仅含 basename、opaque ID、计数/hash 与状态。保存成功仅是 configured candidate。
+- validator 执行已确认的 256 声明项 hard limit（重复项计数）、32 textures、1MiB JSON、64MiB moc、256MiB 总预算；所有支持的已声明引用均检查路径/结构/后缀/普通文件/存在性/hash。未声明可选 motion 等不要求存在；未知引用类型拒绝。Windows 除 lstat/realpath/handle/stat 核对外，通过宿主 `pwsh.exe` 检查祖先路径 ReparsePoint；不可检查时 fail closed，不安装工具。合成空 moc/png 只证明文件契约，不证明有效 Cubism 内容。
+- fingerprint 覆盖入口和全部声明文件 bytes/path；重新校验不自动接受新 hash。资源读取 seam 重验完整 manifest 和实际返回 bytes，变化/撤销使旧 binding 无效，迟到 selection/validation 不恢复旧资源。`yuki://model`、`yuki://sdk` 尚未开放，现有 app 协议仍仅服务应用目录，外部资源不复制进发布 glob。
+- 同窗口加入折叠资源状态区及隐藏 canvas；未配置、缺文件、校验失败、SDK 未核对均保持 pending，不阻塞 text/voice。readiness 明确区分 `codeReady`、`implemented`、`configured`、`resourcesVerified`、`sdkLoaded`、`modelLoaded`、`drawReady`、`mouthMapped`、`talkingReady`、`ready`；本轮真实 Cubism adapter 尚未装配，`implemented=false`、`codeReady=true`、实际 `ready=false`。
+- mouth setter 使用实际参数表 seam 校验 closed/open/min/max 和 Yuki gain policy，只消费 Phase B 当前 playback owner/requestId 的 started 后 RMS；静音、结束、停止、取消、错误、重连闭口，旧 callback 不能影响新 owner。没有 reasoning/TTS-ready/decode 驱动口型。默认 1.9 的上游公式局部改编已写入 THIRD_PARTY_NOTICES，原 source-available 许可保留。
+- RED→GREEN：缺失 validator/mouth 模块；optional references/声明预算；SettingsStore；optional loader/runtime；播放回调；缺项 renderer；资源 ID 类型校验。最终 Phase-C targeted + 直接回归 **82/82 PASS**（7 个测试文件）；随后资源 ID 类型修复的 SettingsStore **8/8 PASS**。18 个变更 JS 模块 `node --check`、`git diff --check` PASS。
+- packaged smoke 已增加 ESM 可达与缺 SDK/model 的诚实 pending 检查及 `YUKI_LIVE2D_ACTUAL_PENDING` marker；本轮**未执行** full suite/package/packaged smoke，交 Emilia/YCA 后置。上述测试均为 synthetic/code wiring，不是实际绘制/声音证据。
+- **external gate / 未实现真实资源部分：**合法 SDK Core/Framework/shaders 的精确来源/版本/hash/许可、可信离线 preparation/build、真实 Cubism adapter 构造、纹理解码前后预算调用与实际 GPU 检查、moc 兼容性、drawables、真实 parameter mapping、model draw/talking 仍 pending。已有纯纹理预算 guard 与 optional loader 缺项路径；没有可信 SDK 时 production 不执行任意 JS，也不编译或 import stub SDK。**Live2D actual ready=false；#128/AC02 pending。** 当前限定代码范围无已知 blocker；上述资源和实机验收仍是后续 gate，不能据此宣称整票完成。
+
 ## Phase B 本地实现交付（2026-09-25）
 
 - 基线：`22f6299a917fecada5fe4a0c876f55d121497fa4`。本轮仅实现 B；未实现或导入 Live2D/Cubism，未触碰 DSH。
@@ -166,10 +178,12 @@
 - main 系统文件选择器选择用户自备目录中的 `.model3.json`；renderer 不提交任意绝对路径。只引用资源，不把用户原件复制进仓库或发布目录，也不自动下载/解压。先做候选校验，再通过 SettingsStore 提交 `Live2DConfigV1`。
 - 配置包含 opaque resourceId、可信 main 内的 canonical modelRoot/entry、模型文件 fingerprint、可显示的来源/许可说明、`mouth:{parameterId,closed,open,gain}`、SDK binding。renderer 只收到显示名、opaque ID、readiness、参数映射；不收到私人绝对路径。
 - 最小必需集合：入口 JSON、一个 `.moc3`、非空 `.png` Textures。模型 JSON ≤1MiB、moc ≤64MiB、≤32 张纹理、整个引用集合 ≤256MiB；纹理解码前后有像素/内存上限（总 RGBA ≤256MiB）且不得超过当前 GPU MAX_TEXTURE_SIZE。限额是本地资源预算，不是 SDK 能力承诺。
+- Yuki validation safety policy：`FileReferences` 中所有声明的文件路径项（Moc、Textures、Physics、Pose、UserData、DisplayInfo、Expressions、Motions 等）总声明数 ≤256，作为读取引用文件前的 hard limit；重复声明同一路径也逐项计数。可另计算 unique canonical file set，但不能用去重后的数量替代声明数；上述纹理数量、JSON/moc/总大小预算同时执行。这是 Yuki 自己的安全策略，不是 Cubism 官方能力限制。
 - 所有 FileReferences 包括声明了但本票不播放的 Physics/Expressions/Motions/Pose/UserData/DisplayInfo 都须做结构、后缀、存在性与安全路径检查；未声明的可选项不强制存在，不加载其动作。未知引用类型或缺失引用明确报错，不忽略后宣称完整。
 - 拒绝 URL、UNC/网络共享、绝对路径、盘符/ADS、NUL、反斜线、`.`/`..`、编码绕过、symlink/junction/reparse escape、非普通文件。解析后必须仍在所选 canonical root 下；读取时核对 handle/stat/realpath 与限额。只开放 validated manifest 中的具体文件，绝不把所选整个目录暴露给 renderer。
 - fingerprint 覆盖 entry、moc、**纹理**及全部声明引用的 path+SHA256；不能照搬上游不含纹理的 presets fingerprint。每次加载/重新启用校验文件变化，每次资源响应验证实际读取 bytes；变化使旧 binding/readiness 失效，要求重新选择/确认，不继续信任一次探测。
 - SDK 真加载后核对 moc 兼容性、drawables、纹理解码、实际 parameter ID 与 min/max；`closed/open` 均须在范围内且不同，gain 有界。可从模型 LipSync group 的单一有效参数提出默认映射；缺失/多义时显示需要选择实际 mouth 参数，不假定所有模型都有 ParamMouthOpenY，不修改隐藏部件/水印。
+- Yuki adapter safety policy：`mouth.gain` 默认 `1.9`（适配起点来自 pinned AAAAGENT renderer 的 `Math.min(1, Math.sqrt(view.mouth) * 1.9)`），合法值必须 finite 且 `0 < gain <= 4`。这不是 Cubism 官方能力限制或模型 parameter range；实际 SDK/model 加载后仍须校验 `closed/open` 在真实 parameter min/max 内且 `closed != open`。映射保持 `closed + clamp(gain * sqrt(rms), 0, 1) * (open - closed)`。
 - resource revoke/disable：保存成功后失效 resourceId、dispose canvas/GPU/口型；新请求拒绝旧 ID。保存失败保留旧 committed 配置；若旧资源本身已经无效，旧配置仍在但 readiness=false。撤销不删除用户原件。换模型走明确卸载→校验→重新加载，不追求无缝热切换。
 
 ### SDK 与 packaged 路径

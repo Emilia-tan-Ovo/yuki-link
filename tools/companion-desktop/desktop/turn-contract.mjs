@@ -1,3 +1,5 @@
+import { initialLive2DReadiness } from './live2d-loader.mjs';
+
 export function normalizeUserText(value) {
   const text = typeof value === 'string' ? value.replace(/\r\n?/g, '\n').trim() : '';
   if (!text || text.length > 20000 || text.includes('\0')) throw Error('请输入不超过 20000 字的文字。');
@@ -14,7 +16,7 @@ export function sameVoiceScope(a, b) {
 export const VOICE_STATES = Object.freeze(['idle', 'preparing', 'listening', 'transcribing', 'awaiting-submit', 'thinking', 'synthesizing', 'playback-pending', 'speaking', 'cancelling', 'cancelled', 'error']);
 export const VOICE_COMMANDS = Object.freeze(['start', 'finish', 'cancel-turn', 'stop-output']);
 
-// Phase A has no media adapters or resource loader. Rebuild facts on each status;
+// Rebuild facts on each status; the optional Live2D SDK is not bundled.
 // do not persist verified/permission/device facts or accept them from renderer.
 export function initialMediaReadiness() {
   const provider = () => ({ state: 'unconfigured', configRevision: 0, checkedAt: null });
@@ -23,8 +25,6 @@ export function initialMediaReadiness() {
       provider: { asr: provider(), tts: provider() },
       device: { permission: 'unknown', capture: 'unavailable' }, playback: { state: 'unknown' },
       missing: ['capture', 'asr', 'tts', 'playback', 'configuration', 'device-verification'] },
-    live2d: { implemented: false, configured: false, ready: false,
-      sdk: { state: 'unconfigured', revision: null }, model: { state: 'unconfigured', revision: null }, talkingReady: false,
-      missing: ['sdk', 'model', 'draw', 'mouth-wiring'] }
+    live2d: initialLive2DReadiness()
   };
 }

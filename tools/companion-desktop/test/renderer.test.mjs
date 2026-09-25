@@ -4,8 +4,27 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { normalizeUserText, sameVoiceScope } from '../desktop/turn-contract.mjs';
 import { RendererVoice } from '../desktop/voice-ui.mjs';
+import { RendererLive2D } from '../desktop/live2d-ui.mjs';
+import { initialLive2DReadiness } from '../desktop/live2d-loader.mjs';
 import { DEFAULT_VOICE } from '../desktop/voice-config.mjs';
 import { VoiceReadiness } from '../desktop/electron/voice-readiness.mjs';
+
+test('missing Live2D resources remain pending in the same window without blocking text or voice controls', () => {
+  const h = harness(), readiness = new VoiceReadiness(); readiness.reset(true);
+  h.deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  h.deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  h.deliver({ type: 'live2d-settings', readiness: initialLive2DReadiness() });
+  h.deliver({ type: 'voice-settings', voice: { ...DEFAULT_VOICE, enabled: true }, readiness: readiness.snapshot(true, 'configured'), credentialConfigured: true });
+  assert.equal(h.element('live2d-status').dataset.ready, 'false');
+  assert.match(h.element('live2d-status').textContent, /SDK 未配置/);
+  assert.equal(h.element('send').disabled, false); assert.equal(h.element('voice-start').disabled, false);
+  h.element('live2d-select').onclick(); assert.equal(h.sent.at(-1)[0], 'live2d-select'); assert.equal(h.sent.at(-1).length, 1);
+  const facts = { ...initialLive2DReadiness(), configured: true, resourcesVerified: true, displayName: 'C:\\private\\avatar.model3.json', code: 'SDK_UNCONFIGURED' };
+  h.deliver({ type: 'live2d-settings', readiness: facts });
+  assert.equal(h.element('live2d-status').textContent.includes('private'), false);
+  assert.match(h.element('live2d-status').textContent, /实际加载待验证/);
+  assert.equal(h.element('live2d-status').dataset.ready, 'false');
+});
 
 test('voice settings/control wiring never acquires devices on load or calls engineering', async () => {
   const h = harness(), readiness = new VoiceReadiness(); readiness.reset(true);
@@ -34,7 +53,7 @@ function harness(onSend = () => {}) {
   let sequence = 0;
   const source = readFileSync(new URL('../desktop/renderer.js', import.meta.url), 'utf8');
   runInNewContext(source.replace(/^import .*;\r?$/gm, ''), {
-    normalizeUserText, sameVoiceScope, RendererVoice, setTimeout, clearTimeout,
+    normalizeUserText, sameVoiceScope, RendererVoice, RendererLive2D, setTimeout, clearTimeout,
     document: { getElementById: element, createElement: makeNode, querySelectorAll: () => [] },
     window: { yukiDesktop: { subscribe(callback) { deliver = callback; }, send(...args) { sent.push(args); onSend(...args); } } },
     crypto: { randomUUID: () => 'request-' + ++sequence }
