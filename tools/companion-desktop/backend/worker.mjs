@@ -9,9 +9,9 @@ port.on('message', async ({ data }) => {
     if (data?.type === 'start') {
       session?.close();
       session = new BackendSession({ directory: data.directory, provider: data.preview ? previewProvider() : deepSeekProvider(data.key), mode: data.preview ? 'preview' : 'real' });
-      post({ type: 'ready', status: session.status(), history: session.history() });
+      post({ type: 'ready', status: session.status(), history: session.displayHistory() });
     } else if (data?.type === 'submit' && session && typeof data.text === 'string') {
-      const result = await session.submit(data.text, data.roleCard);
+      const result = await session.submit(data.text, data.roleCard, data.thinking);
       post({ type: 'reply', id: data.id, ...result });
     } else if (data?.type === 'close') {
       session?.close(); session = undefined; post({ type: 'closed' });

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { SettingsStore } from '../desktop/electron/settings-store.mjs';
 import { DEFAULT_ROLE_CARD } from '../backend/prompt-composer.mjs';
 import { submittedTurn } from '../desktop/electron/submit-snapshot.mjs';
+import { DEFAULT_THINKING } from '../desktop/electron/settings-store.mjs';
 
 async function fixture(t) { const dir = await mkdtemp(join(tmpdir(), 'yuki-settings-')); t.after(() => rm(dir, { recursive: true, force: true })); return join(dir, 'settings.json'); }
 
@@ -15,6 +16,8 @@ test('legacy settings use default card and invalid saved card warns', async t =>
   const store = await SettingsStore.load(file);
   assert.deepEqual(store.snapshot().roleCard, DEFAULT_ROLE_CARD);
   assert.equal(store.snapshot().workbenchUrl, 'http://127.0.0.1:1234/');
+  assert.deepEqual(store.snapshot().thinking, DEFAULT_THINKING);
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).thinking, undefined);
   await writeFile(file, JSON.stringify({ roleCard: { schemaVersion: 1, text: '' } }));
   assert.match((await SettingsStore.load(file)).warning, /角色卡/);
 });
@@ -58,4 +61,22 @@ test('accepted submit captures A while save B is pending; next submit captures B
   const second = submittedTurn({ id: 'T2', text: '再见' }, store);
   assert.equal(first.roleCard.text, '卡 A');
   assert.equal(second.roleCard.text, '卡 B');
+});
+
+test('thinking validates, persists effort while off, and freezes accepted submit', async t => {
+  const file = await fixture(t);
+  const store = await SettingsStore.load(file);
+  assert.throws(() => store.saveThinking({ schemaVersion: 1, enabled: true, effort: 'medium' }), /思考设置/);
+  await store.saveThinking({ schemaVersion: 1, enabled: true, effort: 'max' });
+  let release;
+  const rename = store.rename;
+  store.rename = async (...args) => { await new Promise(resolve => { release = resolve; }); return rename(...args); };
+  const saving = store.saveThinking({ schemaVersion: 1, enabled: false, effort: 'max' });
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  const first = submittedTurn({ id: 'A', text: '问' , thinking: { enabled: false, effort: 'low' } }, store);
+  release(); await saving;
+  const second = submittedTurn({ id: 'B', text: '问' }, store);
+  assert.deepEqual(first.thinking, { schemaVersion: 1, enabled: true, effort: 'max' });
+  assert.deepEqual(second.thinking, { schemaVersion: 1, enabled: false, effort: 'max' });
+  assert.deepEqual((await SettingsStore.load(file)).snapshot().thinking, second.thinking);
 });

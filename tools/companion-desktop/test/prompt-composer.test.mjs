@@ -31,7 +31,7 @@ test('malicious card and memory stay outside system in the actual provider reque
   let body;
   await deepSeekProvider('fixture-value', async (_url, options) => {
     body = JSON.parse(options.body);
-    return { ok: true, json: async () => ({ choices: [{ message: { content: '好的' } }] }) };
+    return { ok: true, json: async () => ({ choices: [{ finish_reason: 'stop', message: { content: '好的' } }] }) };
   })({ messages: result.messages });
   assert.deepEqual(body.messages.map(x => x.role), ['system', 'user', 'user', 'assistant', 'user']);
   assert.equal(body.messages.filter(x => x.role === 'system').length, 1);
