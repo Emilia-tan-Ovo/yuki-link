@@ -2,6 +2,22 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
+const metadataKeys = new Set(['source', 'requestedThinking', 'requestModel', 'responseModel', 'fullResponseMs', 'finishReason', 'reasoningTruncated']);
+function displayMetadata(value) {
+  if (typeof value !== 'string') return null;
+  try {
+    const data = JSON.parse(value);
+    if (!data || Array.isArray(data) || typeof data !== 'object' || Object.keys(data).some(key => !metadataKeys.has(key))) return null;
+    if ('source' in data && data.source !== null && data.source !== 'deepseek') return null;
+    if ('requestedThinking' in data && !['off', 'low', 'high', 'max'].includes(data.requestedThinking)) return null;
+    if (['requestModel', 'responseModel'].some(key => key in data && data[key] !== null && typeof data[key] !== 'string')) return null;
+    if ('fullResponseMs' in data && data.fullResponseMs !== null && (!Number.isFinite(data.fullResponseMs) || data.fullResponseMs < 0)) return null;
+    if ('finishReason' in data && data.finishReason !== null && data.finishReason !== 'stop') return null;
+    if ('reasoningTruncated' in data && typeof data.reasoningTruncated !== 'boolean') return null;
+    return Object.fromEntries(Object.entries(data));
+  } catch { return null; }
+}
+
 export class SqliteMemoryStore {
   constructor(directory) {
     mkdirSync(directory, { recursive: true });
@@ -26,7 +42,7 @@ export class SqliteMemoryStore {
     } catch (error) { this.db.close(); throw error; }
   }
   history() { return this.db.prepare('SELECT role, text FROM messages ORDER BY rowid').all().map(row => ({ role: row.role, text: row.text })); }
-  displayHistory() { return this.db.prepare('SELECT id, role, text, created_at AS createdAt, turn_id AS turnId, reasoning_content AS reasoningContent, response_metadata AS responseMetadata FROM messages ORDER BY rowid').all().map(row => ({ id: row.id, role: row.role, text: row.text, createdAt: row.createdAt, turnId: row.turnId, reasoningContent: row.reasoningContent, metadata: row.responseMetadata ? JSON.parse(row.responseMetadata) : null })); }
+  displayHistory() { return this.db.prepare('SELECT id, role, text, created_at AS createdAt, turn_id AS turnId, reasoning_content AS reasoningContent, response_metadata AS responseMetadata FROM messages ORDER BY rowid').all().map(row => ({ id: row.id, role: row.role, text: row.text, createdAt: row.createdAt, turnId: row.turnId, reasoningContent: row.reasoningContent, metadata: displayMetadata(row.responseMetadata) })); }
   appendTurn(rows) {
     this.db.exec('BEGIN');
     try {

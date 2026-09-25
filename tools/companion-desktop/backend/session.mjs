@@ -35,8 +35,7 @@ export class BackendSession {
     this.busy = true;
     try {
       const runtime = this.runtimeCapabilities();
-      const result = await this.pipeline.run(text, { roleCard, thinking, runtime, onProviderFailure: () => { if (this.mode === 'real') this.requestState = 'unknown'; } });
-      if (this.mode === 'real') this.requestState = 'verified';
+      const result = await this.pipeline.run(text, { roleCard, thinking, runtime, onProviderFailure: () => { if (this.mode === 'real') this.requestState = 'unknown'; }, onProviderSuccess: () => { if (this.mode === 'real') this.requestState = 'verified'; } });
       return { ...result, status: this.status() };
     } finally { this.busy = false; }
   }

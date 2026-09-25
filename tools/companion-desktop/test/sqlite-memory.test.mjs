@@ -45,3 +45,18 @@ test('appendTurn rolls back both rows if assistant insert fails', async t => {
   assert.deepEqual(store.displayHistory(), []);
   store.close();
 });
+
+test('displayHistory keeps rows and reasoning when stored metadata is malformed or outside the whitelist', async t => {
+  const dir = await fixture(t);
+  const store = new SqliteMemoryStore(dir);
+  const values = ['{broken', '[]', '"text"', '{"privateToken":"secret"}', '{"requestedThinking":12}', '{"source":"deepseek","requestedThinking":"high","reasoningTruncated":false}'];
+  const insert = store.db.prepare("INSERT INTO messages (id,role,text,created_at,turn_id,reasoning_content,response_metadata) VALUES (?,'assistant','回答','2026-01-01','turn','保留思考',?)");
+  values.forEach((value, index) => insert.run(String(index), value));
+  const rows = store.displayHistory();
+  assert.equal(rows.length, values.length);
+  assert.ok(rows.every(row => row.text === '回答' && row.reasoningContent === '保留思考'));
+  assert.deepEqual(rows.slice(0, -1).map(row => row.metadata), [null, null, null, null, null]);
+  assert.deepEqual(rows.at(-1).metadata, { source: 'deepseek', requestedThinking: 'high', reasoningTruncated: false });
+  assert.deepEqual(store.db.prepare('SELECT response_metadata FROM messages ORDER BY rowid').all().map(row => row.response_metadata), values);
+  store.close();
+});

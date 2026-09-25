@@ -2,6 +2,7 @@ const $ = id => document.getElementById(id);
 let generation = 0, service = 'connecting', busy = false, pendingGeneration = null, messages = [];
 let personaPending = null;
 let thinkingPending = false;
+let thinkingDraftVersion = 0, thinkingPendingVersion = null;
 const expandedReasoning = new Set();
 let personaDraftVersion = 0, personaPendingVersion = null;
 const host = window.yukiDesktop;
@@ -86,7 +87,8 @@ host.subscribe(message => {
       $('thinking-status').textContent = message.warning || '正在使用已保存的思考设置。';
     } else if (message.action === 'save') {
       thinkingPending = false; $('thinking-save').disabled = false;
-      $('thinking-status').textContent = message.error ? message.error + ' 草稿仍保留，原设置继续生效。' : '思考设置已保存，将从下一条发送开始生效。';
+      $('thinking-status').textContent = message.error ? message.error + ' 草稿仍保留，原设置继续生效。' : thinkingDraftVersion !== thinkingPendingVersion ? '提交时的思考设置已保存，将从下一条发送开始生效；当前草稿未保存。' : '思考设置已保存，将从下一条发送开始生效。';
+      thinkingPendingVersion = null;
     }
   }
 });
@@ -96,9 +98,9 @@ $('credential').onclick = () => host.send('credential');
 $('workbench-save').onclick = () => host.send('workbench-save', $('workbench-url').value.trim());
 $('workbench-open').onclick = () => host.send('workbench-open');
 for (const id of ['settings', 'about']) { $(id + '-open').onclick = () => { $(id).showModal(); if (id === 'settings') { host.send('persona-load'); host.send('thinking-load'); } }; }
-$('thinking-enabled').onchange = () => { $('thinking-effort').disabled = !$('thinking-enabled').checked; $('thinking-status').textContent = '草稿尚未保存。'; };
-$('thinking-effort').onchange = () => { $('thinking-status').textContent = '草稿尚未保存。'; };
-$('thinking-save').onclick = () => { if (thinkingPending) return; thinkingPending = true; $('thinking-save').disabled = true; $('thinking-status').textContent = '正在保存思考设置…'; host.send('thinking-save', { schemaVersion: 1, enabled: $('thinking-enabled').checked, effort: $('thinking-effort').value }); };
+$('thinking-enabled').onchange = () => { thinkingDraftVersion++; $('thinking-effort').disabled = !$('thinking-enabled').checked; $('thinking-status').textContent = '草稿尚未保存。'; };
+$('thinking-effort').onchange = () => { thinkingDraftVersion++; $('thinking-status').textContent = '草稿尚未保存。'; };
+$('thinking-save').onclick = () => { if (thinkingPending) return; thinkingPending = true; thinkingPendingVersion = thinkingDraftVersion; $('thinking-save').disabled = true; $('thinking-status').textContent = '正在保存思考设置…'; host.send('thinking-save', { schemaVersion: 1, enabled: $('thinking-enabled').checked, effort: $('thinking-effort').value }); };
 $('role-card').addEventListener('input', () => { personaDraftVersion++; roleCardCount(); personaStatus('草稿尚未保存。'); });
 $('role-card-save').onclick = () => { if (personaPending !== null) return; personaPending = $('role-card').value; personaBusy(true); personaStatus('正在保存角色卡…'); host.send('persona-save', { schemaVersion: 1, text: personaPending }); };
 $('role-card-reset').onclick = () => { if (personaPending !== null) return; personaPending = $('role-card').value; personaPendingVersion = personaDraftVersion; personaBusy(true); personaStatus('正在恢复默认角色卡…'); host.send('persona-reset'); };

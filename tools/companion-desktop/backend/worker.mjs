@@ -1,5 +1,6 @@
 import { BackendSession } from './session.mjs';
 import { deepSeekProvider, previewProvider } from './provider.mjs';
+import { LocalPersistenceError } from './dialogue-pipeline.mjs';
 
 let session;
 const port = process.parentPort;
@@ -18,7 +19,7 @@ port.on('message', async ({ data }) => {
     }
   } catch (error) {
     // No command bodies or credentials in diagnostics or UI.
-    const known = error instanceof Error && /^(请输入|DeepSeek|文字服务|上一条|角色卡|记忆输入|对话输入)/.test(error.message);
+    const known = error instanceof LocalPersistenceError || error instanceof Error && /^(请输入|DeepSeek|文字服务|上一条|角色卡|记忆输入|对话输入)/.test(error.message);
     post({ type: 'error', id: data?.id, status: session?.status(), message: known ? error.message : '这次文字交流没有完成，请检查网络或稍后重试。' });
   }
 });

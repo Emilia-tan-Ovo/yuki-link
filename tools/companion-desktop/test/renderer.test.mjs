@@ -73,6 +73,25 @@ test('thinking settings load/save and reasoning details are collapsed, text-safe
   assert.match(content.children.find(x => x.className === 'message-meta').textContent, /完整回复耗时/);
 });
 
+test('thinking save acknowledges committed values while preserving a newer unsaved draft', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: true, effort: 'high' } });
+  element('thinking-save').onclick();
+  assert.equal(sent.at(-1)[1].effort, 'high');
+  element('thinking-enabled').checked = false;
+  element('thinking-enabled').onchange();
+  deliver({ type: 'thinking', action: 'save', thinking: { schemaVersion: 1, enabled: true, effort: 'high' } });
+  assert.equal(element('thinking-enabled').checked, false);
+  assert.match(element('thinking-status').textContent, /已保存.*当前草稿未保存/);
+  assert.equal(element('text').disabled, false);
+  element('thinking-save').onclick();
+  assert.equal(sent.at(-1)[1].enabled, false);
+  deliver({ type: 'thinking', action: 'save', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  assert.match(element('thinking-status').textContent, /已保存/);
+  assert.doesNotMatch(element('thinking-status').textContent, /未保存/);
+});
+
 test('persona load, save, reset and failure keep draft separate from chat state', () => {
   const { element, sent, deliver } = harness();
   deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });

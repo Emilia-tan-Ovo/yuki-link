@@ -119,3 +119,42 @@ test('failed provider leaves no turn and releases busy; persistence failure is d
   assert.deepEqual(session.displayHistory(), []);
   session.close();
 });
+
+test('provider success followed by assistant insert failure rolls back and reports local storage failure', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'yuki-companion-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const session = new BackendSession({ directory: dir, provider: async () => ({ content: '完成', reasoningContent: null, metadata: null }) });
+  session.memory.db.exec("CREATE TRIGGER fail_assistant BEFORE INSERT ON messages WHEN NEW.role = 'assistant' BEGIN SELECT RAISE(ABORT, 'private path and payload'); END");
+  await assert.rejects(session.submit('提问'), error => {
+    assert.equal(error.message, '本地对话保存失败，请稍后重试。');
+    assert.equal(error.name, 'LocalPersistenceError');
+    return true;
+  });
+  assert.deepEqual(session.displayHistory(), []);
+  assert.equal(session.busy, false);
+  assert.equal(session.status().service, 'verified');
+  session.close();
+});
+
+test('reasoning truncation retains complete UTF-8 code points at the 256 KiB boundary', async t => {
+  const limit = 256 * 1024;
+  const cases = [
+    ['ASCII exact boundary', 'a'.repeat(limit + 1), 'a'.repeat(limit)],
+    ['two-byte exact boundary', 'é'.repeat(limit / 2 + 1), 'é'.repeat(limit / 2)],
+    ['three-byte partial boundary', 'a'.repeat(limit - 1) + '界', 'a'.repeat(limit - 1)],
+    ['four-byte partial boundary', 'a'.repeat(limit - 2) + '😀', 'a'.repeat(limit - 2)]
+  ];
+  for (const [name, reasoningContent, expected] of cases) {
+    const dir = await mkdtemp(join(tmpdir(), 'yuki-companion-'));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const session = new BackendSession({ directory: dir, provider: async () => ({ content: '最终回答', reasoningContent, metadata: { source: 'deepseek' } }) });
+    const reply = await session.submit(name);
+    const saved = reply.messages[1];
+    assert.equal(saved.reasoningContent, expected, name);
+    assert.equal(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(saved.reasoningContent)), expected);
+    assert.ok(Buffer.byteLength(saved.reasoningContent) <= limit);
+    assert.equal(saved.metadata.reasoningTruncated, true);
+    assert.equal(saved.text, '最终回答');
+    session.close();
+  }
+});
