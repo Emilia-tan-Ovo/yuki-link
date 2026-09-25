@@ -2,6 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deepSeekProvider, previewProvider } from '../backend/provider.mjs';
 
+test('caller cancellation reaches fetch and late body completion cannot return a reply', async () => {
+  const controller = new AbortController();
+  let options, finish;
+  const provider = deepSeekProvider('fixture-value', async (_url, value) => {
+    options = value;
+    return { ok: true, json: () => new Promise(resolve => { finish = resolve; }) };
+  });
+  const pending = provider({ messages: [], signal: controller.signal });
+  while (!finish) await new Promise(resolve => setImmediate(resolve));
+  controller.abort();
+  assert.equal(options.signal.aborted, true);
+  finish({ choices: [{ finish_reason: 'stop', message: { content: 'late' } }] });
+  await assert.rejects(pending, { name: 'AbortError' });
+});
+
 test('DeepSeek text adapter sends Emilia context to the documented chat endpoint', async () => {
   let request;
   const provider = deepSeekProvider('fixture-value', async (url, options) => {

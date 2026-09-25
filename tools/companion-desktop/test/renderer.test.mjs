@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
+import { normalizeUserText, sameVoiceScope } from '../desktop/turn-contract.mjs';
 
 function harness() {
   const elements = new Map();
@@ -16,14 +17,91 @@ function harness() {
   };
   let deliver;
   const sent = [];
+  let sequence = 0;
   const source = readFileSync(new URL('../desktop/renderer.js', import.meta.url), 'utf8');
-  runInNewContext(source, {
+  runInNewContext(source.replace(/^import .*;\r?$/gm, ''), {
+    normalizeUserText, sameVoiceScope, setTimeout, clearTimeout,
     document: { getElementById: element, createElement: makeNode, querySelectorAll: () => [] },
     window: { yukiDesktop: { subscribe(callback) { deliver = callback; }, send(...args) { sent.push(args); } } },
-    crypto: { randomUUID: () => 'request-1' }
+    crypto: { randomUUID: () => 'request-' + ++sequence }
   });
   return { element, sent, deliver };
 }
+
+test('only matching request can release a round; cancel acknowledgement preserves a newer draft', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  element('text').value = '第一条'; element('form').requestSubmit();
+  const first = sent.at(-1)[1];
+  deliver({ type: 'error', generation: 1, requestId: 'old', message: '旧错误' });
+  assert.equal(element('text').disabled, true);
+  element('cancel-reply').onclick();
+  assert.equal(sent.at(-1)[0], 'cancel-model');
+  assert.match(element('notice').textContent, /等待.*确认/);
+  assert.equal(element('text').disabled, true);
+  deliver({ type: 'cancel-ack', generation: 1, requestId: first.requestId, outcome: 'cancelled' });
+  assert.equal(element('text').disabled, false);
+  element('text').value = '第二条'; element('form').requestSubmit();
+  const second = sent.at(-1)[1];
+  assert.notEqual(first.requestId, second.requestId);
+  deliver({ type: 'cancel-ack', generation: 1, requestId: first.requestId, outcome: 'cancelled' });
+  deliver({ type: 'reply', generation: 1, requestId: first.requestId, committed: false, messages: [], status: { service: 'verified' } });
+  deliver({ type: 'ready', generation: 0, history: [], status: { service: 'unconfigured' } });
+  assert.equal(element('text').disabled, true);
+  assert.equal(element('text').value, '第二条');
+  element('text').value = '新草稿';
+  deliver({ type: 'reply', generation: 1, requestId: second.requestId, committed: true, messages: [], status: { service: 'verified' } });
+  assert.equal(element('text').disabled, false);
+  assert.equal(element('text').value, '新草稿');
+});
+
+test('voice final uses typed dispatcher once, preserves typed draft and follows Thinking and Memory gates', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  const scope = { schemaVersion: 1, connectionGeneration: 1, voiceTurnId: 'v1', voiceEpoch: 1 };
+  deliver({ type: 'voice-state', generation: 1, scope, state: 'transcribing' });
+  element('text').value = '正在编辑的草稿';
+  const final = { type: 'voice-final', generation: 1, scope, text: ' 识别\r\n文字 ' };
+  deliver(final);
+  assert.equal(sent.filter(x => x[0] === 'submit').length, 0);
+  deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  assert.equal(sent.filter(x => x[0] === 'submit').length, 1);
+  const submitted = sent.at(-1)[1];
+  assert.equal(submitted.text, '识别\n文字');
+  assert.equal(submitted.origin, 'voice-final');
+  deliver(final);
+  assert.equal(sent.filter(x => x[0] === 'submit').length, 1);
+  deliver({ type: 'reply', generation: 1, requestId: submitted.requestId, origin: 'voice-final', voiceScope: scope, committed: true, messages: [], status: { service: 'verified' } });
+  assert.equal(element('text').value, '正在编辑的草稿');
+  const nextScope = { ...scope, voiceTurnId: 'v2', voiceEpoch: 2 };
+  deliver({ type: 'voice-state', generation: 1, scope: nextScope, state: 'transcribing' });
+  deliver({ type: 'voice-final', generation: 1, scope: nextScope, text: '记住：喜欢绿茶' });
+  assert.equal(sent.at(-1)[0], 'memory');
+  assert.equal(sent.at(-1)[1].text, '喜欢绿茶');
+  deliver({ type: 'memory', generation: 1, id: sent.at(-1)[1].id, action: 'remember', entries: [] });
+  assert.equal(element('text').value, '正在编辑的草稿');
+  assert.equal(sent.filter(x => /engineering|task-stop|card-cancel/.test(x[0])).length, 0);
+});
+
+test('cancel disconnect is unknown; committed acknowledgement restores history once without clearing draft', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  element('text').value = '保留'; element('form').requestSubmit();
+  const request = sent.at(-1)[1];
+  element('cancel-reply').onclick();
+  const row = { id: 'committed', turnId: 'turn', role: 'assistant', text: '已落库', createdAt: '2026-01-01' };
+  const ack = { type: 'cancel-ack', generation: 1, requestId: request.requestId, outcome: 'alreadyCommitted', messages: [row] };
+  deliver(ack); deliver(ack);
+  assert.equal(element('messages').children.filter(x => x.tag === 'article').length, 1);
+  assert.equal(element('text').value, '保留');
+  assert.match(element('notice').textContent, /已提交/);
+  element('form').requestSubmit(); element('cancel-reply').onclick();
+  deliver({ type: 'disconnected', generation: 1 });
+  assert.match(element('notice').textContent, /未知/);
+  assert.equal(element('text').disabled, true);
+});
 
 test('new backend ready interrupts the old send and keeps its draft', () => {
   const { element, sent, deliver } = harness();
@@ -42,11 +120,11 @@ test('new backend ready interrupts the old send and keeps its draft', () => {
   assert.equal(element('text').disabled, false);
   assert.equal(element('send').disabled, false);
   assert.equal(element('text').value, '这条草稿');
-  assert.match(element('notice').textContent, /上一条未完成的发送已中断/);
+  assert.match(element('notice').textContent, /已保存历史为准/);
 
   element('form').requestSubmit();
   assert.equal(sent.at(-1)[1].generation, 2);
-  deliver({ type: 'reply', messages: [], status: { service: 'verified' } });
+  deliver({ type: 'reply', generation: 2, requestId: sent.at(-1)[1].requestId, committed: true, messages: [], status: { service: 'verified' } });
   assert.equal(element('text').value, '');
 });
 
@@ -187,7 +265,7 @@ test('saving Thinking during generation leaves the accepted turn running', () =>
   deliver({ type: 'thinking', action: 'save', thinking: { schemaVersion: 1, enabled: true, effort: 'max' } });
   assert.equal(element('text').disabled, true);
   assert.equal(element('thinking-quick').value, 'max');
-  deliver({ type: 'reply', messages: [], status: { service: 'offline-preview' } });
+  deliver({ type: 'reply', generation: 1, requestId: sent.find(x => x[0] === 'submit')[1].requestId, committed: true, messages: [], status: { service: 'offline-preview' } });
   assert.equal(element('text').disabled, false);
   element('text').value = '下一条'; element('form').requestSubmit();
   assert.equal(sent.filter(x => x[0] === 'submit').length, 2);
@@ -214,7 +292,7 @@ test('persona load, save, reset and failure keep draft separate from chat state'
   assert.match(element('role-card-status').textContent, /保存失败/);
   deliver({ type: 'error', status: { service: 'unknown' }, message: '网络失败' });
   assert.equal(element('text').disabled, false);
-  assert.equal(element('service').dataset.state, 'unknown');
+  assert.equal(element('service').dataset.state, 'configured'); // uncorrelated errors cannot change service truth
   element('role-card-reset').onclick();
   assert.equal(sent.at(-1)[0], 'persona-reset');
   deliver({ type: 'persona', action: 'reset', roleCard: { schemaVersion: 1, text: '默认卡' } });
@@ -330,7 +408,7 @@ test('correct and forget only display success after matching committed replies',
   assert.equal(element('memory-text').value, '');
   element('memory-target').value = 'new'; element('memory-forget').onclick();
   assert.equal(sent.at(-1)[1].action, 'forget');
-  deliver({ type: 'memory', generation: 1, id: 'request-1', action: 'forget', entries: [] });
+  deliver({ type: 'memory', generation: 1, id: sent.at(-1)[1].id, action: 'forget', entries: [] });
   assert.match(element('memory-status').textContent, /已从本机有效陪伴记忆移除/);
 });
 

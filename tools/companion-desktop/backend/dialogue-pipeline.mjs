@@ -2,6 +2,7 @@
 // revision. No capture, TTS, playback or engineering route is composed here.
 import { randomUUID } from 'node:crypto';
 import { composePrompt } from './prompt-composer.mjs';
+import { abortable, TurnCancelledError } from './turn-cancellation.mjs';
 
 export class LocalPersistenceError extends Error {
   constructor() { super('本地对话保存失败，请稍后重试。'); this.name = 'LocalPersistenceError'; }
@@ -9,15 +10,19 @@ export class LocalPersistenceError extends Error {
 
 export class DialoguePipeline {
   constructor({ memory, dialogue }) { this.memory = memory; this.dialogue = dialogue; }
-  async run(text, { roleCard, thinking, runtime, memory = { schemaVersion: 1, entries: [] }, onProviderFailure = () => {}, onProviderSuccess = () => {} }) {
+  async run(text, { roleCard, thinking, runtime, memory = { schemaVersion: 1, entries: [] }, requestId, signal = new AbortController().signal, isCurrent = () => true, onCommitted = () => {}, onProviderFailure = () => {}, onProviderSuccess = () => {} }) {
+    const checkCurrent = () => { if (signal.aborted || !isCurrent()) throw new TurnCancelledError(); };
+    checkCurrent();
     const turnId = randomUUID();
     const composed = composePrompt({ text, roleCard, runtime, memory, history: this.memory.history() });
     let reply;
     try {
-      reply = await this.dialogue({ messages: composed.messages, thinking });
+      reply = await abortable(this.dialogue({ messages: composed.messages, thinking, requestId, signal }), signal);
+      checkCurrent();
       if (!reply || typeof reply.content !== 'string' || !reply.content.trim() || (reply.reasoningContent !== null && reply.reasoningContent !== undefined && typeof reply.reasoningContent !== 'string')) throw Error('文字服务没有返回完整的回复。');
     }
-    catch (error) { onProviderFailure(); throw error; }
+    catch (error) { checkCurrent(); onProviderFailure(); throw error; }
+    checkCurrent();
     onProviderSuccess();
     let reasoningContent = reply.reasoningContent?.trim() || null;
     let reasoningTruncated = false;
@@ -42,8 +47,11 @@ export class DialoguePipeline {
     } : null;
     const user = { id: randomUUID(), role: 'user', text, createdAt: new Date().toISOString(), turnId, reasoningContent: null, metadata: null };
     const assistant = { id: randomUUID(), role: 'assistant', text: reply.content.trim(), createdAt: new Date().toISOString(), turnId, reasoningContent, metadata };
+    // No await between the owner check and the synchronous SQLite transaction.
+    checkCurrent();
     try { this.memory.appendTurn([user, assistant]); }
     catch { throw new LocalPersistenceError(); }
+    onCommitted([user, assistant]);
     return { text: assistant.text, messages: [user, assistant] };
   }
 }

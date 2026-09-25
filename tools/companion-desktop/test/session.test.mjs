@@ -6,6 +6,29 @@ import { join } from 'node:path';
 import { BackendSession } from '../backend/session.mjs';
 import { DEFAULT_ROLE_CARD } from '../backend/prompt-composer.mjs';
 
+test('cancel before commit fences an abort-ignoring provider and cannot release the next turn', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'yuki-cancel-'));
+  const pending = [];
+  const session = new BackendSession({ directory: dir, provider: input => new Promise((resolve, reject) => pending.push({ input, resolve, reject })) });
+  t.after(async () => { session.close(); await rm(dir, { recursive: true, force: true }); });
+  const first = session.submit('旧问题', undefined, undefined, { requestId: 'old' });
+  const cancelled = assert.rejects(first, { name: 'TurnCancelledError' });
+  assert.equal(session.cancel('old').outcome, 'cancelled');
+  await cancelled;
+  assert.equal(pending[0].input.signal.aborted, true);
+  assert.equal(session.status().service, 'configured');
+  const second = session.submit('新问题', undefined, undefined, { requestId: 'new' });
+  pending[0].resolve({ content: '迟到旧回复', reasoningContent: '不能写入' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(session.busy, true);
+  assert.equal(session.status().service, 'configured');
+  assert.deepEqual(session.displayHistory(), []);
+  pending[1].resolve({ content: '新回复' });
+  const result = await second;
+  assert.equal(result.requestId, 'new');
+  assert.deepEqual(session.history().map(row => row.text), ['新问题', '新回复']);
+});
+
 function runtimeService(messages) {
   const marker = '\nRuntime Capabilities（本轮受信快照）：\n';
   assert.equal(messages[0].role, 'system');
@@ -14,6 +37,69 @@ function runtimeService(messages) {
   assert.ok(snapshot);
   return JSON.parse(snapshot).text.service;
 }
+
+test('cancel after commit keeps history and revokes final-text-only downstream permission', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'yuki-committed-'));
+  const session = new BackendSession({ directory: dir, provider: async () => ({ content: ' 最终文字 ', reasoningContent: 'PRIVATE_REASONING' }) });
+  t.after(async () => { session.close(); await rm(dir, { recursive: true, force: true }); });
+  const reply = await session.submit('问题', undefined, undefined, { requestId: 'committed' });
+  assert.deepEqual(session.mediaText('committed'), { requestId: 'committed', turnId: reply.messages[0].turnId, finalText: '最终文字' });
+  const ack = session.cancel('committed');
+  assert.equal(ack.outcome, 'alreadyCommitted');
+  assert.deepEqual(ack.messages, reply.messages);
+  assert.equal(session.mediaText('committed'), null);
+  assert.deepEqual(session.displayHistory(), reply.messages);
+  assert.equal(session.cancel('missing').outcome, 'unknown-request');
+  session.close();
+  assert.equal(session.cancel('committed').outcome, 'unknown-after-disconnect');
+  const reopened = new BackendSession({ directory: dir, provider: null });
+  assert.deepEqual(reopened.displayHistory(), reply.messages);
+  reopened.close();
+});
+
+test('close invalidates a pending turn before closing SQLite, including late rejection', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'yuki-close-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  let reject;
+  const session = new BackendSession({ directory: dir, provider: () => new Promise((_, fail) => { reject = fail; }) });
+  const pending = session.submit('不能落库', undefined, undefined, { requestId: 'closing' });
+  const cancelled = assert.rejects(pending, { name: 'TurnCancelledError' });
+  session.close(); await cancelled;
+  reject(Error('late failure'));
+  await new Promise(resolve => setImmediate(resolve));
+  const reopened = new BackendSession({ directory: dir, provider: null });
+  assert.deepEqual(reopened.displayHistory(), []);
+  reopened.close();
+});
+
+test('typed and voice-final normalize identically through Role Card, Thinking, Memory and cutoff', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'yuki-normalized-'));
+  const seen = [];
+  const session = new BackendSession({ directory: dir, provider: async input => { seen.push(input); return { content: '最终回复', reasoningContent: 'DISPLAY_ONLY' }; } });
+  t.after(async () => { session.close(); await rm(dir, { recursive: true, force: true }); });
+  await session.submit('旧红茶历史');
+  const entry = session.remember({ text: '喜欢红茶', sourceKind: 'explicit_chat' });
+  session.correctMemory(entry.id, '喜欢绿茶');
+  const card = { schemaVersion: 1, text: '本轮角色卡' }, thinking = { schemaVersion: 1, enabled: true, effort: 'max' };
+  await session.submit(' 绿茶\r\n好吗\r ', card, thinking, { requestId: 'typed', origin: 'typed' });
+  await session.submit(' 绿茶\r\n好吗\r ', card, thinking, { requestId: 'voice', origin: 'voice-final' });
+  assert.equal(seen[1].messages.at(-1).content, '绿茶\n好吗');
+  assert.equal(seen[2].messages.at(-1).content, '绿茶\n好吗');
+  assert.deepEqual(seen[1].thinking, seen[2].thinking);
+  assert.equal(seen[1].messages[1].content, seen[2].messages[1].content);
+  assert.match(seen[2].messages[1].content, /喜欢绿茶/);
+  assert.match(seen[2].messages[1].content, /本轮角色卡/);
+  assert.doesNotMatch(JSON.stringify(seen[2].messages), /红茶|DISPLAY_ONLY/);
+  assert.deepEqual(session.history().map(row => row.text), ['绿茶\n好吗', '最终回复', '绿茶\n好吗', '最终回复']);
+  const capabilities = session.runtimeCapabilities();
+  assert.equal(capabilities.voice, false); assert.equal(capabilities.live2d, false);
+  assert.equal(capabilities.mediaReadiness.voice.implemented, false);
+  assert.equal(capabilities.mediaReadiness.voice.canAttempt, false);
+  assert.equal(capabilities.mediaReadiness.voice.provider.asr.state, 'unconfigured');
+  assert.equal(capabilities.mediaReadiness.voice.device.permission, 'unknown');
+  assert.equal(capabilities.mediaReadiness.voice.playback.state, 'unknown');
+  assert.equal(capabilities.mediaReadiness.live2d.model.state, 'unconfigured');
+});
 
 test('one Emilia conversation survives reopening and its provider sees earlier turns', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'yuki-companion-'));

@@ -1,6 +1,6 @@
 // Adapted from AAAAGENT desktop/electron/main.mjs at
 // 2752349bcc7f7137b8b9e4ff9cccf34026d77aad. See THIRD_PARTY_NOTICES.md.
-import { app, BrowserWindow, ipcMain, protocol, Menu, dialog, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol, Menu, dialog, safeStorage, shell, utilityProcess } from 'electron';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,8 @@ import { assetResponse } from './assets.mjs';
 import { normalizeCredential } from './credential.mjs';
 import { SettingsStore } from './settings-store.mjs';
 import { submittedTurn } from './submit-snapshot.mjs';
+import { validRequestId, VOICE_COMMANDS } from '../turn-contract.mjs';
+import { VoiceTurnCoordinator } from './voice-turn.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const option = name => { const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1]; };
@@ -24,7 +26,14 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'yuki', privileges: { standard: 
 let win, rendererReady = false, currentStatus, settings, quitting = false, smokeSubmittedThinking;
 const dataDir = () => app.getPath('userData');
 const deliver = message => { if (rendererReady && win && !win.isDestroyed()) win.webContents.send('yuki:delivery', message); };
-const connection = new BackendConnection({ worker: resolve(here, '../../backend/worker.mjs'), onMessage: (message, generation) => { currentStatus = message?.status ?? currentStatus; deliver({ ...message, generation }); } });
+const voice = new VoiceTurnCoordinator(); // No capture/provider/playback installed in Phase A.
+const connection = new BackendConnection({ worker: resolve(here, '../../backend/worker.mjs'), fork: (...args) => utilityProcess.fork(...args), onMessage: (message, generation) => {
+  currentStatus = message?.status ?? currentStatus;
+  if (message.type === 'disconnected') voice.disconnect();
+  if (message.type === 'cancel-ack') voice.acknowledge(message);
+  if (message.type === 'reply' || message.type === 'error') voice.complete(message.requestId);
+  deliver({ ...message, generation });
+} });
 const trusted = event => win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame && event.senderFrame.url === 'yuki://app/index.html';
 const settingsFile = () => join(dataDir(), 'settings.json');
 const credentialFile = () => join(dataDir(), 'credential.bin');
@@ -33,6 +42,7 @@ async function key() {
   catch { return ''; }
 }
 async function start() {
+  voice.disconnect();
   connection.start({ directory: dataDir(), key: preview ? '' : await key(), preview });
   deliver({ type: 'connection', state: 'connecting', generation: connection.generation, workbenchUrl: settings.snapshot().workbenchUrl });
 }
@@ -52,10 +62,49 @@ async function checkWorkbench() {
 
 ipcMain.on('yuki:ready', event => { if (!trusted(event) || rendererReady) return; rendererReady = true; void start(); });
 ipcMain.on('yuki:submit', (event, value) => {
-  if (!trusted(event) || !value || typeof value.text !== 'string' || value.text.length > 20000 || typeof value.id !== 'string') return;
-  const submitted = submittedTurn(value, settings);
-  if (smoke) smokeSubmittedThinking = submitted.thinking;
-  if (!connection.send(submitted, value.generation)) deliver({ type: 'error', id: value.id, message: '文字服务尚未连接。' });
+  if (!trusted(event) || !value || !validRequestId(value.requestId)) return;
+  const identity = { id: value.requestId, requestId: value.requestId, generation: value.generation, origin: value.origin, voiceScope: value.voiceScope };
+  try {
+    const submitted = submittedTurn(value, settings);
+    if (value.generation !== connection.generation || connection.state !== 'ready') { deliver({ type: 'error', ...identity, message: '文字服务尚未连接。' }); return; }
+    if (!['typed', 'voice-final'].includes(submitted.origin)) return;
+    if (submitted.origin === 'voice-final' && !voice.acceptSubmit(value.voiceScope, value.requestId, submitted.text)) { deliver({ type: 'error', ...identity, message: '语音回合已失效，未提交文字。' }); return; }
+    if (submitted.origin === 'typed' && voice.current) {
+      // Pending capture/transcription is discarded; output stop never controls engineering.
+      if (['preparing', 'listening', 'transcribing', 'awaiting-submit'].includes(voice.state)) voice.cancel(voice.current.scope);
+      else voice.stopOutput(voice.current.scope);
+    }
+    if (smoke) smokeSubmittedThinking = submitted.thinking;
+    if (!connection.send(submitted, value.generation)) deliver({ type: 'error', ...identity, message: '文字服务尚未连接。' });
+  } catch { deliver({ type: 'error', ...identity, message: '请输入不超过 20000 字的文字。' }); }
+});
+ipcMain.on('yuki:cancel-model', (event, value) => {
+  if (!trusted(event) || !value || !validRequestId(value.requestId)) return;
+  if (value.origin === 'voice-final') {
+    if (!voice.matches(value.voiceScope) || voice.current.requestId !== value.requestId) return;
+    voice.cancel(value.voiceScope);
+  }
+  const command = { type: 'cancel-model', requestId: value.requestId, origin: value.origin, voiceScope: value.voiceScope };
+  if (!connection.send(command, value.generation)) deliver({ ...command, type: 'cancel-ack', generation: value.generation, outcome: 'unknown-after-disconnect' });
+});
+ipcMain.on('yuki:voice-command', (event, value) => {
+  if (!trusted(event) || !value || value.schemaVersion !== 1 || value.generation !== connection.generation || !VOICE_COMMANDS.includes(value.action)) return;
+  if (value.action === 'start') {
+    const result = voice.start(connection.generation);
+    deliver({ type: 'voice-state', generation: connection.generation, ...result });
+    if (result.outcome === 'unavailable') deliver({ type: 'notice', text: '语音采集、识别和播放尚未实现，文字聊天仍可使用。' });
+    return;
+  }
+  if (!voice.matches(value.scope)) return;
+  if (value.action === 'stop-output') voice.stopOutput(value.scope);
+  if (value.action === 'finish') voice.finish(value.scope);
+  if (value.action === 'cancel-turn') {
+    const result = voice.cancel(value.scope);
+    if (result.requestId && !connection.send({ type: 'cancel-model', requestId: result.requestId, origin: 'voice-final', voiceScope: value.scope }, value.generation)) {
+      deliver({ type: 'cancel-ack', requestId: result.requestId, origin: 'voice-final', voiceScope: value.scope, generation: value.generation, outcome: 'unknown-after-disconnect' });
+    }
+  }
+  deliver({ type: 'voice-state', generation: connection.generation, scope: value.scope, state: voice.state });
 });
 ipcMain.on('yuki:memory', (event, value) => {
   if (!trusted(event) || !value || typeof value.id !== 'string' || !['list','remember','correct','forget'].includes(value.action)) return;
@@ -121,7 +170,7 @@ void app.whenReady().then(async () => {
   Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: 'Yuki Link', submenu: [{ role: 'quit' }] }, { role: 'editMenu' }]));
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
-  win.webContents.on('render-process-gone', () => { rendererReady = false; void connection.close(); });
+  win.webContents.on('render-process-gone', () => { rendererReady = false; voice.disconnect(); void connection.close(); });
   win.on('closed', () => app.quit());
   await win.loadURL('yuki://app/index.html');
   if (smoke) {
@@ -245,5 +294,6 @@ void app.whenReady().then(async () => {
 app.on('before-quit', event => {
   if (quitting) return;
   event.preventDefault(); quitting = true;
+  voice.disconnect();
   void connection.close().finally(() => { win?.destroy(); app.quit(); });
 });
