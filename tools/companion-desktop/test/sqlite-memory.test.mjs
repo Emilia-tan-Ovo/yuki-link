@@ -128,3 +128,11 @@ test('generic Chinese preference fragments alone do not recall an unrelated fact
   assert.equal(store.recall('我喜欢红茶').entries.length, 1);
   store.close();
 });
+
+test('first-person generic preference phrasing does not recall a different preference', async t => {
+  const store = new SqliteMemoryStore(await fixture(t));
+  store.remember({ text: '我喜欢红茶', sourceKind: 'explicit_chat' });
+  assert.deepEqual(store.recall('我喜欢蓝色').entries, []);
+  assert.equal(store.recall('我喜欢红茶').entries.length, 1);
+  store.close();
+});

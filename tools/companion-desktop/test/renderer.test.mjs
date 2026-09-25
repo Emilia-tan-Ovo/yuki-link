@@ -333,3 +333,15 @@ test('correct and forget only display success after matching committed replies',
   deliver({ type: 'memory', generation: 1, id: 'request-1', action: 'forget', entries: [] });
   assert.match(element('memory-status').textContent, /已从本机有效陪伴记忆移除/);
 });
+
+test('ordinary correction chat is not hijacked by memory management', () => {
+  for (const phrase of ['请纠正我的代码', '纠正我的英语发音']) {
+    const { element, sent, deliver } = harness();
+    deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+    deliver({ type: 'ready', generation: 1, history: [], status: { service: 'offline-preview' } });
+    element('text').value = phrase;
+    element('form').requestSubmit();
+    assert.equal(sent.at(-1)[0], 'submit', phrase);
+    assert.equal(sent.at(-1)[1].text, phrase);
+  }
+});

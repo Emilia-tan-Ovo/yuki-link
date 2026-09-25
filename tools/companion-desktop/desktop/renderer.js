@@ -174,7 +174,7 @@ host.subscribe(message => {
 });
 $('form').addEventListener('submit', event => { event.preventDefault(); const text = $('text').value.trim(); if (!text || busy || memoryPending || $('text').disabled || !thinkingCommitted || thinkingPending) return;
   if (/^记住\s*[:：]/u.test(text)) { const fact = text.replace(/^记住\s*[:：]/u, '').trim(); if (!fact || fact.length > 300) { notice('请在“记住：”后填写不超过 300 字的简短事实。'); return; } memoryCommand('remember', { text: fact, sourceKind: 'explicit_chat' }, true); return; }
-  if (/记住|忘记记忆|更正记忆|(?:忘掉|忘记|纠正|更正).*(?:我|记忆|偏好|喜欢)|(?:偏好|记忆|喜欢).*(?:忘掉|忘记|纠正|更正)/u.test(text)) { $('settings').showModal(); host.send('memory', { generation, id: crypto.randomUUID(), action: 'list' }); notice('请在陪伴记忆管理区明确填写事实或选择目标后提交。'); return; }
+  if (/记住|忘记记忆|更正记忆|(?:忘掉|忘记).*(?:我|记忆|偏好|喜欢)|(?:纠正|更正).*(?:记忆|偏好|喜欢)|(?:偏好|记忆|喜欢).*(?:忘掉|忘记|纠正|更正)/u.test(text)) { $('settings').showModal(); host.send('memory', { generation, id: crypto.randomUUID(), action: 'list' }); notice('请在陪伴记忆管理区明确填写事实或选择目标后提交。'); return; }
   busy = true; pendingGeneration = generation; $('send').disabled = true; $('text').disabled = true; notice('正在等待 Emilia 回复…'); host.send('submit', { generation, id: crypto.randomUUID(), text }); });
 $('text').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('form').requestSubmit(); } });
 $('credential').onclick = () => host.send('credential');

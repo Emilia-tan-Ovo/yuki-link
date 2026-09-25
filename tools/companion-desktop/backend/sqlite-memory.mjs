@@ -14,7 +14,7 @@ function terms(value) {
   const result = new Set();
   for (const part of parts) {
     if (/^[a-z0-9]+$/u.test(part)) { if (part.length >= 2) result.add(part); }
-    else for (let i = 0; i < part.length - 1; i++) { const term = part.slice(i, i + 2); if (!genericHanTerms.has(term)) result.add(term); }
+    else { const normalized = part.startsWith('我的') ? part.slice(2) : part.startsWith('我') ? part.slice(1) : part; for (let i = 0; i < normalized.length - 1; i++) { const term = normalized.slice(i, i + 2); if (!genericHanTerms.has(term)) result.add(term); } }
   }
   return result;
 }
