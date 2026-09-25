@@ -2,7 +2,7 @@ import { readFile, open, rename, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_ROLE_CARD, normalizeRoleCard } from '../../backend/prompt-composer.mjs';
-import { DEFAULT_VOICE, normalizeVoice } from '../voice-config.mjs';
+import { DEFAULT_VOICE, migrateSavedVoice, normalizeVoice } from '../voice-config.mjs';
 import { DEFAULT_LIVE2D, normalizeLive2D } from './live2d-config.mjs';
 export const DEFAULT_THINKING = Object.freeze({ schemaVersion: 1, enabled: false, effort: 'high' });
 export function normalizeThinking(value) {
@@ -26,7 +26,7 @@ export class SettingsStore {
       catch { warning += ' 已保存的思考设置无效，当前使用默认设置。'; }
     }
     let voice = { ...DEFAULT_VOICE };
-    if (saved && Object.hasOwn(saved, 'voice')) { try { voice = normalizeVoice(saved.voice); } catch { warning += ' 已保存的语音设置无效，已停用。'; } }
+    if (saved && Object.hasOwn(saved, 'voice')) { try { voice = migrateSavedVoice(saved.voice); } catch { warning += ' 已保存的语音设置无效，已停用。'; } }
     let live2d = { ...DEFAULT_LIVE2D };
     if (saved && Object.hasOwn(saved, 'live2d')) { try { live2d = normalizeLive2D(saved.live2d); } catch { warning += ' 已保存的 Live2D 配置无效，已停用。'; } }
     return new SettingsStore(file, { workbenchUrl: typeof saved?.workbenchUrl === 'string' ? saved.workbenchUrl : '', roleCard, thinking, voice, live2d }, warning.trim());

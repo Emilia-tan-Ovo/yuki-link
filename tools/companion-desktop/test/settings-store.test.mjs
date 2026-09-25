@@ -124,3 +124,13 @@ test('failed thinking save keeps committed snapshot; next successful save and re
   assert.deepEqual(store.snapshot().thinking, { schemaVersion: 1, enabled: false, effort: 'low' });
   assert.deepEqual((await SettingsStore.load(file)).snapshot().thinking, store.snapshot().thinking);
 });
+
+test('legacy Qwen3 voice settings migrate to Qwen-Audio 3.0 without preserving retired model IDs', async t => {
+  const file = await fixture(t);
+  await writeFile(file, JSON.stringify({ voice: { schemaVersion: 1, enabled: true, provider: 'qwen', region: 'cn', asrModel: 'qwen3-asr-flash-2026-02-10', ttsModel: 'qwen3-tts-instruct-flash-2026-01-26', voice: 'Cherry', inputDevice: 'mic-1', outputDevice: 'speaker-1' } }));
+  const store = await SettingsStore.load(file);
+  assert.deepEqual(store.snapshot().voice, { ...DEFAULT_VOICE, enabled: true, inputDevice: 'mic-1', outputDevice: 'speaker-1' });
+  assert.equal(store.snapshot().voice.asrModel, 'qwen-audio-3.0-asr-flash');
+  assert.equal(store.snapshot().voice.ttsModel, 'qwen-audio-3.0-tts-flash');
+  assert.equal(store.snapshot().voice.voice, 'longanfengyue');
+});

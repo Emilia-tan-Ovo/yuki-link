@@ -22,10 +22,10 @@
 <p class="muted">只有点击“开始录音”才请求麦克风。每次最多 30 秒，不保存原始音频。语音服务会产生外部调用；保存设置不会发起验证或重试。</p>
 <label><input id="voice-enabled" type="checkbox"> 启用语音</label>
 <label for="voice-provider">提供方</label><select id="voice-provider"><option value="qwen">Qwen（候选适配器）</option></select>
-<label for="voice-region">区域（凭据必须属于该区域）</label><select id="voice-region"><option value="cn">中国北京</option><option value="sg">新加坡</option></select>
-<label for="voice-asrModel">ASR 模型</label><select id="voice-asrModel"><option value="qwen3-asr-flash-2026-02-10">qwen3-asr-flash-2026-02-10</option></select>
-<label for="voice-ttsModel">TTS 模型</label><select id="voice-ttsModel"><option value="qwen3-tts-instruct-flash-2026-01-26">qwen3-tts-instruct-flash-2026-01-26</option></select>
-<label for="voice-voice">系统音色</label><select id="voice-voice"><option value="Cherry">Cherry</option></select>
+<label for="voice-region">区域（凭据必须属于该区域）</label><select id="voice-region"><option value="cn">中国北京</option></select>
+<label for="voice-asrModel">ASR 模型</label><select id="voice-asrModel"><option value="qwen-audio-3.0-asr-flash">qwen-audio-3.0-asr-flash</option></select>
+<label for="voice-ttsModel">TTS 模型</label><select id="voice-ttsModel"><option value="qwen-audio-3.0-tts-flash">qwen-audio-3.0-tts-flash</option></select>
+<label for="voice-voice">系统音色</label><select id="voice-voice"><option value="longanfengyue">龙安风悦 · 自然亲切</option><option value="longanlingxi">龙安灵希 · 可爱甜美</option><option value="longanyuanfei">龙安元妃 · 高傲华贵</option></select>
 <label for="voice-inputDevice">麦克风</label><select id="voice-inputDevice"><option value="default">系统默认</option></select>
 <label for="voice-outputDevice">扬声器</label><select id="voice-outputDevice"><option value="default">系统默认</option></select>
 <p id="voice-device-status" class="muted">设备和权限尚待验证。</p>

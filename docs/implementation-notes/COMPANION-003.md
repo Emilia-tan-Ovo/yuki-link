@@ -15,7 +15,7 @@
 ## Phase B 本地实现交付（2026-09-25）
 
 - 基线：`22f6299a917fecada5fe4a0c876f55d121497fa4`。本轮仅实现 B；未实现或导入 Live2D/Cubism，未触碰 DSH。
-- `backend/voice-provider.mjs`：固定 Qwen ASR/TTS candidate、明确 cn/sg 区域、当前仅 Cherry 系统音色；严格请求与 final 响应、读取期间限额、45s/120s deadline、caller abort、无 retry。TTS 只由 worker 从 `Session.mediaText(requestId)` 取已提交正文；默认 typed 不朗读。
+- `backend/voice-provider.mjs`：固定 Qwen-Audio 3.0 ASR/TTS candidate；当前长期方案只开放北京区 `cn`，ASR=`qwen-audio-3.0-asr-flash`，TTS=`qwen-audio-3.0-tts-flash`，系统音色允许 `longanfengyue` / `longanlingxi` / `longanyuanfei`，默认 `longanfengyue`。严格请求与 final 响应、读取期间限额、45s/120s deadline、caller abort、无 retry。TTS 只由 worker 从 `Session.mediaText(requestId)` 取已提交正文；默认 typed 不朗读。旧 Qwen3 snapshot + Cherry 仅作为本地设置迁移输入存在，不能继续作为新请求配置。
 - `desktop/media/{wav,devices,recorder-worklet}.mjs`：8–48kHz 实际采样率、mono PCM16、30s/1,440,000 samples/3MiB 录音限额；独立 main/worker WAV 验证；纯音频捕获与 drain、迟到许可/解码清理、真实输出推进后 speaking、RMS、sink API 降级和 autoplay 阻止后的显式本地播放。原始音频仅有界内存，无媒体临时文件。
 - `voice-runtime.mjs` 复用 Phase A `VoiceTurnCoordinator`；scope/requestId/generation 校验与一次消费覆盖 ASR、提交、合成、播放；设备清理确认前不接受下一次录音。Memory 终态、bounded completed retention、取消提交边界保持原路径。
 - SettingsStore 增加 versioned voice 字段，仍走 atomic queue；独立 `voice-private/voice-credential.bin`，由 safeStorage 加密，PowerShell 7 设置并验证用户目录 DACL。renderer 不收到 secret 或私有路径。导入成功只表示已配置，不自动验证 provider。
@@ -98,9 +98,9 @@
 
 | 项目 | 约束 |
 | --- | --- |
-| ASR 请求 | 首选固定 `qwen3-asr-flash-2026-02-10`；POST 到显式区域的 DashScope OpenAI-compatible chat/completions；model、单 user/input_audio data URL、stream=false、enable_itn=false。无 system/history/语言强制。上游固定型号是候选，账号是否仍可用属于外部 gate；不得静默换 latest。 |
+| ASR 请求 | 固定 `qwen-audio-3.0-asr-flash`；北京区 POST `/api/v1/services/aigc/multimodal-generation/generation`，使用 `input.messages[].content[].input_audio` Data URL、`parameters.format=wav`、真实 sample rate，并以 `X-DashScope-SSE: disable` 请求非流式 final result。只接受 `output.text` 且 `output.sentence.sentence_end=true`。不加 system/history，不自动 retry，不静默换 latest。 |
 | ASR 响应 | choices 恰好一项、finish_reason=stop、content string；空白为 `NO_SPEECH`，不调用 DeepSeek。不将可选 emotion/language 当必需成功条件。 |
-| TTS 请求 | 首选上游测试使用的 `qwen3-tts-instruct-flash-2026-01-26`，官方系统 voice，例如 Cherry；实际 voice 由 Owner 在该支持集选择。POST `/api/v1/services/aigc/multimodal-generation/generation`；input.text、voice、language_type=Auto、固定中性 instructions、optimize_instructions=false，不加情绪推理调用。 |
+| TTS 请求 | 固定 `qwen-audio-3.0-tts-flash`；北京区 POST `/api/v1/services/audio/tts/SpeechSynthesizer`；`input.text`、受支持系统 voice、`format=wav`、`sample_rate=24000`，并可用单条 `instruction` 控制自然中性表达。当前允许 `longanfengyue` / `longanlingxi` / `longanyuanfei`，默认 `longanfengyue`。非流式响应只接受 `finish_reason=stop` + 受信 OSS 音频 URL；不自动 retry。 |
 | 长回复 | 沿用 `splitSpeech`，每段 ≤600 Unicode 字符，拼接后等于完整 final text；串行最多 10 段/6000 字符、总音频 ≤120s/16MiB。超限在发起 TTS 前拒绝并保留文字；不朗读截断部分却显示“已读完”。当前先全部合成校验后播放一次，不做流式逐句播放。 |
 | TTS 响应/下载 | 校验业务成功与 output.finish_reason=stop、合法 audio URL、完整 PCM WAV；加上上游缺少的 body/下载字节流上限及完整性检查。JSON ≤1MiB，读取时累计限额，不只信 Content-Length。所有片段格式一致才合并。 |
 | 网络目的地 | Settings 选择已评审 provider/region/profile，main 生成固定 HTTPS endpoint；不接受任意 URL。兼容旧官方域名不等于自动选择区域。音频下载仅允许该 profile 已评审的官方 OSS 主机，拒绝私网/loopback/IP literal、userinfo、非默认端口、redirect；不附 Authorization。保留合法签名 path/query 原字节；仅对上游精确匹配的官方 HTTP OSS 地址升级 HTTPS，无 HTTP fallback。 |

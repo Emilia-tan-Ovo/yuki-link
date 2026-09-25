@@ -18,8 +18,7 @@ export function splitSpeech(text, maxCharacters = 600) {
   return result;
 }
 const profiles = {
-  cn: { host: 'dashscope.aliyuncs.com', audio: ['dashscope-result-bj.oss-cn-beijing.aliyuncs.com'] },
-  sg: { host: 'dashscope-intl.aliyuncs.com', audio: ['dashscope-result-sgp.oss-ap-southeast-1.aliyuncs.com'] }
+  cn: { host: 'dashscope.aliyuncs.com', audio: ['dashscope-result-bj.oss-cn-beijing.aliyuncs.com'] }
 };
 export function audioDownloadUrl(raw, region) {
   if (typeof raw !== 'string' || raw.length > 8192 || /[\s\\#]/u.test(raw)) throw new VoiceError('tts', 'INVALID_RESPONSE');
@@ -71,8 +70,8 @@ export function createVoiceProvider({ config, key, fetcher = fetch, timeoutMs = 
     if (!response.ok || response.redirected) { void response.body?.cancel().catch(() => {}); throw new VoiceError(stage, response.status === 401 || response.status === 403 ? 'AUTH' : response.status === 429 ? 'RATE_LIMIT' : 'PROVIDER_FAILED', response.status); }
     return bounded(response, max, signal, stage);
   }
-  async function post(path, body, signal, stage) {
-    const bytes = await request('https://' + profile.host + path, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${secret}` }, body: JSON.stringify(body) }, signal, stage, 1024 * 1024);
+  async function post(path, body, signal, stage, extraHeaders = {}) {
+    const bytes = await request('https://' + profile.host + path, { method: 'POST', headers: { 'content-type': 'application/json', ...extraHeaders, authorization: `Bearer ${secret}` }, body: JSON.stringify(body) }, signal, stage, 1024 * 1024);
     try { let raw; try { raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); } catch { throw new VoiceError(stage, 'INVALID_RESPONSE'); }
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new VoiceError(stage, 'INVALID_RESPONSE');
       if (raw.code || raw.status_code !== undefined && raw.status_code !== 200) throw new VoiceError(stage, 'PROVIDER_FAILED'); return raw;
@@ -82,13 +81,15 @@ export function createVoiceProvider({ config, key, fetcher = fetch, timeoutMs = 
     async transcribe({ wav }, signal) {
       return deadline('asr', signal, timeoutMs, async combined => {
         let body;
-        try { inspectPcmWav(wav, CAPTURE_LIMITS); body = { model: settings.asrModel, messages: [{ role: 'user', content: [{ type: 'input_audio', input_audio: { data: 'data:audio/wav;base64,' + Buffer.from(wav).toString('base64') } }] }], stream: false, asr_options: { enable_itn: false } }; }
-        finally { wav?.fill(0); }
-        const raw = await post('/compatible-mode/v1/chat/completions', body, combined, 'asr'); body = null;
-        const choice = raw.choices?.[0], message = choice?.message;
-        if (raw.choices?.length !== 1 || choice.finish_reason !== 'stop' || typeof message?.content !== 'string' || message.tool_calls || message.function_call || message.refusal || message.content.length > 20000 || message.content.includes('\0')) throw new VoiceError('asr', 'INVALID_RESPONSE');
-        if (!message.content.trim()) throw new VoiceError('asr', 'NO_SPEECH');
-        return { text: message.content.trim(), safeUsage: null };
+        try {
+          const info = inspectPcmWav(wav, CAPTURE_LIMITS);
+          body = { model: settings.asrModel, input: { messages: [{ role: 'user', content: [{ type: 'input_audio', input_audio: { data: 'data:audio/wav;base64,' + Buffer.from(wav).toString('base64') } }] }] }, parameters: { format: 'wav', sample_rate: String(info.sampleRate) } };
+        } finally { wav?.fill(0); }
+        const raw = await post('/api/v1/services/aigc/multimodal-generation/generation', body, combined, 'asr', { 'x-dashscope-sse': 'disable' }); body = null;
+        const text = raw.output?.text, sentence = raw.output?.sentence;
+        if (typeof text !== 'string' || text.length > 20000 || text.includes('\0') || !sentence || sentence.sentence_end !== true) throw new VoiceError('asr', 'INVALID_RESPONSE');
+        if (!text.trim()) throw new VoiceError('asr', 'NO_SPEECH');
+        return { text: text.trim(), safeUsage: null };
       }).finally(() => wav?.fill(0));
     },
     async synthesize({ finalText }, signal) {
@@ -100,7 +101,7 @@ export function createVoiceProvider({ config, key, fetcher = fetch, timeoutMs = 
         try {
           for (const text of segments) {
             const clip = await deadline('tts', combined, timeoutMs, async partSignal => {
-              const raw = await post('/api/v1/services/aigc/multimodal-generation/generation', { model: settings.ttsModel, input: { text, voice: settings.voice, language_type: 'Auto', instructions: '用自然、中性的语气清晰朗读。', optimize_instructions: false } }, partSignal, 'tts');
+              const raw = await post('/api/v1/services/audio/tts/SpeechSynthesizer', { model: settings.ttsModel, input: { text, voice: settings.voice, format: 'wav', sample_rate: 24000, instruction: '用自然、中性的语气清晰朗读。' } }, partSignal, 'tts');
               if (raw.output?.finish_reason !== 'stop') throw new VoiceError('tts', 'INVALID_RESPONSE');
               const bytes = await request(audioDownloadUrl(raw.output?.audio?.url, settings.region), { method: 'GET' }, partSignal, 'tts', PLAYBACK_LIMITS.maxBytes - bytesTotal);
               try { inspectPcmWav(bytes, PLAYBACK_LIMITS); partSignal.throwIfAborted(); return { wav: bytes }; } catch (error) { bytes.fill(0); throw error; }
