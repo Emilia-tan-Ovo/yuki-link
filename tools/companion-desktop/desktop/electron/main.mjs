@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BackendConnection } from './transport.mjs';
 import { assetResponse } from './assets.mjs';
+import { normalizeCredential } from './credential.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const option = name => { const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1]; };
@@ -60,8 +61,7 @@ ipcMain.on('yuki:credential', event => {
     if (result.canceled || result.filePaths.length !== 1) return;
     const raw = await readFile(result.filePaths[0]);
     if (raw.length > 4096) throw Error('凭据文件过大');
-    const value = raw.toString('utf8').trim();
-    if (!/^sk-[A-Za-z0-9_-]{8,}$/.test(value)) throw Error('凭据文件格式不正确');
+    const value = normalizeCredential(raw.toString('utf8'));
     await writeFile(credentialFile(), safeStorage.encryptString(value), { mode: 0o600 });
     deliver({ type: 'notice', text: '凭据已保存在本机加密存储；尚未通过真实请求验证。' });
     await start();
