@@ -2,6 +2,7 @@ import { readFile, open, rename, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_ROLE_CARD, normalizeRoleCard } from '../../backend/prompt-composer.mjs';
+import { DEFAULT_VOICE, normalizeVoice } from '../voice-config.mjs';
 export const DEFAULT_THINKING = Object.freeze({ schemaVersion: 1, enabled: false, effort: 'high' });
 export function normalizeThinking(value) {
   if (!value || value.schemaVersion !== 1 || typeof value.enabled !== 'boolean' || !['low', 'high', 'max'].includes(value.effort)) throw Error('思考设置无效。');
@@ -23,9 +24,12 @@ export class SettingsStore {
       try { thinking = normalizeThinking(saved.thinking); }
       catch { warning += ' 已保存的思考设置无效，当前使用默认设置。'; }
     }
-    return new SettingsStore(file, { workbenchUrl: typeof saved?.workbenchUrl === 'string' ? saved.workbenchUrl : '', roleCard, thinking }, warning.trim());
+    let voice = { ...DEFAULT_VOICE };
+    if (saved && Object.hasOwn(saved, 'voice')) { try { voice = normalizeVoice(saved.voice); } catch { warning += ' 已保存的语音设置无效，已停用。'; } }
+    return new SettingsStore(file, { workbenchUrl: typeof saved?.workbenchUrl === 'string' ? saved.workbenchUrl : '', roleCard, thinking, voice }, warning.trim());
   }
-  snapshot() { return { workbenchUrl: this.committed.workbenchUrl, roleCard: { ...this.committed.roleCard }, thinking: { ...this.committed.thinking } }; }
+  snapshot() { return { workbenchUrl: this.committed.workbenchUrl, roleCard: { ...this.committed.roleCard }, thinking: { ...this.committed.thinking }, voice: { ...(this.committed.voice ?? DEFAULT_VOICE) } }; }
+  saveVoice(value) { const voice = normalizeVoice(value); return this.commit(current => ({ ...current, voice })); }
   saveThinking(value) { const thinking = normalizeThinking(value); return this.commit(current => ({ ...current, thinking })); }
   saveRoleCard(value) { const card = normalizeRoleCard(value); return this.commit(current => ({ ...current, roleCard: card })); }
   resetRoleCard() { return this.saveRoleCard(DEFAULT_ROLE_CARD); }

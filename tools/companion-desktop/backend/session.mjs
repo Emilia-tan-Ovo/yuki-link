@@ -29,7 +29,8 @@ export class BackendSession {
     return { identity: IDENTITY, service, capabilities: this.runtimeCapabilities() };
   }
   runtimeCapabilities() {
-    return { text: { implemented: true, mode: this.mode, service: this.statusService() }, memoryManagement: true, voice: false, live2d: false, engineeringCards: false, mediaReadiness: initialMediaReadiness() };
+    const mediaReadiness = this.mediaReadiness ?? initialMediaReadiness();
+    return { text: { implemented: true, mode: this.mode, service: this.statusService() }, memoryManagement: true, voice: this.mode === 'real' && this.statusService() === 'verified' && mediaReadiness.voice.ready === true, live2d: false, engineeringCards: false, mediaReadiness };
   }
   statusService() { return this.mode === 'preview' ? 'offline-preview' : this.provider ? this.requestState : 'unconfigured'; }
   history() {

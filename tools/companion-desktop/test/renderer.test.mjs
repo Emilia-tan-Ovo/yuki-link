@@ -3,6 +3,19 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { normalizeUserText, sameVoiceScope } from '../desktop/turn-contract.mjs';
+import { RendererVoice } from '../desktop/voice-ui.mjs';
+import { DEFAULT_VOICE } from '../desktop/voice-config.mjs';
+import { VoiceReadiness } from '../desktop/electron/voice-readiness.mjs';
+
+test('voice settings/control wiring never acquires devices on load or calls engineering', async () => {
+  const h = harness(), readiness = new VoiceReadiness(); readiness.reset(true);
+  h.deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  h.deliver({ type: 'voice-settings', voice: { ...DEFAULT_VOICE, enabled: true }, readiness: readiness.snapshot(true, 'configured'), credentialConfigured: true });
+  assert.equal(h.element('voice-start').disabled, false); assert.match(h.element('voice-readiness').textContent, /保存不代表已验证/);
+  h.element('voice-start').onclick(); await new Promise(r => setImmediate(r));
+  assert.equal(h.sent.at(-1)[0], 'voice-command'); assert.equal(h.sent.at(-1)[1].action, 'start');
+  assert.equal(h.sent.some(([name]) => /engineering|task-stop/.test(name)), false);
+});
 import { VoiceTurnCoordinator } from '../desktop/electron/voice-turn.mjs';
 
 function harness(onSend = () => {}) {
@@ -21,7 +34,7 @@ function harness(onSend = () => {}) {
   let sequence = 0;
   const source = readFileSync(new URL('../desktop/renderer.js', import.meta.url), 'utf8');
   runInNewContext(source.replace(/^import .*;\r?$/gm, ''), {
-    normalizeUserText, sameVoiceScope, setTimeout, clearTimeout,
+    normalizeUserText, sameVoiceScope, RendererVoice, setTimeout, clearTimeout,
     document: { getElementById: element, createElement: makeNode, querySelectorAll: () => [] },
     window: { yukiDesktop: { subscribe(callback) { deliver = callback; }, send(...args) { sent.push(args); onSend(...args); } } },
     crypto: { randomUUID: () => 'request-' + ++sequence }
@@ -39,7 +52,7 @@ function voiceMemoryHarness() {
   const callback = main.slice(main.indexOf('  currentStatus = message?.status'), main.indexOf('\n} });'));
   const memory = main.slice(main.indexOf("ipcMain.on('yuki:memory'"), main.indexOf("ipcMain.on('yuki:credential'"));
   runInNewContext(`let currentStatus; setBackend((message, generation) => {${callback}\n});\n${memory}`, {
-    voice, deliver: ui.deliver, trusted: () => true,
+    voice, media: { backend: () => false, state() {}, publish() {} }, deliver: ui.deliver, trusted: () => true,
     connection: { generation: 1, send(command) { commands.push(command); return true; } },
     ipcMain: { on(name, handler) { handlers.set(name, handler); } },
     setBackend(callback) { backend = callback; }

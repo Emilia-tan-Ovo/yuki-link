@@ -7,8 +7,21 @@ import { SettingsStore } from '../desktop/electron/settings-store.mjs';
 import { DEFAULT_ROLE_CARD } from '../backend/prompt-composer.mjs';
 import { submittedTurn } from '../desktop/electron/submit-snapshot.mjs';
 import { DEFAULT_THINKING } from '../desktop/electron/settings-store.mjs';
+import { DEFAULT_VOICE } from '../desktop/voice-config.mjs';
 
 async function fixture(t) { const dir = await mkdtemp(join(tmpdir(), 'yuki-settings-')); t.after(() => rm(dir, { recursive: true, force: true })); return join(dir, 'settings.json'); }
+
+test('versioned voice settings serialize with other settings and roll back failed save', async t => {
+  const file = await fixture(t), store = await SettingsStore.load(file);
+  assert.deepEqual(store.snapshot().voice, DEFAULT_VOICE);
+  const voice = { ...DEFAULT_VOICE, enabled: true };
+  await Promise.all([store.saveVoice(voice), store.saveRoleCard({ schemaVersion: 1, text: '保留角色卡' }), store.saveThinking({ schemaVersion: 1, enabled: true, effort: 'high' })]);
+  assert.equal(store.snapshot().roleCard.text, '保留角色卡'); assert.equal(store.snapshot().thinking.enabled, true);
+  assert.deepEqual((await SettingsStore.load(file)).snapshot().voice, voice);
+  const before = await readFile(file, 'utf8'); store.rename = async () => { throw Error('rename failed'); };
+  await assert.rejects(store.saveVoice({ ...voice, enabled: false })); assert.equal(await readFile(file, 'utf8'), before); assert.equal(store.snapshot().voice.enabled, true);
+  assert.throws(() => store.saveVoice({ ...voice, provider: 'arbitrary' }));
+});
 
 test('legacy settings use default card and invalid saved card warns', async t => {
   const file = await fixture(t);

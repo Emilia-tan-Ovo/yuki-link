@@ -1,5 +1,19 @@
 # COMPANION-003 Implementation Notes
 
+## Phase B 本地实现交付（2026-09-25）
+
+- 基线：`22f6299a917fecada5fe4a0c876f55d121497fa4`。本轮仅实现 B；未实现或导入 Live2D/Cubism，未触碰 DSH。
+- `backend/voice-provider.mjs`：固定 Qwen ASR/TTS candidate、明确 cn/sg 区域、当前仅 Cherry 系统音色；严格请求与 final 响应、读取期间限额、45s/120s deadline、caller abort、无 retry。TTS 只由 worker 从 `Session.mediaText(requestId)` 取已提交正文；默认 typed 不朗读。
+- `desktop/media/{wav,devices,recorder-worklet}.mjs`：8–48kHz 实际采样率、mono PCM16、30s/1,440,000 samples/3MiB 录音限额；独立 main/worker WAV 验证；纯音频捕获与 drain、迟到许可/解码清理、真实输出推进后 speaking、RMS、sink API 降级和 autoplay 阻止后的显式本地播放。原始音频仅有界内存，无媒体临时文件。
+- `voice-runtime.mjs` 复用 Phase A `VoiceTurnCoordinator`；scope/requestId/generation 校验与一次消费覆盖 ASR、提交、合成、播放；设备清理确认前不接受下一次录音。Memory 终态、bounded completed retention、取消提交边界保持原路径。
+- SettingsStore 增加 versioned voice 字段，仍走 atomic queue；独立 `voice-private/voice-credential.bin`，由 safeStorage 加密，PowerShell 7 设置并验证用户目录 DACL。renderer 不收到 secret 或私有路径。导入成功只表示已配置，不自动验证 provider。
+- UI 增加语音控制与独立设置区，区分实现、配置、权限、ASR/TTS、capture/playback、canAttempt；Live2D 聚合能力仍 false。设备刷新不暗自请求麦克风。
+- 下载 allowlist：cn 使用 `dashscope-result-bj.oss-cn-beijing.aliyuncs.com`；sg 使用官方服务结果主机 `dashscope-result-sgp.oss-ap-southeast-1.aliyuncs.com`。仅精确主机 HTTPS/受控 HTTP 升级，不接受重定向、任意 URL 或私网地址。证据：[Qwen TTS 响应示例](https://www.alibabacloud.com/help/en/model-studio/qwen-tts-api)、[官方新加坡结果主机示例](https://www.alibabacloud.com/help/en/model-studio/first-call-to-image-and-video-api)。账号实际返回主机仍须实测；不匹配时明确失败，不自动扩 allowlist。
+- 定向红→绿：WAV/ASR 模块缺失、voice settings 缺字段、worker voice 路由与 committed transition 缺失、devices 模块缺失、静音误判播放测试均实际观察到红项，再实现至绿。最终仅运行 `provider / voice-provider / voice-devices / voice-readiness / settings-store / voice-turn / turn-ipc / renderer` 八个测试文件：**70/70 PASS**；修改及新增 JS 的 `node --check`、`git diff --check` PASS。
+- packaged smoke 仅新增未配置 readiness 与 worklet MIME 检查代码，**未运行 package/full suite/smoke**；交 Emilia/YCA 后置。当前无已知确定性实现 blocker；fresh review 尚未进行。
+- 外部 gates 保持 pending：Owner 选定账号/区域/model/voice 与付费调用授权；真实 safeStorage/DACL 凭据导入；实际权限、麦克风、扬声器及完整 ASR→现有文字链→TTS→播放；真实 packaged 验收。以上 fake 结果不等于真实服务/设备 ready，也不等于 #128 AC02 完成。
+
+
 - Ticket：[GitHub #128](https://github.com/Emilia-tan-Ovo/yuki-link/issues/128)。Spec：[GitHub #125](https://github.com/Emilia-tan-Ovo/yuki-link/issues/125)，仅采用 US04/US05/US06/US26/US32/US33/US35、AC02/AC09/AC13/AC14。
 - Fixed point / 已核对 HEAD：`e86d607c695b9832cc1c1627111c0e51726a5468`。
 - Worktree：`.local/worktrees/companion-003`；checkpoint：`.local/workflow-state/COMPANION-003.md`。

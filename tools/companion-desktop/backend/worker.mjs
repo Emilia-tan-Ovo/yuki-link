@@ -3,22 +3,26 @@ import { deepSeekProvider, previewProvider } from './provider.mjs';
 import { LocalPersistenceError } from './dialogue-pipeline.mjs';
 import { TurnCancelledError } from './turn-cancellation.mjs';
 import { validRequestId } from '../desktop/turn-contract.mjs';
+import { WorkerVoice } from './voice-worker.mjs';
 
-export function createWorkerHandler({ post, createSession = data => new BackendSession({ directory: data.directory, provider: data.preview ? previewProvider() : deepSeekProvider(data.key), mode: data.preview ? 'preview' : 'real' }) }) {
-  let session, generation;
+export function createWorkerHandler({ post, createVoice, createSession = data => new BackendSession({ directory: data.directory, provider: data.preview ? previewProvider() : deepSeekProvider(data.key), mode: data.preview ? 'preview' : 'real' }) }) {
+  let session, generation, voice;
   return async data => {
     if (data?.type === 'start') {
-      session?.close(); session = undefined; generation = data.generation;
-      try { session = createSession(data); post({ type: 'ready', status: session.status(), history: session.displayHistory() }); }
+      voice?.close(); session?.close(); session = undefined; generation = data.generation;
+      try { session = createSession(data); voice = new WorkerVoice({ config: data.voiceConfig, key: data.voiceKey, preview: data.preview, post, createVoice }); post({ type: 'ready', status: session.status(), history: session.displayHistory() }); }
       catch { post({ type: 'disconnected' }); }
       return;
     }
-    if (data?.type === 'close') { session?.close(); session = undefined; post({ type: 'closed' }); return; }
-    if (!session || data?.generation !== generation) return;
+    if (data?.type === 'close') { voice?.close(); session?.close(); session = undefined; post({ type: 'closed' }); return; }
+    if (!session || data?.generation !== generation) { data?.wav?.fill(0); return; }
+    if (['voice-start', 'voice-asr', 'voice-tts', 'voice-stop'].includes(data.type)) { await voice.handle(data, session); return; }
+    if (data.type === 'media-readiness') { session.mediaReadiness = data.readiness; return; }
     const owner = session;
     const identity = { id: data.requestId ?? data.id, requestId: data.requestId ?? data.id, generation, origin: data.origin, voiceScope: data.voiceScope };
   try {
     if (data?.type === 'submit' && typeof data.text === 'string' && validRequestId(identity.requestId)) {
+      voice.bindSubmit(data);
       const result = await owner.submit(data.text, data.roleCard, data.thinking, identity);
       if (session === owner) post({ type: 'reply', ...identity, ...result });
     } else if (data?.type === 'cancel-model' && validRequestId(identity.requestId)) {

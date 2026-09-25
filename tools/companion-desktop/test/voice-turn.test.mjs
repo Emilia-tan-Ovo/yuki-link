@@ -2,6 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { VoiceTurnCoordinator } from '../desktop/electron/voice-turn.mjs';
 
+test('only committed matching voice reply may synthesize and only actual output may speak', () => {
+  const v = new VoiceTurnCoordinator({ canAttempt: () => true }); const { scope } = v.start(1);
+  v.captureReady(scope); v.finish(scope); v.final(scope, '问'); v.acceptSubmit(scope, 'r', '问');
+  assert.equal(v.committed({ requestId: 'other', committed: true }), false);
+  assert.equal(v.committed({ requestId: 'r', committed: false }), false);
+  assert.equal(v.committed({ requestId: 'r', committed: true }), true); assert.equal(v.state, 'synthesizing');
+  assert.equal(v.playback(scope, 'started'), false);
+  assert.equal(v.audio(scope, 'r'), true); assert.equal(v.state, 'playback-pending');
+  assert.equal(v.playback(scope, 'started'), true); assert.equal(v.state, 'speaking');
+  v.stopOutput(scope); assert.equal(v.playback(scope, 'started'), false); assert.equal(v.audio(scope, 'r'), false);
+});
+
 test('local Memory admission and terminal reject stale scope, generation and forged result', () => {
   const voice = new VoiceTurnCoordinator({ canAttempt: () => true });
   const prepare = text => { const { scope } = voice.start(1); voice.captureReady(scope); voice.finish(scope); voice.final(scope, text); return scope; };

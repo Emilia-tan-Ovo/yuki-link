@@ -11,6 +11,9 @@ import { SettingsStore } from './settings-store.mjs';
 import { submittedTurn } from './submit-snapshot.mjs';
 import { validRequestId, VOICE_COMMANDS } from '../turn-contract.mjs';
 import { VoiceTurnCoordinator } from './voice-turn.mjs';
+import { VoiceRuntime } from './voice-runtime.mjs';
+import { VoiceReadiness, allowMicrophone } from './voice-readiness.mjs';
+import { VoiceCredentialStore } from './voice-credential.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const option = name => { const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1]; };
@@ -23,19 +26,24 @@ else app.setPath('userData', join(app.getPath('appData'), preview ? 'Yuki Link D
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 protocol.registerSchemesAsPrivileged([{ scheme: 'yuki', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
-let win, rendererReady = false, currentStatus, settings, quitting = false, smokeSubmittedThinking;
+let win, rendererReady = false, currentStatus, settings, quitting = false, smokeSubmittedThinking, startRevision = 0;
 const dataDir = () => app.getPath('userData');
 const deliver = message => { if (rendererReady && win && !win.isDestroyed()) win.webContents.send('yuki:delivery', message); };
-const voice = new VoiceTurnCoordinator(); // No capture/provider/playback installed in Phase A.
+const readiness = new VoiceReadiness();
+const voice = new VoiceTurnCoordinator({ canAttempt: () => readiness.snapshot(!preview && connection.state === 'ready', currentStatus?.service).voice.canAttempt });
+let voiceCredentials;
 const connection = new BackendConnection({ worker: resolve(here, '../../backend/worker.mjs'), fork: (...args) => utilityProcess.fork(...args), onMessage: (message, generation) => {
   currentStatus = message?.status ?? currentStatus;
-  if (message.type === 'disconnected') voice.disconnect();
+  if (media.backend(message, generation)) return;
+  if (message.type === 'disconnected') { media.invalidate(); readiness.reset(readiness.configured); }
   if (message.type === 'cancel-ack') voice.acknowledge(message);
   if (message.type === 'reply' || message.type === 'error') voice.complete(message.requestId);
   const memoryTerminal = voice.completeMemory(message, generation);
   if (memoryTerminal) deliver(memoryTerminal);
   deliver({ ...message, generation });
+  if (['ready','reply','error','disconnected','cancel-ack'].includes(message.type)) { media.state(); media.publish(); }
 } });
+const media = new VoiceRuntime({ voice, connection, deliver, settings: { snapshot: () => settings.snapshot() }, readiness, status: () => currentStatus, preview });
 const trusted = event => win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame && event.senderFrame.url === 'yuki://app/index.html';
 const settingsFile = () => join(dataDir(), 'settings.json');
 const credentialFile = () => join(dataDir(), 'credential.bin');
@@ -44,8 +52,14 @@ async function key() {
   catch { return ''; }
 }
 async function start() {
-  voice.disconnect();
-  connection.start({ directory: dataDir(), key: preview ? '' : await key(), preview });
+  const revision = ++startRevision;
+  media.invalidate(); void connection.close();
+  deliver({ type: 'connection', state: 'connecting', generation: connection.generation, workbenchUrl: settings.snapshot().workbenchUrl });
+  const voiceKey = preview ? '' : await voiceCredentials.read();
+  const textKey = preview ? '' : await key();
+  if (revision !== startRevision || quitting) return;
+  media.configure(!!voiceKey);
+  connection.start({ directory: dataDir(), key: textKey, preview, voiceConfig: settings.snapshot().voice, voiceKey });
   deliver({ type: 'connection', state: 'connecting', generation: connection.generation, workbenchUrl: settings.snapshot().workbenchUrl });
 }
 function workbenchUrl(value) {
@@ -75,9 +89,11 @@ ipcMain.on('yuki:submit', (event, value) => {
       // Pending capture/transcription is discarded; output stop never controls engineering.
       if (['preparing', 'listening', 'transcribing', 'awaiting-submit'].includes(voice.state)) voice.cancel(voice.current.scope);
       else voice.stopOutput(voice.current.scope);
+      media.stopResources(voice.current.scope);
     }
     if (smoke) smokeSubmittedThinking = submitted.thinking;
     if (!connection.send(submitted, value.generation)) deliver({ type: 'error', ...identity, message: '文字服务尚未连接。' });
+    else media.activeModel ??= value.requestId;
   } catch { deliver({ type: 'error', ...identity, message: '请输入不超过 20000 字的文字。' }); }
 });
 ipcMain.on('yuki:cancel-model', (event, value) => {
@@ -85,28 +101,30 @@ ipcMain.on('yuki:cancel-model', (event, value) => {
   if (value.origin === 'voice-final') {
     if (!voice.matches(value.voiceScope) || voice.current.requestId !== value.requestId) return;
     voice.cancel(value.voiceScope);
+    media.stopResources(value.voiceScope);
   }
   const command = { type: 'cancel-model', requestId: value.requestId, origin: value.origin, voiceScope: value.voiceScope };
   if (!connection.send(command, value.generation)) deliver({ ...command, type: 'cancel-ack', generation: value.generation, outcome: 'unknown-after-disconnect' });
 });
 ipcMain.on('yuki:voice-command', (event, value) => {
   if (!trusted(event) || !value || value.schemaVersion !== 1 || value.generation !== connection.generation || !VOICE_COMMANDS.includes(value.action)) return;
-  if (value.action === 'start') {
-    const result = voice.start(connection.generation);
-    deliver({ type: 'voice-state', generation: connection.generation, ...result });
-    if (result.outcome === 'unavailable') deliver({ type: 'notice', text: '语音采集、识别和播放尚未实现，文字聊天仍可使用。' });
-    return;
-  }
-  if (!voice.matches(value.scope)) return;
-  if (value.action === 'stop-output') voice.stopOutput(value.scope);
-  if (value.action === 'finish') voice.finish(value.scope);
-  if (value.action === 'cancel-turn') {
-    const result = voice.cancel(value.scope);
-    if (result.requestId && !connection.send({ type: 'cancel-model', requestId: result.requestId, origin: 'voice-final', voiceScope: value.scope }, value.generation)) {
-      deliver({ type: 'cancel-ack', requestId: result.requestId, origin: 'voice-final', voiceScope: value.scope, generation: value.generation, outcome: 'unknown-after-disconnect' });
-    }
-  }
-  deliver({ type: 'voice-state', generation: connection.generation, scope: value.scope, state: voice.state });
+  media.command(value);
+});
+ipcMain.on('yuki:voice-event', (event, value) => {
+  if (!trusted(event) || !value || value.schemaVersion !== 1 || value.generation !== connection.generation && value.event !== 'cleaned') { if (value?.wav instanceof Uint8Array) value.wav.fill(0); return; }
+  media.event(value);
+});
+ipcMain.on('yuki:voice-load', event => { if (trusted(event)) media.publish(); });
+ipcMain.on('yuki:voice-save', (event, value) => {
+  if (!trusted(event)) return;
+  void Promise.resolve().then(() => settings.saveVoice(value)).then(async () => { await start(); deliver({ type: 'notice', text: '语音设置已保存；服务和设备尚待明确使用验证。' }); }).catch(() => deliver({ type: 'notice', text: '语音设置未能保存，原设置继续生效。' }));
+});
+ipcMain.on('yuki:voice-credential', event => {
+  if (!trusted(event) || preview) return;
+  void (async () => { const result = await dialog.showOpenDialog(win, { title: '导入独立语音服务 Key 文件', properties: ['openFile'], filters: [{ name: '文本文件', extensions: ['txt','key'] }] });
+    if (result.canceled || result.filePaths.length !== 1) return;
+    await voiceCredentials.importFile(result.filePaths[0]); await start(); deliver({ type: 'notice', text: '语音凭据已加密保存；尚未验证服务。' });
+  })().catch(() => deliver({ type: 'notice', text: '语音凭据导入失败或受限加密存储不可用。' }));
 });
 ipcMain.on('yuki:memory', (event, value) => {
   if (!trusted(event) || !value || value.generation !== connection.generation || typeof value.id !== 'string' || !['list','remember','correct','forget'].includes(value.action)) return;
@@ -175,14 +193,22 @@ ipcMain.on('yuki:quit', event => { if (trusted(event)) app.quit(); });
 void app.whenReady().then(async () => {
   await mkdir(dataDir(), { recursive: true });
   settings = await SettingsStore.load(settingsFile());
+  voiceCredentials = new VoiceCredentialStore(dataDir(), safeStorage);
   const root = resolve(here, '..');
   win = new BrowserWindow({ title: 'Yuki Link · Emilia', width: 1120, height: 760, minWidth: 760, minHeight: 540, backgroundColor: '#f7f4ff', show: !smoke,
     webPreferences: { preload: resolve(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, partition: 'persist:yuki-desktop' } });
   await win.webContents.session.protocol.handle('yuki', request => assetResponse(root, request.url));
+  const permission = (wc, kind, details, origin, check) => {
+    if (kind === 'speaker-selection') return !preview && wc === win?.webContents && wc?.mainFrame?.url === 'yuki://app/index.html' && details?.isMainFrame === true && (check ? ['yuki://app','yuki://app/'].includes(origin) : details.requestingUrl === 'yuki://app/index.html') && voice.state === 'playback-pending' && voice.current?.outputAllowed === true;
+    return allowMicrophone({ webContents: wc, expected: win?.webContents, permission: kind, details, origin, check, intent: !preview && voice.state === 'preparing' && !!voice.current && !media.cleanupPending });
+  };
+  win.webContents.session.setPermissionCheckHandler((wc, kind, origin, details) => permission(wc, kind, details, origin, true));
+  win.webContents.session.setPermissionRequestHandler((wc, kind, callback, details) => callback(permission(wc, kind, details, undefined, false)));
+  win.webContents.session.setDisplayMediaRequestHandler((_request, callback) => callback({}));
   Menu.setApplicationMenu(Menu.buildFromTemplate([{ label: 'Yuki Link', submenu: [{ role: 'quit' }] }, { role: 'editMenu' }]));
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', event => event.preventDefault());
-  win.webContents.on('render-process-gone', () => { rendererReady = false; voice.disconnect(); void connection.close(); });
+  win.webContents.on('render-process-gone', () => { rendererReady = false; media.invalidate(); void connection.close(); });
   win.on('closed', () => app.quit());
   await win.loadURL('yuki://app/index.html');
   if (smoke) {
@@ -195,6 +221,10 @@ void app.whenReady().then(async () => {
         await new Promise(done => setTimeout(done, 150));
       }
       if (!ready) throw Error('Renderer/backend did not become ready');
+      const voiceFailureReady = await win.webContents.executeJavaScript("document.getElementById('voice-start').disabled && document.getElementById('voice-readiness').textContent.includes('未配置/停用')");
+      if (!voiceFailureReady) throw Error('Voice unconfigured readiness was not projected');
+      const workletMime = await win.webContents.executeJavaScript("fetch('yuki://app/media/recorder-worklet.mjs').then(r => r.ok && r.headers.get('content-type') === 'text/javascript')");
+      if (!workletMime) throw Error('Packaged audio worklet was not served');
       if (option('--smoke-phase') === 'first') {
         let composerReady = false;
         while (Date.now() < deadline) {
@@ -306,6 +336,6 @@ void app.whenReady().then(async () => {
 app.on('before-quit', event => {
   if (quitting) return;
   event.preventDefault(); quitting = true;
-  voice.disconnect();
+  media.invalidate();
   void connection.close().finally(() => { win?.destroy(); app.quit(); });
 });

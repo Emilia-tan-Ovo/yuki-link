@@ -1,4 +1,5 @@
 import { normalizeUserText, sameVoiceScope } from './turn-contract.mjs';
+import { RendererVoice } from './voice-ui.mjs';
 
 const $ = id => document.getElementById(id);
 let generation = 0, service = 'connecting', busy = false, pendingGeneration = null, messages = [];
@@ -13,6 +14,8 @@ let thinkingSyncedVersion = 0, thinkingHasSaved = false;
 const expandedReasoning = new Set();
 let personaDraftVersion = 0, personaPendingVersion = null;
 const host = window.yukiDesktop;
+const mediaUI = new RendererVoice({ host, element: $, getGeneration: () => generation, notice });
+let startAfterCancel = false;
 const label = { connecting: '正在连接', unconfigured: '未配置 DeepSeek', configured: '已配置 · 待验证', verified: 'DeepSeek 已验证', unknown: 'DeepSeek 状态待确认', 'offline-preview': '离线预览 · 非真实回复', disconnected: '服务已断开' };
 function state(next) {
   service = next; $('service').dataset.state = next; $('service-label').textContent = label[next] || next;
@@ -113,7 +116,9 @@ function renderMemories(entries) {
   target.value = entries.some(entry => entry.id === selected) ? selected : '';
 }
 host.subscribe(message => {
-  if (message.generation !== undefined && message.generation < generation) return;
+  if (message.generation !== undefined && message.generation < generation) { if (message.wav instanceof Uint8Array) message.wav.fill(0); return; }
+  if (message.type === 'connection') generation = message.generation;
+  void mediaUI.receive(message);
   if (message.type === 'connection') { generation = message.generation; voiceScope = null; voiceFinal = null; memoryPending = null; memoryRefreshId = null; memoryBusy(false); renderMemories([]); $('memory-target').disabled = true; $('memory-status').textContent = '有效记忆待重新读取。'; state('connecting'); $('workbench-url').value = message.workbenchUrl || ''; host.send('workbench-check'); }
   if (message.type !== 'ready' && message.generation !== undefined && message.generation !== generation) return;
   if (message.type === 'voice-state' && message.scope?.connectionGeneration === generation) {
@@ -143,6 +148,7 @@ host.subscribe(message => {
       releaseRequest(); state(message.status?.service || service);
       notice(message.outcome === 'alreadyCommitted' ? '文字已提交，历史保留；本轮下游语音已禁止。' : message.outcome === 'cancelled' ? '当前回复已取消，未写入历史。' : '本轮未提交，草稿保留。');
       maybeDispatchVoiceFinal();
+      if (startAfterCancel) { startAfterCancel = false; void mediaUI.start(); }
     } else { notice('回复取消结果未知，请重连后核对历史；不会自动重试。'); }
   }
   if (message.type === 'disconnected') { const uncertain = !!pendingRequest; voiceScope = null; voiceFinal = null; releaseRequest(); state('disconnected'); notice(uncertain ? '连接已断开，本轮提交或取消结果未知，请重新打开应用核对历史。' : '文字服务已断开，请重新打开应用。'); }
@@ -218,15 +224,20 @@ host.subscribe(message => {
 function dispatchUserText(value, origin = 'typed', voiceScope) {
   if (busy || memoryPending || $('text').disabled || !thinkingCommitted || thinkingPending) return false;
   let text; try { text = normalizeUserText(value); } catch (error) { notice(error.message); return false; }
+  if (origin === 'typed' && mediaUI.scope) {
+    if (['preparing','listening','transcribing','awaiting-submit'].includes(mediaUI.state)) mediaUI.command('cancel-turn');
+    else if (['synthesizing','playback-pending','speaking'].includes(mediaUI.state)) mediaUI.command('stop-output');
+  }
   if (/^记住\s*[:：]/u.test(text)) { const fact = text.replace(/^记住\s*[:：]/u, '').trim(); if ((!fact || fact.length > 300) && origin === 'typed') { notice('请在“记住：”后填写不超过 300 字的简短事实。'); return; } memoryCommand('remember', { text: fact, sourceKind: 'explicit_chat', ...(origin === 'voice-final' ? { voiceScope, voiceResult: 'remember' } : {}) }, origin === 'typed'); return; }
   if (/记住|忘记记忆|更正记忆|(?:忘掉|忘记).*(?:我|记忆|偏好|喜欢)|(?:纠正|更正).*(?:记忆|偏好|喜欢)|(?:偏好|记忆|喜欢).*(?:忘掉|忘记|纠正|更正)/u.test(text)) { $('settings').showModal(); host.send('memory', { generation, id: crypto.randomUUID(), action: 'list', ...(origin === 'voice-final' ? { voiceScope, voiceResult: 'management-opened' } : {}) }); notice('请在陪伴记忆管理区明确填写事实或选择目标后提交。'); return; }
   const requestId = crypto.randomUUID();
   busy = true; pendingGeneration = generation; pendingRequest = { requestId, origin, voiceScope, draft: $('text').value, cancelling: false };
   state(service); notice('正在等待 Emilia 回复…'); host.send('submit', { generation, id: requestId, requestId, text, origin, voiceScope }); return true;
 }
-$('form').addEventListener('submit', event => { event.preventDefault(); dispatchUserText($('text').value); });
+$('form').addEventListener('submit', event => { event.preventDefault(); void mediaUI.dispose(); dispatchUserText($('text').value); });
 $('cancel-reply').onclick = () => {
   if (!pendingRequest || pendingRequest.cancelling) return;
+  if (pendingRequest.origin === 'voice-final') void mediaUI.dispose();
   const pending = pendingRequest; pending.cancelling = true; updateSend();
   notice('正在等待后端确认取消结果…');
   pending.timer = setTimeout(() => { if (pendingRequest === pending) notice('回复取消结果待核实，请等待确认或重连核对历史；不会自动重试。'); }, 2000);
@@ -234,6 +245,15 @@ $('cancel-reply').onclick = () => {
 };
 $('text').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('form').requestSubmit(); } });
 $('credential').onclick = () => host.send('credential');
+$('voice-start').onclick = () => { if (pendingRequest) { startAfterCancel = true; $('cancel-reply').onclick(); } else void mediaUI.start(); };
+$('voice-finish').onclick = () => mediaUI.command('finish');
+$('voice-cancel').onclick = () => { startAfterCancel = false; mediaUI.queuedStart = false; if (pendingRequest?.origin === 'voice-final') $('cancel-reply').onclick(); else mediaUI.command('cancel-turn'); };
+$('voice-stop').onclick = () => mediaUI.command('stop-output');
+$('voice-play').onclick = () => { void mediaUI.resumePlayback(); };
+$('voice-save').onclick = () => mediaUI.save();
+$('voice-credential').onclick = () => host.send('voice-credential');
+$('voice-refresh').onclick = () => { void mediaUI.dispose().then(() => { mediaUI.event('devices-changed'); return mediaUI.devices(); }); host.send('voice-load'); };
+$('voice-settings-open').onclick = () => { $('voice-settings').showModal(); host.send('voice-load'); void mediaUI.devices(); };
 $('workbench-save').onclick = () => host.send('workbench-save', $('workbench-url').value.trim());
 $('workbench-open').onclick = () => host.send('workbench-open');
 for (const id of ['settings', 'about']) { $(id + '-open').onclick = () => { $(id).showModal(); if (id === 'settings') { host.send('memory', { generation, id: crypto.randomUUID(), action: 'list' }); host.send('persona-load'); host.send('thinking-load'); } }; }
@@ -256,3 +276,4 @@ document.querySelectorAll('[data-close]').forEach(button => button.onclick = () 
 $('about-open').addEventListener('click', async () => { try { $('license').textContent = await (await fetch('yuki://app/AAAAGENT-LICENSE.txt')).text(); } catch { $('license').textContent = '许可文件暂时无法读取。'; } });
 host.send('ready');
 host.send('thinking-load');
+host.send('voice-load');

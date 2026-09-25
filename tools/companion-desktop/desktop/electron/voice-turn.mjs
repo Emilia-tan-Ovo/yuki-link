@@ -9,7 +9,7 @@ export class VoiceTurnCoordinator {
   start(connectionGeneration) {
     if (!this.canAttempt()) return { outcome: 'unavailable', state: 'idle' };
     if (!['idle', 'cancelled', 'error'].includes(this.state)) return { outcome: 'busy', state: this.state };
-    const scope = { schemaVersion: 1, connectionGeneration, voiceTurnId: randomUUID(), voiceEpoch: ++this.epoch };
+    const scope = { schemaVersion: 1, connectionGeneration, voiceTurnId: randomUUID(), voiceEpoch: ++this.epoch, requestId: randomUUID() };
     this.current = { scope, outputAllowed: true };
     this.state = 'preparing';
     return { outcome: 'accepted', state: this.state, scope };
@@ -46,6 +46,7 @@ export class VoiceTurnCoordinator {
   stopOutput(scope) {
     if (!this.matches(scope)) return { outcome: 'stale', cancelModel: false };
     this.current.outputAllowed = false;
+    if (['synthesizing', 'playback-pending', 'speaking'].includes(this.state)) this.state = 'cancelled';
     return { outcome: 'output-disabled', cancelModel: false };
   }
   cancel(scope) {
@@ -61,5 +62,20 @@ export class VoiceTurnCoordinator {
   complete(requestId) {
     if (requestId === this.current?.requestId && this.state === 'thinking') this.state = 'idle';
   }
+  committed(message) {
+    if (!message.committed || message.requestId !== this.current?.requestId || this.state !== 'thinking' || !this.current.outputAllowed) return false;
+    this.state = 'synthesizing'; return true;
+  }
+  audio(scope, requestId) {
+    if (!this.matches(scope) || requestId !== this.current.requestId || !this.current.outputAllowed || this.state !== 'synthesizing') return false;
+    this.state = 'playback-pending'; return true;
+  }
+  playback(scope, event) {
+    if (!this.matches(scope) || !this.current.outputAllowed) return false;
+    if (event === 'started' && this.state === 'playback-pending') { this.state = 'speaking'; return true; }
+    if (event === 'ended' && this.state === 'speaking') { this.state = 'idle'; return true; }
+    return false;
+  }
+  fail(scope) { if (!this.matches(scope) || ['cancelled', 'cancelling', 'idle'].includes(this.state)) return false; this.current.outputAllowed = false; this.state = 'error'; return true; }
   disconnect() { this.current = null; ++this.epoch; this.state = 'idle'; }
 }
