@@ -19,6 +19,7 @@
     "productName": "Yuki Link Desktop",
     "directories": { "output": "dist" },
     "files": ["desktop/**/*", "backend/**/*", "package.json", "THIRD_PARTY_NOTICES.md"],
+    "asarUnpack": ["desktop/electron/private-voice-directory.ps1"],
     "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "signAndEditExecutable": false },
     "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true },
     "artifactName": "Yuki-Link-Desktop-${version}-${arch}.${ext}"

@@ -1,24 +1,47 @@
 import { inspectPcmWav, CAPTURE_LIMITS, PLAYBACK_LIMITS } from '../media/wav.mjs';
 import { validRequestId } from '../turn-contract.mjs';
+import { MicrophonePermissionIntent } from './voice-readiness.mjs';
 export class VoiceRuntime {
-  constructor({ voice, connection, deliver, settings, readiness, status, preview = false }) { Object.assign(this, { voice, connection, deliver, settings, readiness, status, preview }); this.cleanupPending = null; this.activeModel = null; }
+  constructor({ voice, connection, deliver, settings, readiness, status, preview = false }) { Object.assign(this, { voice, connection, deliver, settings, readiness, status, preview }); this.cleanupPending = null; this.activeModel = null; this.configurationQueue = Promise.resolve(); this.pendingConfigurations = 0; this.permissionIntent = new MicrophonePermissionIntent(); }
   send(value) { return this.connection.send(value, this.connection.generation); }
   state(extra = {}) { this.deliver({ type: 'voice-state', generation: this.connection.generation, scope: this.voice.current?.scope, state: this.voice.state, ...extra }); }
   publish() { const readiness = this.readiness.snapshot(!this.preview && this.connection.state === 'ready' && !['unconfigured','disconnected'].includes(this.status()?.service), this.status()?.service); this.deliver({ type: 'voice-settings', voice: this.settings.snapshot().voice, credentialConfigured: this.credentialConfigured === true, readiness }); this.send({ type: 'media-readiness', readiness }); return readiness; }
-  configure(credentialConfigured) { this.invalidate(); this.credentialConfigured = credentialConfigured; this.readiness.reset(credentialConfigured && this.settings.snapshot().voice.enabled && !this.preview); this.publish(); }
+  configure(credentialConfigured) { this.invalidateVoice(); this.credentialConfigured = credentialConfigured; this.readiness.reset(credentialConfigured && this.settings.snapshot().voice.enabled && !this.preview); this.publish(); }
+  reconfigure(commit, readKey) {
+    ++this.pendingConfigurations;
+    this.invalidateVoice();
+    const operation = this.configurationQueue.then(async () => {
+      await commit();
+      const voiceKey = this.preview ? '' : await readKey();
+      this.configure(!!voiceKey);
+      this.send({ type: 'voice-configure', voiceConfig: this.settings.snapshot().voice, voiceKey, configRevision: this.readiness.revision });
+    }).finally(() => { --this.pendingConfigurations; this.publish(); });
+    this.configurationQueue = operation.catch(() => {});
+    return operation;
+  }
   stopResources(scope, all = true) {
+    this.permissionIntent.clear(scope);
     if (!scope) return;
     this.send({ type: 'voice-stop', scope });
     this.cleanupPending = scope;
     this.deliver({ type: 'voice-teardown', generation: this.connection.generation, scope, all });
   }
-  invalidate() { this.stopResources(this.voice.current?.scope); this.voice.disconnect(); this.activeModel = null; }
+  invalidateVoice() { this.permissionIntent.clear(); this.stopResources(this.voice.current?.scope); this.voice.disconnect(); }
+  invalidate() { this.invalidateVoice(); this.activeModel = null; }
+  microphonePermission(request) {
+    if (this.preview || this.connection.state !== 'ready' || this.pendingConfigurations || this.cleanupPending || this.voice.state !== 'preparing') { this.permissionIntent.clear(); return false; }
+    return this.permissionIntent.allow(request, this.connection.generation, this.voice.current?.scope);
+  }
   command(value) {
     const v = this.voice;
     if (value.action === 'start') {
-      if (this.cleanupPending || this.activeModel || !this.publish().voice.canAttempt) { this.deliver({ type: 'notice', text: this.cleanupPending ? '等待本地音频清理确认；尚未启动录音。' : '语音条件尚未齐全或回复仍在处理中，请查看设置。' }); return; }
+      if (this.pendingConfigurations || this.cleanupPending || this.activeModel || !this.publish().voice.canAttempt) { this.deliver({ type: 'notice', text: this.cleanupPending ? '等待本地音频清理确认；尚未启动录音。' : '语音条件尚未齐全或回复仍在处理中，请查看设置。' }); return; }
       const result = v.start(this.connection.generation); this.state(result);
-      if (result.outcome === 'accepted') { this.send({ type: 'voice-start', scope: result.scope }); this.deliver({ type: 'voice-capture', generation: this.connection.generation, scope: result.scope, inputDevice: this.settings.snapshot().voice.inputDevice }); }
+      if (result.outcome === 'accepted') {
+        if (!this.send({ type: 'voice-start', scope: result.scope })) { v.cancel(result.scope); this.state(); return; }
+        this.permissionIntent.arm(this.connection.generation, result.scope);
+        this.deliver({ type: 'voice-capture', generation: this.connection.generation, scope: result.scope, inputDevice: this.settings.snapshot().voice.inputDevice });
+      }
       return;
     }
     if (!v.matches(value.scope)) return;
@@ -34,6 +57,7 @@ export class VoiceRuntime {
   }
   event(value) {
     const v = this.voice;
+    if (['capture-ready', 'capture-finished', 'device-error', 'cleaned'].includes(value.event)) this.permissionIntent.clear(value.scope);
     if (value.event === 'cleaned' && this.cleanupPending?.voiceTurnId === value.scope?.voiceTurnId && this.cleanupPending.voiceEpoch === value.scope.voiceEpoch && this.cleanupPending.connectionGeneration === value.scope.connectionGeneration) { this.cleanupPending = null; this.state(); return; }
     if (value.event === 'devices-changed') {
       if (v.current) { const result = v.cancel(v.current.scope); this.stopResources(v.current.scope); if (result.requestId) this.send({ type: 'cancel-model', requestId: result.requestId, origin: 'voice-final', voiceScope: v.current.scope }); }

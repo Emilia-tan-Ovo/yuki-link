@@ -6,16 +6,24 @@ import { validRequestId } from '../desktop/turn-contract.mjs';
 import { WorkerVoice } from './voice-worker.mjs';
 
 export function createWorkerHandler({ post, createVoice, createSession = data => new BackendSession({ directory: data.directory, provider: data.preview ? previewProvider() : deepSeekProvider(data.key), mode: data.preview ? 'preview' : 'real' }) }) {
-  let session, generation, voice;
+  let session, generation, voice, configRevision, preview;
   return async data => {
     if (data?.type === 'start') {
       voice?.close(); session?.close(); session = undefined; generation = data.generation;
+      configRevision = Number.isSafeInteger(data.configRevision) ? data.configRevision : 0; preview = data.preview;
       try { session = createSession(data); voice = new WorkerVoice({ config: data.voiceConfig, key: data.voiceKey, preview: data.preview, post, createVoice }); post({ type: 'ready', status: session.status(), history: session.displayHistory() }); }
       catch { post({ type: 'disconnected' }); }
       return;
     }
     if (data?.type === 'close') { voice?.close(); session?.close(); session = undefined; post({ type: 'closed' }); return; }
     if (!session || data?.generation !== generation) { data?.wav?.fill(0); return; }
+    if (data.type === 'voice-configure') {
+      if (!Number.isSafeInteger(data.configRevision) || data.configRevision <= configRevision) return;
+      voice?.close();
+      configRevision = data.configRevision;
+      voice = new WorkerVoice({ config: data.voiceConfig, key: data.voiceKey, preview, post, createVoice });
+      return;
+    }
     if (['voice-start', 'voice-asr', 'voice-tts', 'voice-stop'].includes(data.type)) { await voice.handle(data, session); return; }
     if (data.type === 'media-readiness') { session.mediaReadiness = data.readiness; return; }
     const owner = session;

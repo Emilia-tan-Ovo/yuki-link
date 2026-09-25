@@ -1,4 +1,4 @@
-import { initialMediaReadiness } from '../turn-contract.mjs';
+import { initialMediaReadiness, sameVoiceScope } from '../turn-contract.mjs';
 export class VoiceReadiness {
   constructor() { this.revision = 0; this.reset(false); }
   reset(configured) {
@@ -23,4 +23,26 @@ export function allowMicrophone({ webContents, expected, permission, details, in
   if (!intent || !expected || webContents !== expected || expected.mainFrame?.url !== 'yuki://app/index.html' || permission !== 'media' || details?.isMainFrame !== true) return false;
   if (check) return details.mediaType === 'audio' && (origin === 'yuki://app' || origin === 'yuki://app/') && (!details.requestingUrl || details.requestingUrl === 'yuki://app/index.html');
   return details.requestingUrl === 'yuki://app/index.html' && Array.isArray(details.mediaTypes) && details.mediaTypes.length === 1 && details.mediaTypes[0] === 'audio';
+}
+
+// Main owns one permission intent per accepted capture; checks never consume it.
+export class MicrophonePermissionIntent {
+  constructor({ now = Date.now } = {}) { this.now = now; this.current = null; this.timer = null; }
+  arm(generation, scope) {
+    this.clear();
+    if (!scope || scope.connectionGeneration !== generation) return;
+    this.current = { generation, scope: { ...scope }, deadline: this.now() + 30000 };
+    this.timer = setTimeout(() => this.clear(), 30000); this.timer.unref?.();
+  }
+  clear(scope) {
+    if (scope && !sameVoiceScope(scope, this.current?.scope)) return;
+    clearTimeout(this.timer); this.timer = null; this.current = null;
+  }
+  allow(request, generation, scope) {
+    const intent = this.current;
+    if (!intent || this.now() >= intent.deadline || intent.generation !== generation || !sameVoiceScope(intent.scope, scope)) { this.clear(); return false; }
+    const allowed = allowMicrophone({ ...request, intent: true });
+    if (!request.check) this.clear();
+    return allowed;
+  }
 }

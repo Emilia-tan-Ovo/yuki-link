@@ -1,7 +1,7 @@
 // Adapted from AAAAGENT desktop/electron/main.mjs at
 // 2752349bcc7f7137b8b9e4ff9cccf34026d77aad. See THIRD_PARTY_NOTICES.md.
 import { app, BrowserWindow, ipcMain, protocol, Menu, dialog, safeStorage, shell, utilityProcess } from 'electron';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BackendConnection } from './transport.mjs';
@@ -12,8 +12,8 @@ import { submittedTurn } from './submit-snapshot.mjs';
 import { validRequestId, VOICE_COMMANDS } from '../turn-contract.mjs';
 import { VoiceTurnCoordinator } from './voice-turn.mjs';
 import { VoiceRuntime } from './voice-runtime.mjs';
-import { VoiceReadiness, allowMicrophone } from './voice-readiness.mjs';
-import { VoiceCredentialStore } from './voice-credential.mjs';
+import { VoiceReadiness } from './voice-readiness.mjs';
+import { VoiceCredentialStore, privateVoiceDirectory } from './voice-credential.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const option = name => { const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1]; };
@@ -55,11 +55,12 @@ async function start() {
   const revision = ++startRevision;
   media.invalidate(); void connection.close();
   deliver({ type: 'connection', state: 'connecting', generation: connection.generation, workbenchUrl: settings.snapshot().workbenchUrl });
+  await media.configurationQueue;
   const voiceKey = preview ? '' : await voiceCredentials.read();
   const textKey = preview ? '' : await key();
   if (revision !== startRevision || quitting) return;
   media.configure(!!voiceKey);
-  connection.start({ directory: dataDir(), key: textKey, preview, voiceConfig: settings.snapshot().voice, voiceKey });
+  connection.start({ directory: dataDir(), key: textKey, preview, voiceConfig: settings.snapshot().voice, voiceKey, configRevision: readiness.revision });
   deliver({ type: 'connection', state: 'connecting', generation: connection.generation, workbenchUrl: settings.snapshot().workbenchUrl });
 }
 function workbenchUrl(value) {
@@ -117,13 +118,13 @@ ipcMain.on('yuki:voice-event', (event, value) => {
 ipcMain.on('yuki:voice-load', event => { if (trusted(event)) media.publish(); });
 ipcMain.on('yuki:voice-save', (event, value) => {
   if (!trusted(event)) return;
-  void Promise.resolve().then(() => settings.saveVoice(value)).then(async () => { await start(); deliver({ type: 'notice', text: '语音设置已保存；服务和设备尚待明确使用验证。' }); }).catch(() => deliver({ type: 'notice', text: '语音设置未能保存，原设置继续生效。' }));
+  void media.reconfigure(() => settings.saveVoice(value), () => voiceCredentials.read()).then(() => deliver({ type: 'notice', text: '语音设置已保存；服务和设备尚待明确使用验证。' })).catch(() => deliver({ type: 'notice', text: '语音设置未能保存，原设置继续生效。' }));
 });
 ipcMain.on('yuki:voice-credential', event => {
   if (!trusted(event) || preview) return;
   void (async () => { const result = await dialog.showOpenDialog(win, { title: '导入独立语音服务 Key 文件', properties: ['openFile'], filters: [{ name: '文本文件', extensions: ['txt','key'] }] });
     if (result.canceled || result.filePaths.length !== 1) return;
-    await voiceCredentials.importFile(result.filePaths[0]); await start(); deliver({ type: 'notice', text: '语音凭据已加密保存；尚未验证服务。' });
+    await media.reconfigure(() => voiceCredentials.importFile(result.filePaths[0]), () => voiceCredentials.read()); deliver({ type: 'notice', text: '语音凭据已加密保存；尚未验证服务。' });
   })().catch(() => deliver({ type: 'notice', text: '语音凭据导入失败或受限加密存储不可用。' }));
 });
 ipcMain.on('yuki:memory', (event, value) => {
@@ -193,14 +194,14 @@ ipcMain.on('yuki:quit', event => { if (trusted(event)) app.quit(); });
 void app.whenReady().then(async () => {
   await mkdir(dataDir(), { recursive: true });
   settings = await SettingsStore.load(settingsFile());
-  voiceCredentials = new VoiceCredentialStore(dataDir(), safeStorage);
+  voiceCredentials = new VoiceCredentialStore(dataDir(), safeStorage, privateVoiceDirectory({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath }));
   const root = resolve(here, '..');
   win = new BrowserWindow({ title: 'Yuki Link · Emilia', width: 1120, height: 760, minWidth: 760, minHeight: 540, backgroundColor: '#f7f4ff', show: !smoke,
     webPreferences: { preload: resolve(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, partition: 'persist:yuki-desktop' } });
   await win.webContents.session.protocol.handle('yuki', request => assetResponse(root, request.url));
   const permission = (wc, kind, details, origin, check) => {
     if (kind === 'speaker-selection') return !preview && wc === win?.webContents && wc?.mainFrame?.url === 'yuki://app/index.html' && details?.isMainFrame === true && (check ? ['yuki://app','yuki://app/'].includes(origin) : details.requestingUrl === 'yuki://app/index.html') && voice.state === 'playback-pending' && voice.current?.outputAllowed === true;
-    return allowMicrophone({ webContents: wc, expected: win?.webContents, permission: kind, details, origin, check, intent: !preview && voice.state === 'preparing' && !!voice.current && !media.cleanupPending });
+    return media.microphonePermission({ webContents: wc, expected: win?.webContents, permission: kind, details, origin, check });
   };
   win.webContents.session.setPermissionCheckHandler((wc, kind, origin, details) => permission(wc, kind, details, origin, true));
   win.webContents.session.setPermissionRequestHandler((wc, kind, callback, details) => callback(permission(wc, kind, details, undefined, false)));
@@ -213,6 +214,22 @@ void app.whenReady().then(async () => {
   await win.loadURL('yuki://app/index.html');
   if (smoke) {
     try {
+      if (option('--smoke-phase') === 'voice-credential') {
+        if (!smokeData || !isAbsolute(smokeData) || !app.isPackaged) throw Error('Isolated packaged smoke required');
+        const source = join(dataDir(), 'smoke-voice-input.txt');
+        const fake = 'fixture-packaged-voice-key';
+        try {
+          await writeFile(source, fake + '\n', { flag: 'wx', mode: 0o600 });
+          await voiceCredentials.importFile(source);
+          const restored = await voiceCredentials.read();
+          if (restored !== fake || (await readFile(voiceCredentials.file)).includes(fake)) throw Error('Credential round trip failed');
+          // verify asserts protected DACL, exactly current-user FullControl and inheritance.
+          await voiceCredentials.protect(voiceCredentials.directory, 'verify');
+        } catch { throw Error('Packaged voice credential verification failed'); }
+        finally { await unlink(source).catch(() => {}); }
+        console.log('YUKI_PACKAGED_SMOKE_OK phase=voice-credential');
+        app.quit(); return;
+      }
       const deadline = Date.now() + 20000;
       let ready = false;
       while (Date.now() < deadline) {

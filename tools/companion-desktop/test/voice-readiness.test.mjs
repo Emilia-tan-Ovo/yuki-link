@@ -9,6 +9,15 @@ import { VoiceCredentialStore } from '../desktop/electron/voice-credential.mjs';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as credentialModule from '../desktop/electron/voice-credential.mjs';
+
+test('packaged credential helper resolves to the installed physical unpacked resource', async () => {
+  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.ok(pkg.build.asarUnpack?.includes('desktop/electron/private-voice-directory.ps1'));
+  assert.equal(credentialModule.voiceAclHelperPath({ isPackaged: true, resourcesPath: join('installed', 'resources') }),
+    join('installed', 'resources', 'app.asar.unpacked', 'desktop', 'electron', 'private-voice-directory.ps1'));
+  assert.equal(credentialModule.voiceAclHelperPath().includes('app.asar'), false);
+});
 
 test('readiness distinguishes configured, canAttempt and verified; refresh invalidates all observed facts', () => {
   const r = new VoiceReadiness(); assert.equal(r.snapshot(true, 'verified').voice.canAttempt, false);
@@ -41,6 +50,38 @@ test('main routing validates WAV and scope, delivers one final, then only commit
   assert.equal(delivered.some(x => x.type === 'voice-play'), false); assert.equal(sent.some(x => /engineering|task-stop/.test(x.type)), false);
   runtime.command({ action: 'start' }); assert.equal(voice.current.scope, scope);
   runtime.event({ event: 'cleaned', scope }); runtime.command({ action: 'start' }); assert.notEqual(voice.current.scope, scope);
+});
+
+test('main capture intent is one-shot; checks do not consume; cancel/reconnect/timeout deny', () => {
+  const wc = { mainFrame: { url: 'yuki://app/index.html' } };
+  const request = { webContents: wc, expected: wc, permission: 'media', details: { isMainFrame: true, requestingUrl: 'yuki://app/index.html', mediaTypes: ['audio'] } };
+  const make = () => {
+    let now = 0;
+    const voice = new VoiceTurnCoordinator({ canAttempt: () => true }), readiness = new VoiceReadiness(); readiness.reset(true);
+    const runtime = new VoiceRuntime({ voice, readiness, connection: { generation: 3, state: 'ready', send: () => true }, deliver() {}, settings: { snapshot: () => ({ voice: DEFAULT_VOICE }) }, status: () => ({ service: 'verified' }) });
+    // Only the deadline clock is synthetic; permission is exercised at the main runtime seam.
+    runtime.permissionIntent.now = () => now;
+    runtime.command({ action: 'start' });
+    return { runtime, scope: voice.current.scope, expire: () => { now = 30001; } };
+  };
+  const first = make();
+  assert.equal(first.runtime.microphonePermission({ ...request, check: true, origin: 'yuki://app', details: { isMainFrame: true, mediaType: 'audio' } }), true);
+  assert.equal(first.runtime.microphonePermission(request), true);
+  assert.equal(first.runtime.voice.state, 'preparing');
+  assert.equal(first.runtime.microphonePermission(request), false);
+  for (const action of ['cancel', 'reconnect', 'timeout', 'ready', 'error', 'config', 'generation', 'scope', 'cleaned']) {
+    const h = make();
+    if (action === 'cancel') h.runtime.command({ action: 'cancel-turn', scope: h.scope });
+    if (action === 'reconnect') h.runtime.invalidate();
+    if (action === 'timeout') h.expire();
+    if (action === 'ready') h.runtime.event({ event: 'capture-ready', scope: h.scope });
+    if (action === 'error') h.runtime.event({ event: 'device-error', scope: h.scope, code: 'CAPTURE_FAILED' });
+    if (action === 'config') h.runtime.configure(true);
+    if (action === 'generation') ++h.runtime.connection.generation;
+    if (action === 'scope') { h.runtime.voice.disconnect(); h.runtime.voice.start(3); }
+    if (action === 'cleaned') h.runtime.event({ event: 'cleaned', scope: h.scope });
+    assert.equal(h.runtime.microphonePermission(request), false, action);
+  }
 });
 test('voice credential is a separate encrypted atomic store and fails closed without storage protection', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'yuki-credential-')); t.after(() => rm(dir, { recursive: true, force: true }));
