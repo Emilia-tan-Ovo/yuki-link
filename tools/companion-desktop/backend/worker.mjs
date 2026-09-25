@@ -1,0 +1,24 @@
+import { BackendSession } from './session.mjs';
+import { deepSeekProvider, previewProvider } from './provider.mjs';
+
+let session;
+const port = process.parentPort;
+const post = value => port.postMessage(value);
+port.on('message', async ({ data }) => {
+  try {
+    if (data?.type === 'start') {
+      session?.close();
+      session = new BackendSession({ directory: data.directory, provider: data.preview ? previewProvider() : deepSeekProvider(data.key), mode: data.preview ? 'preview' : 'real' });
+      post({ type: 'ready', status: session.status(), history: session.history() });
+    } else if (data?.type === 'submit' && session && typeof data.text === 'string') {
+      const result = await session.submit(data.text);
+      post({ type: 'reply', id: data.id, ...result });
+    } else if (data?.type === 'close') {
+      session?.close(); session = undefined; post({ type: 'closed' });
+    }
+  } catch (error) {
+    // No command bodies or credentials in diagnostics or UI.
+    const known = error instanceof Error && /^(请输入|DeepSeek|文字服务|上一条)/.test(error.message);
+    post({ type: 'error', id: data?.id, message: known ? error.message : '这次文字交流没有完成，请检查网络或稍后重试。' });
+  }
+});

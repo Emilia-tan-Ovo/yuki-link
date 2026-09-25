@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' yuki:; script-src 'self' yuki:; style-src 'self' yuki:; img-src 'self' yuki: data:; connect-src 'self' yuki:">
+<title>Yuki Link · Emilia</title><link rel="stylesheet" href="style.css"></head>
+<body><div class="app">
+  <aside class="sidebar" aria-label="侧边栏">
+    <div class="brand"><div class="brand-mark">✦</div><div><strong>Yuki Link</strong><small>与你相连的日常</small></div></div>
+    <div class="sidebar-section"><div class="section-caption">陪伴空间</div><div class="companion"><div class="avatar">E</div><div><strong>Emilia</strong><small>持续对话</small></div><span class="companion-star">✧</span></div></div>
+    <nav class="sidebar-section history" aria-label="按日期回看"><div class="section-caption">对话历史 <span>按日期</span></div><div id="dates" class="date-list"><p class="muted">还没有对话</p></div></nav>
+    <div class="sidebar-bottom"><button id="workbench-open" type="button" class="side-action">▦ <span>Engineering Workbench</span><i>↗</i></button><div id="workbench-state" class="side-note">尚未设置本机入口</div><button id="settings-open" type="button" class="side-action">⚙ <span>设置与连接</span><i>›</i></button><button id="about-open" type="button" class="side-action">ⓘ <span>关于与许可</span><i>›</i></button></div>
+  </aside>
+  <main class="main"><header class="topbar"><div><div class="eyebrow">YUKI LINK / COMPANION</div><h1>和 Emilia 聊聊</h1></div><div id="service" class="service" data-state="connecting"><span class="dot"></span><span id="service-label">正在连接</span></div></header>
+    <section id="conversation" class="conversation" aria-label="与 Emilia 的持续对话"><div class="intro"><div class="intro-symbol">✧</div><div><strong>一段可以继续的对话</strong><p>在这里留下今天的想法。你与 Emilia 的文字记录会保存在这台电脑上，并可按日期回看。</p></div></div><div id="messages" role="log" aria-live="polite"></div></section>
+    <div class="composer-area"><p id="notice" role="status"></p><form id="form" class="composer"><label for="text" class="sr-only">输入消息</label><textarea id="text" rows="2" maxlength="20000" placeholder="想和 Emilia 说些什么…" disabled></textarea><div class="composer-footer"><span>Enter 发送 · Shift + Enter 换行</span><button id="send" type="submit" disabled>发送 <b>↗</b></button></div></form><div class="footnote">文字陪伴 · 语音、Live2D 与记忆管理将在后续版本接入</div></div>
+  </main>
+</div>
+<dialog id="settings"><div class="dialog-head"><div><div class="eyebrow">SETTINGS</div><h2>设置与连接</h2></div><button class="close" data-close="settings" aria-label="关闭">×</button></div><div class="dialog-body"><h3>文字服务 · DeepSeek Flash</h3><p id="model-state">正在读取配置…</p><p class="muted">模型：<code>deepseek-flash</code>（非思考模式）。导入仅包含一行 DeepSeek API Key 的本地文本文件。Key 由系统加密后保存在 Yuki Link Desktop 用户数据目录；界面不会回显。</p><button id="credential" type="button" class="soft-button">导入凭据文件</button><hr><h3>Engineering Workbench</h3><p class="muted">填写现有 Yuki Harness 的本机网页地址。此入口只打开现有工作台，不搬迁或修改工程数据。</p><label for="workbench-url">本机地址</label><div class="inline"><input id="workbench-url" type="url" placeholder="http://127.0.0.1:端口/"><button id="workbench-save" type="button" class="soft-button">保存并检查</button></div><p id="workbench-detail" class="muted">尚未设置</p><hr><h3>后续能力</h3><p class="muted">记忆纠正/遗忘、Live2D、语音及工程卡片尚未接入。</p></div></dialog>
+<dialog id="about"><div class="dialog-head"><div><div class="eyebrow">ABOUT</div><h2>关于 Yuki Link Desktop</h2></div><button class="close" data-close="about" aria-label="关闭">×</button></div><div class="dialog-body"><p>这是独立的 Emilia 文字陪伴桌面应用。</p><p>部分 Electron 与文字陪伴实现改编自 AAAAGENT，固定来源提交 <code>2752349bcc7f7137b8b9e4ff9cccf34026d77aad</code>。原作者及贡献者保留版权；本版本已作修改。</p><p>AAAAGENT 为仅限非商业使用并要求署名的源码公开项目。</p><h3>完整许可与修改说明</h3><pre id="license">正在加载…</pre></div></dialog>
+<script type="module" src="renderer.js"></script></body></html>

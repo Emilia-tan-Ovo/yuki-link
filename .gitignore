@@ -20,6 +20,7 @@ __pycache__/
 *.py[cod]
 node_modules/
 tools/codex-session-bridge/dist/
+tools/companion-desktop/dist/
 .idea/
 .vscode/
 .DS_Store

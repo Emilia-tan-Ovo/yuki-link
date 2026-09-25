@@ -1,0 +1,26 @@
+{
+  "name": "yuki-link-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "desktop/electron/main.mjs",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check desktop/electron/main.mjs && node --check desktop/renderer.js && node --check backend/session.mjs",
+    "package:win": "electron-builder --win nsis --x64",
+    "smoke:packaged": "node test/packaged-smoke.mjs"
+  },
+  "devDependencies": {
+    "electron": "44.4.1",
+    "electron-builder": "26.0.12"
+  },
+  "build": {
+    "appId": "dev.yuki.link.desktop",
+    "productName": "Yuki Link Desktop",
+    "directories": { "output": "dist" },
+    "files": ["desktop/**/*", "backend/**/*", "package.json", "THIRD_PARTY_NOTICES.md"],
+    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "signAndEditExecutable": false },
+    "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true },
+    "artifactName": "Yuki-Link-Desktop-${version}-${arch}.${ext}"
+  }
+}
