@@ -75,3 +75,23 @@ test('persona load, save, reset and failure keep draft separate from chat state'
   deliver({ type: 'persona', action: 'reset', roleCard: { schemaVersion: 1, text: '默认卡' } });
   assert.equal(element('role-card').value, '默认卡');
 });
+
+test('reset commits the default without overwriting edits made while pending; later save commits the draft', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'persona', action: 'load', roleCard: { schemaVersion: 1, text: '卡 A' } });
+  element('role-card-reset').onclick();
+  assert.equal(sent.at(-1)[0], 'persona-reset');
+
+  element('role-card').value = '新草稿';
+  element('role-card').input();
+  deliver({ type: 'persona', action: 'reset', roleCard: { schemaVersion: 1, text: '默认卡' } });
+  assert.equal(element('role-card').value, '新草稿');
+  assert.match(element('role-card-status').textContent, /默认卡已保存.*下一条.*当前草稿未保存/);
+
+  element('role-card-save').onclick();
+  assert.equal(sent.at(-1)[0], 'persona-save');
+  assert.equal(sent.at(-1)[1].text, '新草稿');
+  deliver({ type: 'persona', action: 'save', roleCard: { schemaVersion: 1, text: '新草稿' } });
+  assert.equal(element('role-card').value, '新草稿');
+  assert.match(element('role-card-status').textContent, /角色卡已保存/);
+});

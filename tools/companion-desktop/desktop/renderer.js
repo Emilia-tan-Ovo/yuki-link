@@ -1,6 +1,7 @@
 const $ = id => document.getElementById(id);
 let generation = 0, service = 'connecting', busy = false, pendingGeneration = null, messages = [];
 let personaPending = null;
+let personaDraftVersion = 0, personaPendingVersion = null;
 const host = window.yukiDesktop;
 const label = { connecting: '正在连接', unconfigured: '未配置 DeepSeek', configured: '已配置 · 待验证', verified: 'DeepSeek 已验证', unknown: 'DeepSeek 状态待确认', 'offline-preview': '离线预览 · 非真实回复', disconnected: '服务已断开' };
 function state(next) {
@@ -47,11 +48,13 @@ host.subscribe(message => {
       personaBusy(false);
       if (message.error) personaStatus(message.error + ' 草稿仍保留，原角色卡继续生效。');
       else {
-        if (message.action === 'reset' || $('role-card').value === personaPending) $('role-card').value = message.roleCard.text;
+        const resetDraftChanged = message.action === 'reset' && personaDraftVersion !== personaPendingVersion;
+        if (!resetDraftChanged && (message.action === 'reset' || $('role-card').value === personaPending)) $('role-card').value = message.roleCard.text;
         roleCardCount();
-        personaStatus(message.action === 'reset' ? '已恢复并保存默认角色卡。' : '角色卡已保存，将从下一条发送开始生效。');
+        personaStatus(resetDraftChanged ? '默认卡已保存，将用于下一条；当前草稿未保存。' : message.action === 'reset' ? '已恢复并保存默认角色卡。' : '角色卡已保存，将从下一条发送开始生效。');
       }
       personaPending = null;
+      personaPendingVersion = null;
     }
   }
 });
@@ -61,9 +64,9 @@ $('credential').onclick = () => host.send('credential');
 $('workbench-save').onclick = () => host.send('workbench-save', $('workbench-url').value.trim());
 $('workbench-open').onclick = () => host.send('workbench-open');
 for (const id of ['settings', 'about']) { $(id + '-open').onclick = () => { $(id).showModal(); if (id === 'settings') host.send('persona-load'); }; }
-$('role-card').addEventListener('input', () => { roleCardCount(); personaStatus('草稿尚未保存。'); });
+$('role-card').addEventListener('input', () => { personaDraftVersion++; roleCardCount(); personaStatus('草稿尚未保存。'); });
 $('role-card-save').onclick = () => { if (personaPending !== null) return; personaPending = $('role-card').value; personaBusy(true); personaStatus('正在保存角色卡…'); host.send('persona-save', { schemaVersion: 1, text: personaPending }); };
-$('role-card-reset').onclick = () => { if (personaPending !== null) return; personaPending = $('role-card').value; personaBusy(true); personaStatus('正在恢复默认角色卡…'); host.send('persona-reset'); };
+$('role-card-reset').onclick = () => { if (personaPending !== null) return; personaPending = $('role-card').value; personaPendingVersion = personaDraftVersion; personaBusy(true); personaStatus('正在恢复默认角色卡…'); host.send('persona-reset'); };
 document.querySelectorAll('[data-close]').forEach(button => button.onclick = () => $(button.dataset.close).close());
 $('about-open').addEventListener('click', async () => { try { $('license').textContent = await (await fetch('yuki://app/AAAAGENT-LICENSE.txt')).text(); } catch { $('license').textContent = '许可文件暂时无法读取。'; } });
 host.send('ready');
