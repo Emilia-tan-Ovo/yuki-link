@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-let generation = 0, service = 'connecting', busy = false, messages = [];
+let generation = 0, service = 'connecting', busy = false, pendingGeneration = null, messages = [];
 const host = window.yukiDesktop;
 const label = { connecting: '正在连接', unconfigured: '未配置 DeepSeek', configured: '已配置 · 待验证', verified: 'DeepSeek 已验证', 'offline-preview': '离线预览 · 非真实回复', disconnected: '服务已断开' };
 function state(next) {
@@ -29,14 +29,14 @@ function render() {
 function notice(text) { $('notice').textContent = text || ''; }
 host.subscribe(message => {
   if (message.type === 'connection') { generation = message.generation; state('connecting'); $('workbench-url').value = message.workbenchUrl || ''; host.send('workbench-check'); }
-  if (message.type === 'ready') { generation = message.generation; messages = message.history; render(); state(message.status.service); notice(''); }
-  if (message.type === 'reply') { messages.push(...message.messages); render(); busy = false; $('text').value = ''; state(message.status.service); notice(''); $('text').focus(); }
-  if (message.type === 'error') { busy = false; state(service); notice(message.message); }
-  if (message.type === 'disconnected') { busy = false; state('disconnected'); notice('文字服务已断开，请重新打开应用。'); }
+  if (message.type === 'ready') { const interrupted = busy && pendingGeneration !== message.generation; generation = message.generation; messages = message.history; render(); if (interrupted) { busy = false; pendingGeneration = null; } state(message.status.service); notice(interrupted ? '连接已更新，上一条未完成的发送已中断，请重新发送。' : ''); }
+  if (message.type === 'reply') { messages.push(...message.messages); render(); busy = false; pendingGeneration = null; $('text').value = ''; state(message.status.service); notice(''); $('text').focus(); }
+  if (message.type === 'error') { busy = false; pendingGeneration = null; state(service); notice(message.message); }
+  if (message.type === 'disconnected') { busy = false; pendingGeneration = null; state('disconnected'); notice('文字服务已断开，请重新打开应用。'); }
   if (message.type === 'notice') notice(message.text);
   if (message.type === 'workbench') { const text = message.error || (!message.configured ? '尚未设置本机入口' : message.reachable ? '本机工作台可访问' : '已设置，当前不可达'); $('workbench-state').textContent = text; $('workbench-detail').textContent = text; }
 });
-$('form').addEventListener('submit', event => { event.preventDefault(); const text = $('text').value.trim(); if (!text || busy || $('text').disabled) return; busy = true; $('send').disabled = true; $('text').disabled = true; notice('正在等待 Emilia 回复…'); host.send('submit', { generation, id: crypto.randomUUID(), text }); });
+$('form').addEventListener('submit', event => { event.preventDefault(); const text = $('text').value.trim(); if (!text || busy || $('text').disabled) return; busy = true; pendingGeneration = generation; $('send').disabled = true; $('text').disabled = true; notice('正在等待 Emilia 回复…'); host.send('submit', { generation, id: crypto.randomUUID(), text }); });
 $('text').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('form').requestSubmit(); } });
 $('credential').onclick = () => host.send('credential');
 $('workbench-save').onclick = () => host.send('workbench-save', $('workbench-url').value.trim());
