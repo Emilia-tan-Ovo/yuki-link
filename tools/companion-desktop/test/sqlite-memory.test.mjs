@@ -61,6 +61,20 @@ test('displayHistory keeps rows and reasoning when stored metadata is malformed 
   store.close();
 });
 
+test('v2 reopen rejects a memory table with columns but no state enum constraint', async t => {
+  const dir = await fixture(t);
+  const store = new SqliteMemoryStore(dir); store.close();
+  const db = new DatabaseSync(join(dir, 'conversation.sqlite'));
+  const sql = db.prepare("SELECT sql FROM sqlite_master WHERE name='companion_memories'").get().sql;
+  db.exec('DROP TABLE companion_memories');
+  db.exec(sql.replace("CHECK(state IN ('active','superseded','forgotten'))", 'CHECK(length(state)>0)'));
+  db.close();
+  assert.throws(() => new SqliteMemoryStore(dir), /版本与结构不一致/);
+  const check = new DatabaseSync(join(dir, 'conversation.sqlite'));
+  assert.equal(check.prepare('PRAGMA user_version').get().user_version, 2);
+  check.close();
+});
+
 test('v1 migrates to v2, correction and forgetting cut model history while keeping display history', async t => {
   const dir = await fixture(t);
   const db = new DatabaseSync(join(dir, 'conversation.sqlite'));
@@ -104,5 +118,13 @@ test('recall is active-only, relevant and bounded to five stable entries', async
   assert.equal(result.entries.length, 5);
   assert.ok(result.entries.every(entry => entry.text.includes('红茶')));
   assert.deepEqual(store.recall('天气').entries, []);
+  store.close();
+});
+
+test('generic Chinese preference fragments alone do not recall an unrelated fact', async t => {
+  const store = new SqliteMemoryStore(await fixture(t));
+  store.remember({ text: '喜欢红茶', sourceKind: 'explicit_chat' });
+  assert.deepEqual(store.recall('我喜欢蓝色').entries, []);
+  assert.equal(store.recall('我喜欢红茶').entries.length, 1);
   store.close();
 });

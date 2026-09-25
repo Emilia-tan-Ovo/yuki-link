@@ -8,15 +8,21 @@ function memoryText(value) {
   if (!validText(value)) throw Error('陪伴记忆请输入不超过 300 字的有效文本。');
   return value.trim();
 }
+const genericHanTerms = new Set(['喜欢', '想要', '记得', '今天']);
 function terms(value) {
   const parts = value.toLowerCase().match(/[\p{Script=Han}]+|[a-z0-9]+/gu) ?? [];
   const result = new Set();
   for (const part of parts) {
     if (/^[a-z0-9]+$/u.test(part)) { if (part.length >= 2) result.add(part); }
-    else for (let i = 0; i < part.length - 1; i++) result.add(part.slice(i, i + 2));
+    else for (let i = 0; i < part.length - 1; i++) { const term = part.slice(i, i + 2); if (!genericHanTerms.has(term)) result.add(term); }
   }
   return result;
 }
+
+const memoryTableSql = "CREATE TABLE companion_memories (id TEXT PRIMARY KEY, text TEXT, topic TEXT, state TEXT NOT NULL CHECK(state IN ('active','superseded','forgotten')), source_kind TEXT NOT NULL CHECK(source_kind IN ('explicit_chat','selected_user_message')), source_ref TEXT NOT NULL CHECK(length(source_ref) BETWEEN 1 AND 100), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, supersedes_id TEXT REFERENCES companion_memories(id), CHECK((state='active' AND text IS NOT NULL AND length(trim(text)) BETWEEN 1 AND 300) OR (state<>'active' AND text IS NULL AND topic IS NULL)))";
+const activeIndexSql = 'CREATE INDEX companion_memories_active ON companion_memories(state, updated_at, id)';
+const supersedesIndexSql = 'CREATE INDEX companion_memories_supersedes ON companion_memories(supersedes_id)';
+const contextTableSql = 'CREATE TABLE companion_context (singleton INTEGER PRIMARY KEY CHECK(singleton=1), recent_context_after_rowid INTEGER NOT NULL CHECK(recent_context_after_rowid>=0))';
 
 const metadataKeys = new Set(['source', 'requestedThinking', 'requestModel', 'responseModel', 'fullResponseMs', 'finishReason', 'reasoningTruncated']);
 function displayMetadata(value) {
@@ -62,14 +68,12 @@ export class SqliteMemoryStore {
       if (version < 2) {
         this.db.exec('BEGIN');
         try {
-          this.db.exec("CREATE TABLE companion_memories (id TEXT PRIMARY KEY, text TEXT, topic TEXT, state TEXT NOT NULL CHECK(state IN ('active','superseded','forgotten')), source_kind TEXT NOT NULL CHECK(source_kind IN ('explicit_chat','selected_user_message')), source_ref TEXT NOT NULL CHECK(length(source_ref) BETWEEN 1 AND 100), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, supersedes_id TEXT REFERENCES companion_memories(id), CHECK((state='active' AND text IS NOT NULL AND length(trim(text)) BETWEEN 1 AND 300) OR (state<>'active' AND text IS NULL AND topic IS NULL))); CREATE INDEX companion_memories_active ON companion_memories(state, updated_at, id); CREATE INDEX companion_memories_supersedes ON companion_memories(supersedes_id); CREATE TABLE companion_context (singleton INTEGER PRIMARY KEY CHECK(singleton=1), recent_context_after_rowid INTEGER NOT NULL CHECK(recent_context_after_rowid>=0)); INSERT INTO companion_context VALUES (1,0); PRAGMA user_version = 2; COMMIT");
+          this.db.exec(`${memoryTableSql}; ${activeIndexSql}; ${supersedesIndexSql}; ${contextTableSql}; INSERT INTO companion_context VALUES (1,0); PRAGMA user_version = 2; COMMIT`);
         } catch (error) { this.db.exec('ROLLBACK'); throw error; }
       } else {
-        const memoryColumns = this.db.prepare('PRAGMA table_info(companion_memories)').all().map(row => row.name);
-        const contextColumns = this.db.prepare('PRAGMA table_info(companion_context)').all().map(row => row.name);
-        const memorySql = this.db.prepare("SELECT sql FROM sqlite_master WHERE name='companion_memories'").get().sql;
-        const contextSql = this.db.prepare("SELECT sql FROM sqlite_master WHERE name='companion_context'").get().sql;
-        if (['id','text','topic','state','source_kind','source_ref','created_at','updated_at','supersedes_id'].some(name => !memoryColumns.includes(name)) || !['singleton','recent_context_after_rowid'].every(name => contextColumns.includes(name)) || !memorySql.includes("CHECK((state='active' AND text IS NOT NULL AND length(trim(text)) BETWEEN 1 AND 300)") || !contextSql.includes('CHECK(recent_context_after_rowid>=0)') || !this.db.prepare('SELECT 1 FROM companion_context WHERE singleton=1').get() || this.db.prepare('SELECT COUNT(*) AS n FROM companion_context').get().n !== 1) throw Error('对话数据库版本与结构不一致。');
+        const expectedSql = [memoryTableSql, activeIndexSql, supersedesIndexSql, contextTableSql];
+        const actualSql = this.db.prepare("SELECT sql FROM sqlite_master WHERE name IN ('companion_memories','companion_memories_active','companion_memories_supersedes','companion_context')").all().map(row => row.sql);
+        if (expectedSql.some(sql => !actualSql.includes(sql)) || actualSql.length !== expectedSql.length || !this.db.prepare('SELECT 1 FROM companion_context WHERE singleton=1').get() || this.db.prepare('SELECT COUNT(*) AS n FROM companion_context').get().n !== 1) throw Error('对话数据库版本与结构不一致。');
       }
     } catch (error) { this.db.close(); throw error; }
   }

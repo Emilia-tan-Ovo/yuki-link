@@ -2,6 +2,7 @@ const $ = id => document.getElementById(id);
 let generation = 0, service = 'connecting', busy = false, pendingGeneration = null, messages = [];
 let personaPending = null;
 let memoryPending = null, memorySource = null;
+let memoryRefreshId = null;
 let thinkingCommitted = null, thinkingPending = null, thinkingDesired = null;
 let thinkingDraftVersion = 0;
 let thinkingSyncedVersion = 0, thinkingHasSaved = false;
@@ -99,15 +100,15 @@ function renderMemories(entries) {
   target.value = entries.some(entry => entry.id === selected) ? selected : '';
 }
 host.subscribe(message => {
-  if (message.type === 'connection') { generation = message.generation; memoryPending = null; memoryBusy(false); $('memory-status').textContent = '连接已更新，请重新读取有效记忆。'; state('connecting'); $('workbench-url').value = message.workbenchUrl || ''; host.send('workbench-check'); }
+  if (message.type === 'connection') { generation = message.generation; memoryPending = null; memoryRefreshId = null; memoryBusy(false); renderMemories([]); $('memory-target').disabled = true; $('memory-status').textContent = '有效记忆待重新读取。'; state('connecting'); $('workbench-url').value = message.workbenchUrl || ''; host.send('workbench-check'); }
   if (message.type !== 'ready' && message.generation !== undefined && message.generation !== generation) return;
-  if (message.type === 'ready') { const interrupted = busy && pendingGeneration !== message.generation; generation = message.generation; messages = message.history; render(); if (interrupted) { busy = false; pendingGeneration = null; } state(message.status.service); notice(interrupted ? '连接已更新，上一条未完成的发送已中断，请重新发送。' : ''); }
+  if (message.type === 'ready') { const interrupted = busy && pendingGeneration !== message.generation; generation = message.generation; messages = message.history; render(); if (interrupted) { busy = false; pendingGeneration = null; } state(message.status.service); notice(interrupted ? '连接已更新，上一条未完成的发送已中断，请重新发送。' : ''); if ($('memory-target').disabled) { memoryRefreshId = crypto.randomUUID(); host.send('memory', { generation, id: memoryRefreshId, action: 'list' }); } }
   if (message.type === 'reply') { messages.push(...message.messages); render(); busy = false; pendingGeneration = null; $('text').value = ''; state(message.status.service); notice(''); $('text').focus(); }
   if (message.type === 'error') { busy = false; pendingGeneration = null; state(message.status?.service || service); notice(message.message); }
   if (message.type === 'disconnected') { busy = false; pendingGeneration = null; state('disconnected'); notice('文字服务已断开，请重新打开应用。'); }
   if (message.type === 'notice') notice(message.text);
   if (message.type === 'memory' || message.type === 'memory-error') {
-    if (message.action === 'list' && message.type === 'memory') { renderMemories(message.entries); if (!memoryPending) $('memory-status').textContent = message.entries.length ? '当前有效记忆已读取。' : '暂无有效陪伴记忆。'; }
+    if (message.action === 'list' && message.type === 'memory') { if (!$('memory-target').disabled || message.id === memoryRefreshId) { renderMemories(message.entries); $('memory-target').disabled = false; memoryRefreshId = null; if (!memoryPending) $('memory-status').textContent = message.entries.length ? '当前有效记忆已读取。' : '暂无有效陪伴记忆。'; } }
     else if (memoryPending && (!message.id || message.id === memoryPending.id)) {
       const pending = memoryPending; memoryPending = null; memoryBusy(false);
       if (message.type === 'memory-error') { $('memory-status').textContent = message.message; if (pending.action === 'remember') notice(message.message); }
@@ -173,7 +174,7 @@ host.subscribe(message => {
 });
 $('form').addEventListener('submit', event => { event.preventDefault(); const text = $('text').value.trim(); if (!text || busy || memoryPending || $('text').disabled || !thinkingCommitted || thinkingPending) return;
   if (/^记住\s*[:：]/u.test(text)) { const fact = text.replace(/^记住\s*[:：]/u, '').trim(); if (!fact || fact.length > 300) { notice('请在“记住：”后填写不超过 300 字的简短事实。'); return; } memoryCommand('remember', { text: fact, sourceKind: 'explicit_chat' }, true); return; }
-  if (/记住|忘记记忆|更正记忆/u.test(text)) { $('settings').showModal(); host.send('memory', { generation, id: crypto.randomUUID(), action: 'list' }); notice('请在陪伴记忆管理区明确填写事实或选择目标后提交。'); return; }
+  if (/记住|忘记记忆|更正记忆|(?:忘掉|忘记|纠正|更正).*(?:我|记忆|偏好|喜欢)|(?:偏好|记忆|喜欢).*(?:忘掉|忘记|纠正|更正)/u.test(text)) { $('settings').showModal(); host.send('memory', { generation, id: crypto.randomUUID(), action: 'list' }); notice('请在陪伴记忆管理区明确填写事实或选择目标后提交。'); return; }
   busy = true; pendingGeneration = generation; $('send').disabled = true; $('text').disabled = true; notice('正在等待 Emilia 回复…'); host.send('submit', { generation, id: crypto.randomUUID(), text }); });
 $('text').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('form').requestSubmit(); } });
 $('credential').onclick = () => host.send('credential');

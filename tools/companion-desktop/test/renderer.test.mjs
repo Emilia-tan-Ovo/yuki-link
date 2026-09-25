@@ -282,6 +282,42 @@ test('ambiguous memory text opens management; selected user message needs edited
   assert.equal(sent.at(-1)[1].sourceKind, 'selected_user_message');
 });
 
+test('ambiguous forget and correction requests stay in local memory management', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  deliver({ type: 'ready', generation: 1, history: [], status: { service: 'offline-preview' } });
+  for (const phrase of ['忘掉我喜欢红茶', '忘记我喜欢红茶', '纠正一下我的偏好']) {
+    element('text').value = phrase; element('form').requestSubmit();
+    assert.equal(sent.filter(x => x[0] === 'submit').length, 0, phrase);
+    assert.equal(sent.at(-1)[1].action, 'list');
+    assert.match(element('notice').textContent, /选择目标/);
+  }
+});
+
+test('open memory settings invalidates old options on reconnect and refreshes on new ready', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'ready', generation: 1, history: [], status: { service: 'offline-preview' } });
+  element('settings-open').onclick();
+  const oldRequest = sent.findLast(x => x[0] === 'memory')[1];
+  deliver({ type: 'memory', generation: 1, id: oldRequest.id, action: 'list', entries: [{ id: 'old', text: '喜欢红茶' }] });
+  assert.equal(element('memory-target').children.length, 2);
+  deliver({ type: 'connection', generation: 2 });
+  assert.equal(element('memory-target').children.length, 1);
+  assert.equal(element('memory-target').disabled, true);
+  assert.match(element('memory-status').textContent, /待重新读取/);
+  deliver({ type: 'memory', generation: 1, id: oldRequest.id, action: 'list', entries: [{ id: 'old', text: '喜欢红茶' }] });
+  assert.equal(element('memory-target').children.length, 1);
+  deliver({ type: 'ready', generation: 2, history: [], status: { service: 'offline-preview' } });
+  const newRequest = sent.findLast(x => x[0] === 'memory')[1];
+  assert.equal(newRequest.action, 'list');
+  assert.equal(newRequest.generation, 2);
+  deliver({ type: 'memory', generation: 1, id: oldRequest.id, action: 'list', entries: [{ id: 'old', text: '喜欢红茶' }] });
+  assert.equal(element('memory-target').disabled, true);
+  deliver({ type: 'memory', generation: 2, id: newRequest.id, action: 'list', entries: [{ id: 'new', text: '喜欢绿茶' }] });
+  assert.equal(element('memory-target').disabled, false);
+  assert.equal(element('memory-target').children[1].value, 'new');
+});
+
 test('correct and forget only display success after matching committed replies', () => {
   const { element, sent, deliver } = harness();
   deliver({ type: 'ready', generation: 1, history: [], status: { service: 'offline-preview' } });
