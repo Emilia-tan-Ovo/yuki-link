@@ -17,6 +17,7 @@ test('composer keeps Core and runtime trusted, source-labelled context ordinary,
   ]);
   assert.deepEqual(result.provenance, { coreVersion: 1, roleCardVersion: 1, memoryIds: [], recentCount: 2 });
   assert.match(result.messages[0].content, /艾米莉亚/);
+  assert.match(result.messages[0].content, /普通对话回复不得声称这些操作已成功/);
   assert.match(result.messages[0].content, /configured/);
   assert.match(result.messages[1].content, /Role Card V1.*用户提供/s);
   assert.match(result.messages[1].content, /Companion Memory.*无已注入记忆/s);

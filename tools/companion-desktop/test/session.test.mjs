@@ -158,3 +158,42 @@ test('reasoning truncation retains complete UTF-8 code points at the 256 KiB bou
     session.close();
   }
 });
+
+test('explicit memory reaches composer, correction removes old prompt context, and reopening preserves forgetting', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'yuki-companion-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const seen = [];
+  const provider = async ({ messages }) => { seen.push(JSON.stringify(messages)); return { content: '收到', reasoningContent: 'PRIVATE_REASONING', metadata: null }; };
+  let session = new BackendSession({ directory: dir, provider });
+  await session.submit('我以前喜欢红茶');
+  const old = session.remember({ text: '喜欢红茶', sourceKind: 'explicit_chat' });
+  await session.submit('红茶呢');
+  assert.match(seen.at(-1), /喜欢红茶/);
+  assert.doesNotMatch(seen.at(-1), /PRIVATE_REASONING/);
+  assert.equal(session.runtimeCapabilities().memoryManagement, true);
+  const fresh = session.correctMemory(old.id, '喜欢绿茶');
+  await session.submit('绿茶呢');
+  assert.match(seen.at(-1), /喜欢绿茶/);
+  assert.doesNotMatch(seen.at(-1), /红茶/);
+  session.close(); session = new BackendSession({ directory: dir, provider });
+  assert.ok(session.displayHistory().length >= 2);
+  session.forgetMemory(fresh.id);
+  await session.submit('绿茶呢');
+  assert.doesNotMatch(seen.at(-1), /喜欢绿茶/);
+  session.close();
+});
+
+test('memory commands reject provider busy and unrelated facts do not enter prompt', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'yuki-companion-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  let release;
+  const seen = [];
+  const session = new BackendSession({ directory: dir, provider: async ({ messages }) => { seen.push(JSON.stringify(messages)); await new Promise(resolve => { release = resolve; }); return { content: '好' }; } });
+  const entry = session.remember({ text: '喜欢红茶', sourceKind: 'explicit_chat' });
+  const pending = session.submit('谈谈天气');
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  assert.doesNotMatch(seen[0], /喜欢红茶/);
+  assert.throws(() => session.forgetMemory(entry.id), /上一条/);
+  assert.equal(session.listMemories().length, 1);
+  release(); await pending; session.close();
+});
