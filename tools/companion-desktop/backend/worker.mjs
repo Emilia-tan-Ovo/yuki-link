@@ -11,14 +11,14 @@ port.on('message', async ({ data }) => {
       session = new BackendSession({ directory: data.directory, provider: data.preview ? previewProvider() : deepSeekProvider(data.key), mode: data.preview ? 'preview' : 'real' });
       post({ type: 'ready', status: session.status(), history: session.history() });
     } else if (data?.type === 'submit' && session && typeof data.text === 'string') {
-      const result = await session.submit(data.text);
+      const result = await session.submit(data.text, data.roleCard);
       post({ type: 'reply', id: data.id, ...result });
     } else if (data?.type === 'close') {
       session?.close(); session = undefined; post({ type: 'closed' });
     }
   } catch (error) {
     // No command bodies or credentials in diagnostics or UI.
-    const known = error instanceof Error && /^(请输入|DeepSeek|文字服务|上一条)/.test(error.message);
-    post({ type: 'error', id: data?.id, message: known ? error.message : '这次文字交流没有完成，请检查网络或稍后重试。' });
+    const known = error instanceof Error && /^(请输入|DeepSeek|文字服务|上一条|角色卡|记忆输入|对话输入)/.test(error.message);
+    post({ type: 'error', id: data?.id, status: session?.status(), message: known ? error.message : '这次文字交流没有完成，请检查网络或稍后重试。' });
   }
 });
