@@ -31,7 +31,7 @@ test('new backend ready interrupts the old send and keeps its draft', () => {
 
   deliver({ type: 'connection', generation: 1 });
   deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
-  element('text').value = '请记住这条草稿';
+  element('text').value = '这条草稿';
   element('form').requestSubmit();
   assert.equal(sent.at(-1)[1].generation, 1);
   assert.equal(element('text').disabled, true);
@@ -41,7 +41,7 @@ test('new backend ready interrupts the old send and keeps its draft', () => {
   deliver({ type: 'ready', generation: 2, history: [], status: { service: 'configured' } });
   assert.equal(element('text').disabled, false);
   assert.equal(element('send').disabled, false);
-  assert.equal(element('text').value, '请记住这条草稿');
+  assert.equal(element('text').value, '这条草稿');
   assert.match(element('notice').textContent, /上一条未完成的发送已中断/);
 
   element('form').requestSubmit();
@@ -239,4 +239,109 @@ test('reset commits the default without overwriting edits made while pending; la
   deliver({ type: 'persona', action: 'save', roleCard: { schemaVersion: 1, text: '新草稿' } });
   assert.equal(element('role-card').value, '新草稿');
   assert.match(element('role-card-status').textContent, /角色卡已保存/);
+});
+
+test('explicit remember waits for committed worker reply; management correct/forget and reconnect keep draft honest', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  deliver({ type: 'ready', generation: 1, history: [], status: { service: 'offline-preview' } });
+  element('text').value = '记住：喜欢红茶'; element('form').requestSubmit();
+  assert.equal(sent.at(-1)[0], 'memory');
+  assert.equal(sent.at(-1)[1].action, 'remember');
+  assert.equal(sent.filter(x => x[0] === 'submit').length, 0);
+  assert.doesNotMatch(element('notice').textContent, /已记住/);
+  deliver({ type: 'memory', generation: 1, action: 'remember', entry: { id: 'm1', text: '喜欢红茶' }, entries: [{ id: 'm1', text: '喜欢红茶' }] });
+  assert.match(element('notice').textContent, /已记住/);
+  assert.equal(element('text').value, '');
+  element('settings-open').onclick();
+  element('memory-target').value = 'm1'; element('memory-text').value = '喜欢绿茶'; element('memory-correct').onclick();
+  assert.equal(sent.at(-1)[1].action, 'correct');
+  assert.doesNotMatch(element('memory-status').textContent, /已更正/);
+  deliver({ type: 'memory-error', generation: 1, message: '保存失败' });
+  assert.match(element('memory-status').textContent, /保存失败/);
+  assert.equal(element('memory-text').value, '喜欢绿茶');
+  element('memory-correct').onclick();
+  deliver({ type: 'connection', generation: 2 });
+  deliver({ type: 'memory', generation: 1, action: 'correct', entries: [] });
+  assert.doesNotMatch(element('memory-status').textContent, /已更正/);
+  deliver({ type: 'ready', generation: 2, history: [], status: { service: 'offline-preview' } });
+});
+
+test('ambiguous memory text opens management; selected user message needs edited fact', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  deliver({ type: 'ready', generation: 1, history: [{ id: 'user-1', role: 'user', text: '很长的聊天', createdAt: '2026-01-01' }], status: { service: 'offline-preview' } });
+  element('text').value = '请帮我记住这个'; element('form').requestSubmit();
+  assert.equal(sent.filter(x => x[0] === 'submit').length, 0);
+  assert.match(element('notice').textContent, /明确填写/);
+  const item = element('messages').children.find(x => x.tag === 'article');
+  item.children[1].children.find(x => x.className === 'memory-pick').onclick();
+  assert.equal(element('memory-text').value, '');
+  element('memory-text').value = '喜欢绿茶'; element('memory-add').onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(sent.at(-1)[1])).sourceRef, 'user-1');
+  assert.equal(sent.at(-1)[1].sourceKind, 'selected_user_message');
+});
+
+test('ambiguous forget and correction requests stay in local memory management', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  deliver({ type: 'ready', generation: 1, history: [], status: { service: 'offline-preview' } });
+  for (const phrase of ['忘掉我喜欢红茶', '忘记我喜欢红茶', '纠正一下我的偏好']) {
+    element('text').value = phrase; element('form').requestSubmit();
+    assert.equal(sent.filter(x => x[0] === 'submit').length, 0, phrase);
+    assert.equal(sent.at(-1)[1].action, 'list');
+    assert.match(element('notice').textContent, /选择目标/);
+  }
+});
+
+test('open memory settings invalidates old options on reconnect and refreshes on new ready', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'ready', generation: 1, history: [], status: { service: 'offline-preview' } });
+  element('settings-open').onclick();
+  const oldRequest = sent.findLast(x => x[0] === 'memory')[1];
+  deliver({ type: 'memory', generation: 1, id: oldRequest.id, action: 'list', entries: [{ id: 'old', text: '喜欢红茶' }] });
+  assert.equal(element('memory-target').children.length, 2);
+  deliver({ type: 'connection', generation: 2 });
+  assert.equal(element('memory-target').children.length, 1);
+  assert.equal(element('memory-target').disabled, true);
+  assert.match(element('memory-status').textContent, /待重新读取/);
+  deliver({ type: 'memory', generation: 1, id: oldRequest.id, action: 'list', entries: [{ id: 'old', text: '喜欢红茶' }] });
+  assert.equal(element('memory-target').children.length, 1);
+  deliver({ type: 'ready', generation: 2, history: [], status: { service: 'offline-preview' } });
+  const newRequest = sent.findLast(x => x[0] === 'memory')[1];
+  assert.equal(newRequest.action, 'list');
+  assert.equal(newRequest.generation, 2);
+  deliver({ type: 'memory', generation: 1, id: oldRequest.id, action: 'list', entries: [{ id: 'old', text: '喜欢红茶' }] });
+  assert.equal(element('memory-target').disabled, true);
+  deliver({ type: 'memory', generation: 2, id: newRequest.id, action: 'list', entries: [{ id: 'new', text: '喜欢绿茶' }] });
+  assert.equal(element('memory-target').disabled, false);
+  assert.equal(element('memory-target').children[1].value, 'new');
+});
+
+test('correct and forget only display success after matching committed replies', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'ready', generation: 1, history: [], status: { service: 'offline-preview' } });
+  deliver({ type: 'memory', generation: 1, action: 'list', entries: [{ id: 'old', text: '喜欢红茶' }] });
+  element('memory-target').value = 'old'; element('memory-text').value = '喜欢绿茶'; element('memory-correct').onclick();
+  assert.equal(sent.at(-1)[1].action, 'correct');
+  assert.doesNotMatch(element('memory-status').textContent, /已更正/);
+  deliver({ type: 'memory', generation: 1, id: 'request-1', action: 'correct', entries: [{ id: 'new', text: '喜欢绿茶' }] });
+  assert.match(element('memory-status').textContent, /已更正/);
+  assert.equal(element('memory-text').value, '');
+  element('memory-target').value = 'new'; element('memory-forget').onclick();
+  assert.equal(sent.at(-1)[1].action, 'forget');
+  deliver({ type: 'memory', generation: 1, id: 'request-1', action: 'forget', entries: [] });
+  assert.match(element('memory-status').textContent, /已从本机有效陪伴记忆移除/);
+});
+
+test('ordinary correction chat is not hijacked by memory management', () => {
+  for (const phrase of ['请纠正我的代码', '纠正我的英语发音']) {
+    const { element, sent, deliver } = harness();
+    deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+    deliver({ type: 'ready', generation: 1, history: [], status: { service: 'offline-preview' } });
+    element('text').value = phrase;
+    element('form').requestSubmit();
+    assert.equal(sent.at(-1)[0], 'submit', phrase);
+    assert.equal(sent.at(-1)[1].text, phrase);
+  }
 });

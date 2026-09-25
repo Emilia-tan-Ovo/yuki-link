@@ -1,6 +1,28 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
+
+const validText = value => typeof value === 'string' && !!value.trim() && value.trim().length <= 300 && !/[\u0000-\u001f\u007f]/u.test(value);
+function memoryText(value) {
+  if (!validText(value)) throw Error('陪伴记忆请输入不超过 300 字的有效文本。');
+  return value.trim();
+}
+const genericHanTerms = new Set(['喜欢', '想要', '记得', '今天']);
+function terms(value) {
+  const parts = value.toLowerCase().match(/[\p{Script=Han}]+|[a-z0-9]+/gu) ?? [];
+  const result = new Set();
+  for (const part of parts) {
+    if (/^[a-z0-9]+$/u.test(part)) { if (part.length >= 2) result.add(part); }
+    else { const normalized = part.startsWith('我的') ? part.slice(2) : part.startsWith('我') ? part.slice(1) : part; for (let i = 0; i < normalized.length - 1; i++) { const term = normalized.slice(i, i + 2); if (!genericHanTerms.has(term)) result.add(term); } }
+  }
+  return result;
+}
+
+const memoryTableSql = "CREATE TABLE companion_memories (id TEXT PRIMARY KEY, text TEXT, topic TEXT, state TEXT NOT NULL CHECK(state IN ('active','superseded','forgotten')), source_kind TEXT NOT NULL CHECK(source_kind IN ('explicit_chat','selected_user_message')), source_ref TEXT NOT NULL CHECK(length(source_ref) BETWEEN 1 AND 100), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, supersedes_id TEXT REFERENCES companion_memories(id), CHECK((state='active' AND text IS NOT NULL AND length(trim(text)) BETWEEN 1 AND 300) OR (state<>'active' AND text IS NULL AND topic IS NULL)))";
+const activeIndexSql = 'CREATE INDEX companion_memories_active ON companion_memories(state, updated_at, id)';
+const supersedesIndexSql = 'CREATE INDEX companion_memories_supersedes ON companion_memories(supersedes_id)';
+const contextTableSql = 'CREATE TABLE companion_context (singleton INTEGER PRIMARY KEY CHECK(singleton=1), recent_context_after_rowid INTEGER NOT NULL CHECK(recent_context_after_rowid>=0))';
 
 const metadataKeys = new Set(['source', 'requestedThinking', 'requestModel', 'responseModel', 'fullResponseMs', 'finishReason', 'reasoningTruncated']);
 function displayMetadata(value) {
@@ -23,14 +45,18 @@ export class SqliteMemoryStore {
     mkdirSync(directory, { recursive: true });
     this.db = new DatabaseSync(join(directory, 'conversation.sqlite'));
     try {
+      this.db.exec('PRAGMA foreign_keys = ON');
       const version = this.db.prepare('PRAGMA user_version').get().user_version;
-      if (version > 1) throw Error('对话数据库版本过高，当前版本无法读取。');
+      if (version > 2) throw Error('对话数据库版本过高，当前版本无法读取。');
       const exists = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'").get();
       const columns = exists ? this.db.prepare('PRAGMA table_info(messages)').all().map(row => row.name) : [];
       const base = ['id', 'role', 'text', 'created_at', 'turn_id'];
       if (exists && base.some(name => !columns.includes(name))) throw Error('对话数据库结构不受支持。');
-      if (version === 1 && (!exists || !['reasoning_content', 'response_metadata'].every(name => columns.includes(name)))) throw Error('对话数据库版本与结构不一致。');
+      if (version >= 1 && (!exists || !['reasoning_content', 'response_metadata'].every(name => columns.includes(name)))) throw Error('对话数据库版本与结构不一致。');
       if (version === 0 && columns.some(name => ['reasoning_content', 'response_metadata'].includes(name))) throw Error('对话数据库版本与结构不一致。');
+      const memoryExists = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='companion_memories'").get();
+      const contextExists = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='companion_context'").get();
+      if ((version < 2 && (memoryExists || contextExists)) || (version === 2 && (!memoryExists || !contextExists || !exists))) throw Error('对话数据库版本与结构不一致。');
       if (version === 0) {
         this.db.exec('BEGIN');
         try {
@@ -39,9 +65,60 @@ export class SqliteMemoryStore {
           this.db.exec('PRAGMA user_version = 1; COMMIT');
         } catch (error) { this.db.exec('ROLLBACK'); throw error; }
       }
+      if (version < 2) {
+        this.db.exec('BEGIN');
+        try {
+          this.db.exec(`${memoryTableSql}; ${activeIndexSql}; ${supersedesIndexSql}; ${contextTableSql}; INSERT INTO companion_context VALUES (1,0); PRAGMA user_version = 2; COMMIT`);
+        } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      } else {
+        const expectedSql = [memoryTableSql, activeIndexSql, supersedesIndexSql, contextTableSql];
+        const actualSql = this.db.prepare("SELECT sql FROM sqlite_master WHERE name IN ('companion_memories','companion_memories_active','companion_memories_supersedes','companion_context')").all().map(row => row.sql);
+        if (expectedSql.some(sql => !actualSql.includes(sql)) || actualSql.length !== expectedSql.length || !this.db.prepare('SELECT 1 FROM companion_context WHERE singleton=1').get() || this.db.prepare('SELECT COUNT(*) AS n FROM companion_context').get().n !== 1) throw Error('对话数据库版本与结构不一致。');
+      }
     } catch (error) { this.db.close(); throw error; }
   }
-  history() { return this.db.prepare('SELECT role, text FROM messages ORDER BY rowid').all().map(row => ({ role: row.role, text: row.text })); }
+  history() { return this.db.prepare('SELECT role, text FROM messages WHERE rowid > (SELECT recent_context_after_rowid FROM companion_context WHERE singleton=1) ORDER BY rowid').all().map(row => ({ role: row.role, text: row.text })); }
+  listMemories() { return this.db.prepare("SELECT id,text,source_kind AS sourceKind,source_ref AS sourceRef,created_at AS createdAt,updated_at AS updatedAt FROM companion_memories WHERE state='active' ORDER BY updated_at DESC,id").all(); }
+  recall(query) {
+    const queryTerms = terms(query);
+    if (!queryTerms.size) return { schemaVersion: 1, entries: [] };
+    const candidates = this.listMemories().map(row => ({ row, score: [...terms(row.text)].filter(term => queryTerms.has(term)).length })).filter(item => item.score > 0);
+    candidates.sort((a,b) => b.score - a.score || b.row.updatedAt.localeCompare(a.row.updatedAt) || a.row.id.localeCompare(b.row.id));
+    const entries = []; let budget = 0;
+    for (const { row } of candidates) {
+      if (entries.length === 5) break;
+      const sourceRef = row.sourceKind + ':' + row.sourceRef;
+      const cost = row.id.length + row.text.length + sourceRef.length;
+      if (budget + cost > 4000) continue;
+      entries.push({ id: row.id, text: row.text, sourceRef }); budget += cost;
+    }
+    return { schemaVersion: 1, entries };
+  }
+  transaction(fn) { this.db.exec('BEGIN'); try { const result = fn(); this.db.exec('COMMIT'); return result; } catch (error) { this.db.exec('ROLLBACK'); throw error; } }
+  remember({ text, sourceKind, sourceRef } = {}) {
+    const clean = memoryText(text);
+    if (!['explicit_chat','selected_user_message'].includes(sourceKind)) throw Error('陪伴记忆来源无效。');
+    if (sourceKind === 'selected_user_message' && (typeof sourceRef !== 'string' || !this.db.prepare("SELECT 1 FROM messages WHERE id=? AND role='user'").get(sourceRef))) throw Error('请选择已保存的用户消息。');
+    const ref = sourceKind === 'explicit_chat' ? randomUUID() : sourceRef;
+    const id = randomUUID(), now = new Date().toISOString();
+    this.transaction(() => this.db.prepare("INSERT INTO companion_memories (id,text,topic,state,source_kind,source_ref,created_at,updated_at,supersedes_id) VALUES (?,?,NULL,'active',?,?,?,?,NULL)").run(id,clean,sourceKind,ref,now,now));
+    return { id, text: clean, sourceKind, sourceRef: ref, createdAt: now, updatedAt: now };
+  }
+  change(id, text) {
+    if (typeof id !== 'string') throw Error('请选择有效的陪伴记忆。');
+    const clean = text === null ? null : memoryText(text);
+    return this.transaction(() => {
+      const old = this.db.prepare('SELECT * FROM companion_memories WHERE id=?').get(id);
+      if (!old || old.state !== 'active') throw Error('这条陪伴记忆已失效，请重新选择。');
+      const now = new Date().toISOString(), nextId = clean === null ? null : randomUUID();
+      this.db.prepare('UPDATE companion_memories SET text=NULL,topic=NULL,state=?,updated_at=? WHERE id=?').run(clean === null ? 'forgotten' : 'superseded',now,id);
+      if (nextId) this.db.prepare("INSERT INTO companion_memories (id,text,topic,state,source_kind,source_ref,created_at,updated_at,supersedes_id) VALUES (?,?,NULL,'active','explicit_chat',?,?,?,?)").run(nextId,clean,randomUUID(),now,now,id);
+      this.db.prepare('UPDATE companion_context SET recent_context_after_rowid=max(recent_context_after_rowid,(SELECT coalesce(max(rowid),0) FROM messages)) WHERE singleton=1').run();
+      return nextId ? { id: nextId, text: clean, sourceKind: 'explicit_chat', updatedAt: now, supersedesId: id } : { id, state: 'forgotten' };
+    });
+  }
+  correct(id, text) { return this.change(id, text); }
+  forget(id) { return this.change(id, null); }
   displayHistory() { return this.db.prepare('SELECT id, role, text, created_at AS createdAt, turn_id AS turnId, reasoning_content AS reasoningContent, response_metadata AS responseMetadata FROM messages ORDER BY rowid').all().map(row => ({ id: row.id, role: row.role, text: row.text, createdAt: row.createdAt, turnId: row.turnId, reasoningContent: row.reasoningContent, metadata: displayMetadata(row.responseMetadata) })); }
   appendTurn(rows) {
     this.db.exec('BEGIN');

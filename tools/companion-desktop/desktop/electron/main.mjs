@@ -57,6 +57,19 @@ ipcMain.on('yuki:submit', (event, value) => {
   if (smoke) smokeSubmittedThinking = submitted.thinking;
   if (!connection.send(submitted, value.generation)) deliver({ type: 'error', id: value.id, message: '文字服务尚未连接。' });
 });
+ipcMain.on('yuki:memory', (event, value) => {
+  if (!trusted(event) || !value || typeof value.id !== 'string' || !['list','remember','correct','forget'].includes(value.action)) return;
+  const invalid = () => deliver({ type: 'memory-error', id: value.id, generation: connection.generation, message: '陪伴记忆输入无效，请检查事实和目标。' });
+  const command = { type: 'memory', id: value.id, action: value.action };
+  if (value.action === 'remember') {
+    if (typeof value.text !== 'string' || value.text.length > 300 || !['explicit_chat','selected_user_message'].includes(value.sourceKind)) { invalid(); return; }
+    command.text = value.text; command.sourceKind = value.sourceKind;
+    if (value.sourceKind === 'selected_user_message') command.sourceRef = value.sourceRef;
+  }
+  if (value.action === 'correct') { if (typeof value.text !== 'string' || value.text.length > 300) { invalid(); return; } command.text = value.text; }
+  if (value.action === 'correct' || value.action === 'forget') { if (typeof value.targetId !== 'string') { invalid(); return; } command.targetId = value.targetId; }
+  if (!connection.send(command, value.generation)) deliver({ type: 'memory-error', id: value.id, generation: connection.generation, message: '文字服务尚未连接，记忆操作未完成。' });
+});
 ipcMain.on('yuki:credential', event => {
   if (!trusted(event) || preview) return;
   void (async () => {
@@ -121,6 +134,59 @@ void app.whenReady().then(async () => {
         await new Promise(done => setTimeout(done, 150));
       }
       if (!ready) throw Error('Renderer/backend did not become ready');
+      if (option('--smoke-phase') === 'first') {
+        let composerReady = false;
+        while (Date.now() < deadline) {
+          composerReady = await win.webContents.executeJavaScript("!document.getElementById('text').disabled && !document.getElementById('send').disabled");
+          if (composerReady) break;
+          await new Promise(done => setTimeout(done, 100));
+        }
+        if (!composerReady) throw Error('Composer was not ready for memory command');
+        await win.webContents.executeJavaScript("document.getElementById('text').value='记住：喜欢红茶';document.getElementById('form').requestSubmit()");
+        let remembered = false;
+        while (Date.now() < deadline) {
+          remembered = await win.webContents.executeJavaScript("document.getElementById('notice').textContent.includes('已记住')");
+          if (remembered) break;
+          await new Promise(done => setTimeout(done, 100));
+        }
+        if (!remembered) throw Error('Memory remember did not commit through renderer');
+        await win.webContents.executeJavaScript("document.getElementById('settings-open').click()");
+        let listed = false;
+        while (Date.now() < deadline) {
+          listed = await win.webContents.executeJavaScript("document.getElementById('memory-target').children.length > 1");
+          if (listed) break;
+          await new Promise(done => setTimeout(done, 100));
+        }
+        if (!listed) throw Error('Committed memory was not listed');
+        await win.webContents.executeJavaScript("const target=document.getElementById('memory-target');target.value=target.children[1].value;document.getElementById('memory-text').value='喜欢绿茶';document.getElementById('memory-correct').click()");
+        let corrected = false;
+        while (Date.now() < deadline) {
+          corrected = await win.webContents.executeJavaScript("document.getElementById('memory-status').textContent.includes('已更正')");
+          if (corrected) break;
+          await new Promise(done => setTimeout(done, 100));
+        }
+        if (!corrected) throw Error('Memory correction did not commit through renderer');
+        await win.webContents.executeJavaScript("document.getElementById('settings').close()");
+      }
+      if (option('--smoke-phase') === 'reopen') {
+        await win.webContents.executeJavaScript("document.getElementById('settings-open').click()");
+        let restoredMemory = false;
+        while (Date.now() < deadline) {
+          restoredMemory = await win.webContents.executeJavaScript("document.getElementById('memory-target').children.length > 1 && document.getElementById('memory-target').children[1].textContent.includes('喜欢绿茶')");
+          if (restoredMemory) break;
+          await new Promise(done => setTimeout(done, 100));
+        }
+        if (!restoredMemory) throw Error('Corrected memory was not restored on reopen');
+        await win.webContents.executeJavaScript("const target=document.getElementById('memory-target');target.value=target.children[1].value;document.getElementById('memory-forget').click()");
+        let forgotten = false;
+        while (Date.now() < deadline) {
+          forgotten = await win.webContents.executeJavaScript("document.getElementById('memory-status').textContent.includes('已从本机有效陪伴记忆移除') && document.getElementById('memory-target').children.length === 1");
+          if (forgotten) break;
+          await new Promise(done => setTimeout(done, 100));
+        }
+        if (!forgotten) throw Error('Memory forgetting did not commit through renderer');
+        await win.webContents.executeJavaScript("document.getElementById('settings').close()");
+      }
       if (option('--smoke-phase') === 'first') {
         let loaded = false;
         while (Date.now() < deadline) {
