@@ -8,6 +8,9 @@ import { TurnCancelledError } from './turn-cancellation.mjs';
 import { normalizeUserText, initialMediaReadiness, validRequestId } from '../desktop/turn-contract.mjs';
 
 const IDENTITY = 'Emilia';
+// Count-based window: 32 recent terminal requests plus the active owner.
+// IDs expire on eviction; retained IDs still reject duplicate submit. No timer.
+const COMPLETED_TURN_LIMIT = 32;
 
 export class BackendSession {
   constructor({ directory, provider, mode = 'real' }) {
@@ -60,6 +63,15 @@ export class BackendSession {
     } finally {
       if (turn.outcome === 'pending') turn.outcome = 'notCommitted';
       if (this.activeTurn === turn) { this.activeTurn = null; this.busy = false; }
+      this.pruneTurns();
+    }
+  }
+  pruneTurns() {
+    let completed = this.turns.size - (this.activeTurn ? 1 : 0);
+    for (const [requestId, turn] of this.turns) {
+      if (completed <= COMPLETED_TURN_LIMIT) break;
+      if (turn === this.activeTurn) continue;
+      this.turns.delete(requestId); --completed;
     }
   }
   cancel(requestId) {
@@ -71,6 +83,7 @@ export class BackendSession {
       turn.controller.abort();
       if (this.activeTurn === turn) { this.activeTurn = null; this.busy = false; }
     }
+    this.pruneTurns();
     return { requestId, outcome: turn.outcome, turnId: turn.turnId,
       ...(turn.outcome === 'alreadyCommitted' ? { messages: this.displayHistory().filter(row => row.turnId === turn.turnId) } : {}) };
   }

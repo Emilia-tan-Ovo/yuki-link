@@ -32,6 +32,8 @@ const connection = new BackendConnection({ worker: resolve(here, '../../backend/
   if (message.type === 'disconnected') voice.disconnect();
   if (message.type === 'cancel-ack') voice.acknowledge(message);
   if (message.type === 'reply' || message.type === 'error') voice.complete(message.requestId);
+  const memoryTerminal = voice.completeMemory(message, generation);
+  if (memoryTerminal) deliver(memoryTerminal);
   deliver({ ...message, generation });
 } });
 const trusted = event => win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame && event.senderFrame.url === 'yuki://app/index.html';
@@ -107,17 +109,27 @@ ipcMain.on('yuki:voice-command', (event, value) => {
   deliver({ type: 'voice-state', generation: connection.generation, scope: value.scope, state: voice.state });
 });
 ipcMain.on('yuki:memory', (event, value) => {
-  if (!trusted(event) || !value || typeof value.id !== 'string' || !['list','remember','correct','forget'].includes(value.action)) return;
-  const invalid = () => deliver({ type: 'memory-error', id: value.id, generation: connection.generation, message: '陪伴记忆输入无效，请检查事实和目标。' });
+  if (!trusted(event) || !value || value.generation !== connection.generation || typeof value.id !== 'string' || !['list','remember','correct','forget'].includes(value.action)) return;
+  if (value.voiceScope || value.voiceResult) {
+    if (value.generation !== connection.generation || !voice.acceptMemory(value)) return;
+    if (value.voiceResult === 'management-opened') deliver({ type: 'voice-state', generation: connection.generation, scope: value.voiceScope, state: voice.state, outcome: 'management-opened' });
+  }
+  const fail = message => {
+    const error = { type: 'memory-error', id: value.id, generation: connection.generation, message };
+    const terminal = voice.completeMemory(error, connection.generation);
+    if (terminal) deliver(terminal);
+    deliver(error);
+  };
+  const invalid = () => fail('陪伴记忆输入无效，请检查事实和目标。');
   const command = { type: 'memory', id: value.id, action: value.action };
   if (value.action === 'remember') {
-    if (typeof value.text !== 'string' || value.text.length > 300 || !['explicit_chat','selected_user_message'].includes(value.sourceKind)) { invalid(); return; }
+    if (typeof value.text !== 'string' || !value.text.trim() || value.text.length > 300 || !['explicit_chat','selected_user_message'].includes(value.sourceKind)) { invalid(); return; }
     command.text = value.text; command.sourceKind = value.sourceKind;
     if (value.sourceKind === 'selected_user_message') command.sourceRef = value.sourceRef;
   }
   if (value.action === 'correct') { if (typeof value.text !== 'string' || value.text.length > 300) { invalid(); return; } command.text = value.text; }
   if (value.action === 'correct' || value.action === 'forget') { if (typeof value.targetId !== 'string') { invalid(); return; } command.targetId = value.targetId; }
-  if (!connection.send(command, value.generation)) deliver({ type: 'memory-error', id: value.id, generation: connection.generation, message: '文字服务尚未连接，记忆操作未完成。' });
+  if (!connection.send(command, value.generation)) fail('文字服务尚未连接，记忆操作未完成。');
 });
 ipcMain.on('yuki:credential', event => {
   if (!trusted(event) || preview) return;

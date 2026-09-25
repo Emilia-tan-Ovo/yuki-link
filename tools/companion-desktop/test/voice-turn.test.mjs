@@ -2,6 +2,28 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { VoiceTurnCoordinator } from '../desktop/electron/voice-turn.mjs';
 
+test('local Memory admission and terminal reject stale scope, generation and forged result', () => {
+  const voice = new VoiceTurnCoordinator({ canAttempt: () => true });
+  const prepare = text => { const { scope } = voice.start(1); voice.captureReady(scope); voice.finish(scope); voice.final(scope, text); return scope; };
+  const old = prepare('记住：绿茶');
+  const command = { generation: 1, id: 'memory-old', voiceScope: old, voiceResult: 'remember', action: 'remember', sourceKind: 'explicit_chat', text: '绿茶' };
+  assert.equal(voice.acceptMemory({ ...command, voiceResult: 'memory-committed' }), false);
+  assert.equal(voice.acceptMemory({ ...command, generation: 0 }), false);
+  assert.equal(voice.acceptMemory({ ...command, text: '另一事实' }), false);
+  assert.equal(voice.acceptMemory(command), true);
+  assert.equal(voice.acceptMemory(command), false);
+  voice.cancel(old);
+  const next = prepare('记住：红茶');
+  assert.equal(voice.acceptMemory(command), false);
+  assert.equal(voice.acceptMemory({ ...command, id: 'memory-new', voiceScope: next, text: '红茶' }), true);
+  assert.equal(voice.completeMemory({ type: 'memory', id: 'memory-old', action: 'remember' }, 1), null);
+  assert.equal(voice.completeMemory({ type: 'memory', id: 'memory-new', action: 'remember' }, 0), null);
+  assert.equal(voice.state, 'memory-pending');
+  assert.equal(voice.start(1).outcome, 'busy');
+  assert.equal(voice.completeMemory({ type: 'memory-error', id: 'memory-new' }, 1).outcome, 'memory-failed');
+  assert.equal(voice.start(1).outcome, 'accepted');
+});
+
 test('voice lifecycle is unavailable in Phase A; deterministic scope admits one final and separates controls', () => {
   const unavailable = new VoiceTurnCoordinator();
   assert.equal(unavailable.start(1).outcome, 'unavailable');

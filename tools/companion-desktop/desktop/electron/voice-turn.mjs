@@ -26,6 +26,23 @@ export class VoiceTurnCoordinator {
     if (!this.matches(scope) || this.state !== 'awaiting-submit' || !validRequestId(requestId) || normalizeUserText(text) !== this.current.text) return false;
     this.current.requestId = requestId; delete this.current.text; this.state = 'thinking'; return true;
   }
+  acceptMemory(value) {
+    if (!this.matches(value.voiceScope) || value.generation !== this.current.scope.connectionGeneration || this.state !== 'awaiting-submit' || !validRequestId(value.id)) return false;
+    const text = this.current.text;
+    if (value.voiceResult === 'remember' && value.action === 'remember' && value.sourceKind === 'explicit_chat' && /^记住\s*[:：]/u.test(text) && value.text === text.replace(/^记住\s*[:：]/u, '').trim()) {
+      this.current.memoryId = value.id; this.state = 'memory-pending';
+    } else if (value.voiceResult === 'management-opened' && value.action === 'list' && !/^记住\s*[:：]/u.test(text) && /记住|忘记记忆|更正记忆|(?:忘掉|忘记).*(?:我|记忆|偏好|喜欢)|(?:纠正|更正).*(?:记忆|偏好|喜欢)|(?:偏好|记忆|喜欢).*(?:忘掉|忘记|纠正|更正)/u.test(text)) {
+      this.state = 'idle';
+    } else return false;
+    delete this.current.text; return true;
+  }
+  completeMemory(message, generation) {
+    if (this.state !== 'memory-pending' || generation !== this.current.scope.connectionGeneration || message.id !== this.current.memoryId) return null;
+    if (message.type !== 'memory-error' && !(message.type === 'memory' && message.action === 'remember')) return null;
+    this.state = message.type === 'memory' ? 'idle' : 'error';
+    delete this.current.memoryId;
+    return { type: 'voice-state', generation, scope: this.current.scope, state: this.state, outcome: message.type === 'memory' ? 'memory-committed' : 'memory-failed' };
+  }
   stopOutput(scope) {
     if (!this.matches(scope)) return { outcome: 'stale', cancelModel: false };
     this.current.outputAllowed = false;

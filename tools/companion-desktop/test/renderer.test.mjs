@@ -3,15 +3,16 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { normalizeUserText, sameVoiceScope } from '../desktop/turn-contract.mjs';
+import { VoiceTurnCoordinator } from '../desktop/electron/voice-turn.mjs';
 
-function harness() {
+function harness(onSend = () => {}) {
   const elements = new Map();
   const makeNode = tag => ({ tag, dataset: {}, children: [], value: '', textContent: '', disabled: false, open: false, append(...nodes) { this.children.push(...nodes); }, replaceChildren(...nodes) { this.children = [...nodes]; }, addEventListener(name, handler) { this[name] = handler; }, scrollIntoView() {} });
   const element = id => {
     if (!elements.has(id)) elements.set(id, {
       ...makeNode('element'), scrollHeight: 0,
       addEventListener(name, handler) { this[name] = handler; },
-      focus() {}, showModal() {}, close() {}, requestSubmit() { this.submit({ preventDefault() {} }); }
+      focus() {}, showModal() { this.open = true; }, close() {}, requestSubmit() { this.submit({ preventDefault() {} }); }
     });
     return elements.get(id);
   };
@@ -22,11 +23,152 @@ function harness() {
   runInNewContext(source.replace(/^import .*;\r?$/gm, ''), {
     normalizeUserText, sameVoiceScope, setTimeout, clearTimeout,
     document: { getElementById: element, createElement: makeNode, querySelectorAll: () => [] },
-    window: { yukiDesktop: { subscribe(callback) { deliver = callback; }, send(...args) { sent.push(args); } } },
+    window: { yukiDesktop: { subscribe(callback) { deliver = callback; }, send(...args) { sent.push(args); onSend(...args); } } },
     crypto: { randomUUID: () => 'request-' + ++sequence }
   });
   return { element, sent, deliver };
 }
+
+// Execute the actual main Memory IPC and backend delivery seams with synthetic transport.
+function voiceMemoryHarness() {
+  const handlers = new Map(), commands = [];
+  const voice = new VoiceTurnCoordinator({ canAttempt: () => true });
+  const ui = harness((channel, value) => handlers.get('yuki:' + channel)?.({}, value));
+  let backend;
+  const main = readFileSync(new URL('../desktop/electron/main.mjs', import.meta.url), 'utf8');
+  const callback = main.slice(main.indexOf('  currentStatus = message?.status'), main.indexOf('\n} });'));
+  const memory = main.slice(main.indexOf("ipcMain.on('yuki:memory'"), main.indexOf("ipcMain.on('yuki:credential'"));
+  runInNewContext(`let currentStatus; setBackend((message, generation) => {${callback}\n});\n${memory}`, {
+    voice, deliver: ui.deliver, trusted: () => true,
+    connection: { generation: 1, send(command) { commands.push(command); return true; } },
+    ipcMain: { on(name, handler) { handlers.set(name, handler); } },
+    setBackend(callback) { backend = callback; }
+  });
+  ui.deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  ui.deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  const final = text => {
+    const { scope } = voice.start(1); voice.captureReady(scope); voice.finish(scope);
+    ui.deliver({ type: 'voice-state', generation: 1, scope, state: voice.state });
+    ui.deliver(voice.final(scope, text)); return scope;
+  };
+  return { ...ui, voice, commands, final, backend };
+}
+
+test('voice Memory waits for matching backend success or failure then releases main owner', () => {
+  for (const type of ['memory', 'memory-error']) {
+    const h = voiceMemoryHarness();
+    h.final('记住：喜欢绿茶');
+    const command = h.commands.at(-1);
+    assert.equal(h.voice.start(1).outcome, 'busy');
+    h.backend({ type, id: 'unrelated', action: 'remember', entries: [], message: '保存失败' }, 1);
+    h.backend({ type, id: command.id, action: 'remember', entries: [], message: '保存失败' }, 0);
+    assert.equal(h.voice.start(1).outcome, 'busy');
+    h.backend({ type, id: command.id, action: 'remember', entries: [], message: '保存失败' }, 1);
+    assert.equal(h.voice.state, type === 'memory' ? 'idle' : 'error');
+    assert.equal(h.voice.start(1).outcome, 'accepted');
+    assert.equal(h.sent.filter(([channel]) => channel === 'submit').length, 0);
+  }
+});
+
+test('voice management handoff releases main only after local UI opened without claiming mutation', () => {
+  const h = voiceMemoryHarness();
+  h.final('帮我更正记忆');
+  assert.equal(h.element('settings').open, true);
+  assert.match(h.element('notice').textContent, /管理区/);
+  assert.doesNotMatch(h.element('notice').textContent, /已记住|已更正/);
+  assert.equal(h.voice.state, 'idle');
+  assert.equal(h.voice.start(1).outcome, 'accepted');
+});
+
+function queuedVoiceHarness() {
+  const h = harness();
+  h.deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  h.deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  const scope = { schemaVersion: 1, connectionGeneration: 1, voiceTurnId: 'queued', voiceEpoch: 1 };
+  const final = { type: 'voice-final', generation: 1, scope, text: '待发送的语音' };
+  const queue = () => { h.deliver({ type: 'voice-state', generation: 1, scope, state: 'transcribing' }); h.deliver(final); };
+  const submits = () => h.sent.filter(([channel]) => channel === 'submit');
+  return { ...h, scope, final, queue, submits };
+}
+
+test('queued voice final wakes once after matching memoryPending ack or error', () => {
+  for (const type of ['memory', 'memory-error']) {
+    const h = queuedVoiceHarness();
+    h.element('text').value = '记住：喜欢绿茶'; h.element('form').requestSubmit();
+    const memory = h.sent.at(-1)[1]; h.queue();
+    assert.equal(h.submits().length, 0);
+    h.deliver({ type, generation: 1, id: 'stale', action: 'remember', entries: [], message: '失败' });
+    assert.equal(h.submits().length, 0);
+    h.deliver({ type, generation: 1, action: 'remember', entries: [], message: '无标识' });
+    assert.equal(h.submits().length, 0);
+    h.deliver({ type, generation: 1, id: memory.id, action: 'remember', entries: [], message: '失败' });
+    assert.equal(h.submits().length, 1);
+    h.deliver(h.final);
+    assert.equal(h.submits().length, 1);
+  }
+});
+
+test('queued voice final wakes once after typed reply, error or matching cancel acknowledgement', () => {
+  for (const type of ['reply', 'error', 'cancel-ack']) {
+    const h = queuedVoiceHarness();
+    h.element('text').value = '文字问题'; h.element('form').requestSubmit();
+    const typed = h.submits()[0][1]; h.queue();
+    if (type === 'cancel-ack') h.element('cancel-reply').onclick();
+    h.deliver({ type, generation: 1, requestId: 'old', outcome: 'cancelled', messages: [], status: { service: 'verified' } });
+    assert.equal(h.submits().length, 1);
+    h.deliver({ type, generation: 1, requestId: typed.requestId, outcome: 'cancelled', messages: [], status: { service: 'verified' } });
+    assert.equal(h.submits().length, 2);
+    assert.equal(h.submits()[1][1].text, h.final.text);
+    h.deliver(h.final); h.deliver({ type: 'notice', text: '通知' });
+    assert.equal(h.submits().length, 2);
+  }
+});
+
+test('queued voice final never wakes a cancelled, unknown or reconnected owner', () => {
+  for (const state of ['cancelling', 'cancelled', 'unknown', 'error', 'reconnect']) {
+    const h = queuedVoiceHarness();
+    h.element('thinking-save').onclick(); h.queue();
+    if (state === 'reconnect') {
+      h.deliver({ type: 'connection', generation: 2 });
+      h.deliver({ type: 'ready', generation: 2, history: [], status: { service: 'verified' } });
+    } else h.deliver({ type: 'voice-state', generation: 1, scope: h.scope, state });
+    h.deliver({ type: 'thinking', action: 'save', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+    h.deliver(h.final);
+    assert.equal(h.submits().length, 0, state);
+  }
+});
+
+test('queued voice final waits for Thinking save and an unknown model cancel owner', () => {
+  const h = queuedVoiceHarness();
+  h.element('text').value = '文字问题'; h.element('form').requestSubmit();
+  const typed = h.submits()[0][1];
+  h.element('thinking-save').onclick(); h.queue(); h.element('cancel-reply').onclick();
+  h.deliver({ type: 'cancel-ack', generation: 1, requestId: typed.requestId, outcome: 'unknown-request' });
+  h.deliver({ type: 'reply', generation: 1, requestId: typed.requestId, messages: [], status: { service: 'verified' } });
+  h.deliver({ type: 'thinking', action: 'save', thinking: { schemaVersion: 1, enabled: true, effort: 'high' } });
+  h.deliver(h.final);
+  assert.equal(h.submits().length, 1);
+  h.deliver({ type: 'cancel-ack', generation: 1, requestId: typed.requestId, outcome: 'cancelled' });
+  assert.equal(h.submits().length, 2);
+  const voice = h.submits()[1][1];
+  h.deliver({ type: 'reply', generation: 1, requestId: voice.requestId, origin: 'voice-final', voiceScope: h.scope, messages: [], status: { service: 'verified' } });
+  h.deliver(h.final); h.element('settings-open').onclick();
+  h.deliver({ type: 'notice', text: '通知' });
+  h.deliver({ type: 'persona', action: 'load', roleCard: { text: '已保存角色卡' } });
+  h.deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: true, effort: 'high' } });
+  assert.equal(h.submits().length, 2);
+});
+
+test('queued voice final dispatches after Thinking save resolves to committed settings', () => {
+  for (const error of [undefined, '保存失败，原设置继续生效']) {
+    const h = queuedVoiceHarness();
+    h.element('thinking-save').onclick(); h.queue();
+    h.deliver({ type: 'notice', text: '通知' });
+    assert.equal(h.submits().length, 0);
+    h.deliver({ type: 'thinking', action: 'save', error, thinking: { schemaVersion: 1, enabled: true, effort: 'high' } });
+    assert.equal(h.submits().length, 1);
+  }
+});
 
 test('only matching request can release a round; cancel acknowledgement preserves a newer draft', () => {
   const { element, sent, deliver } = harness();
@@ -328,14 +470,14 @@ test('explicit remember waits for committed worker reply; management correct/for
   assert.equal(sent.at(-1)[1].action, 'remember');
   assert.equal(sent.filter(x => x[0] === 'submit').length, 0);
   assert.doesNotMatch(element('notice').textContent, /已记住/);
-  deliver({ type: 'memory', generation: 1, action: 'remember', entry: { id: 'm1', text: '喜欢红茶' }, entries: [{ id: 'm1', text: '喜欢红茶' }] });
+  deliver({ type: 'memory', generation: 1, id: sent.at(-1)[1].id, action: 'remember', entry: { id: 'm1', text: '喜欢红茶' }, entries: [{ id: 'm1', text: '喜欢红茶' }] });
   assert.match(element('notice').textContent, /已记住/);
   assert.equal(element('text').value, '');
   element('settings-open').onclick();
   element('memory-target').value = 'm1'; element('memory-text').value = '喜欢绿茶'; element('memory-correct').onclick();
   assert.equal(sent.at(-1)[1].action, 'correct');
   assert.doesNotMatch(element('memory-status').textContent, /已更正/);
-  deliver({ type: 'memory-error', generation: 1, message: '保存失败' });
+  deliver({ type: 'memory-error', generation: 1, id: sent.at(-1)[1].id, message: '保存失败' });
   assert.match(element('memory-status').textContent, /保存失败/);
   assert.equal(element('memory-text').value, '喜欢绿茶');
   element('memory-correct').onclick();

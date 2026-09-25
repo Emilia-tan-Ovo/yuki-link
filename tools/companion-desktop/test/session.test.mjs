@@ -6,6 +6,32 @@ import { join } from 'node:path';
 import { BackendSession } from '../backend/session.mjs';
 import { DEFAULT_ROLE_CARD } from '../backend/prompt-composer.mjs';
 
+test('completed retention is bounded, preserves recent media and duplicates, and never evicts active', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'yuki-retention-'));
+  let release, hold = false;
+  const session = new BackendSession({ directory: dir, provider: () => hold ? new Promise(resolve => { release = resolve; }) : Promise.resolve({ content: '完成' }) });
+  t.after(async () => { session.close(); await rm(dir, { recursive: true, force: true }); });
+  for (let i = 0; i < 96; i++) {
+    await session.submit('问题', undefined, undefined, { requestId: `done-${i}` });
+    assert.ok(session.turns.size <= 32, 'at most 32 completed requests');
+  }
+  assert.equal(session.cancel('done-0').outcome, 'unknown-request');
+  assert.equal(session.mediaText('done-0'), null);
+  assert.equal(session.mediaText('done-64').finalText, '完成');
+  await assert.rejects(session.submit('重复', undefined, undefined, { requestId: 'done-95' }), /重复/);
+  assert.equal(session.cancel('done-95').outcome, 'alreadyCommitted');
+  hold = true;
+  const active = session.submit('进行中', undefined, undefined, { requestId: 'active' });
+  assert.ok(session.turns.size <= 33);
+  assert.equal(session.turns.get('active'), session.activeTurn);
+  assert.equal(session.cancel('done-64').outcome, 'alreadyCommitted');
+  assert.equal(session.turns.get('active'), session.activeTurn);
+  release({ content: '完成' }); await active;
+  assert.equal(session.turns.size, 32);
+  assert.equal(session.cancel('done-64').outcome, 'unknown-request');
+  assert.equal(session.mediaText('active').finalText, '完成');
+});
+
 test('cancel before commit fences an abort-ignoring provider and cannot release the next turn', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'yuki-cancel-'));
   const pending = [];

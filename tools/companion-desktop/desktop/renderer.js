@@ -3,7 +3,7 @@ import { normalizeUserText, sameVoiceScope } from './turn-contract.mjs';
 const $ = id => document.getElementById(id);
 let generation = 0, service = 'connecting', busy = false, pendingGeneration = null, messages = [];
 let pendingRequest = null;
-let voiceScope = null, voiceFinal = null, voiceFinalConsumed = false;
+let voiceScope = null, voiceState = 'idle', voiceFinal = null, voiceFinalConsumed = false;
 let personaPending = null;
 let memoryPending = null, memorySource = null;
 let memoryRefreshId = null;
@@ -25,8 +25,8 @@ function updateSend() { $('send').disabled = $('text').disabled || !thinkingComm
 function matchesRequest(message) { return pendingRequest && message.generation === pendingGeneration && message.requestId === pendingRequest.requestId && (pendingRequest.origin !== 'voice-final' || message.origin === 'voice-final' && sameVoiceScope(message.voiceScope, pendingRequest.voiceScope)); }
 function releaseRequest() { if (pendingRequest?.timer) clearTimeout(pendingRequest.timer); busy = false; pendingGeneration = null; pendingRequest = null; }
 function appendCommitted(rows) { const ids = new Set(messages.map(row => row.id)); for (const row of rows || []) if (!ids.has(row.id)) { messages.push(row); ids.add(row.id); } render(); }
-function dispatchVoiceFinal() {
-  if (!voiceFinal || voiceFinalConsumed || !sameVoiceScope(voiceFinal.scope, voiceScope) || busy || memoryPending || !thinkingCommitted || thinkingPending || $('text').disabled) return;
+function maybeDispatchVoiceFinal() {
+  if (!voiceFinal || voiceFinalConsumed || !sameVoiceScope(voiceFinal.scope, voiceScope) || voiceScope.connectionGeneration !== generation || !['transcribing', 'awaiting-submit'].includes(voiceState) || pendingRequest || busy || memoryPending || !thinkingCommitted || thinkingPending || $('text').disabled) return;
   // Consume before dispatch so repeated final events never resubmit Memory/model.
   voiceFinalConsumed = true;
   dispatchUserText(voiceFinal.text, 'voice-final', voiceScope);
@@ -119,34 +119,37 @@ host.subscribe(message => {
   if (message.type === 'voice-state' && message.scope?.connectionGeneration === generation) {
     if (voiceScope && message.scope.voiceEpoch < voiceScope.voiceEpoch) return;
     if (!sameVoiceScope(message.scope, voiceScope)) { voiceScope = message.scope; voiceFinal = null; voiceFinalConsumed = false; }
-    if (['cancelling', 'cancelled', 'error'].includes(message.state)) { voiceFinal = null; voiceFinalConsumed = true; }
+    voiceState = message.state;
+    if (['cancelling', 'cancelled', 'error', 'unknown'].includes(message.state)) { voiceFinal = null; voiceFinalConsumed = true; }
   }
   if (message.type === 'voice-final' && sameVoiceScope(message.scope, voiceScope) && !voiceFinalConsumed) {
-    try { voiceFinal = { scope: message.scope, text: normalizeUserText(message.text) }; $('voice-transcript').value = voiceFinal.text; $('voice-transcript').hidden = false; notice('已识别，待提交：' + voiceFinal.text); dispatchVoiceFinal(); }
+    try { voiceFinal ??= { scope: message.scope, text: normalizeUserText(message.text) }; $('voice-transcript').value = voiceFinal.text; $('voice-transcript').hidden = false; notice('已识别，待提交：' + voiceFinal.text); maybeDispatchVoiceFinal(); }
     catch (error) { notice(error.message); }
   }
-  if (message.type === 'ready') { if (pendingRequest && pendingGeneration === message.generation) return; const interrupted = busy && pendingGeneration !== message.generation; generation = message.generation; messages = message.history; render(); if (interrupted) releaseRequest(); state(message.status.service); notice(interrupted ? '连接已更新，上一条结果请以已保存历史为准；草稿仍保留。' : ''); if ($('memory-target').disabled) { memoryRefreshId = crypto.randomUUID(); host.send('memory', { generation, id: memoryRefreshId, action: 'list' }); } }
+  if (message.type === 'ready') { if (pendingRequest && pendingGeneration === message.generation) return; const interrupted = busy && pendingGeneration !== message.generation; if (generation !== message.generation) { voiceScope = null; voiceFinal = null; } generation = message.generation; messages = message.history; render(); if (interrupted) releaseRequest(); state(message.status.service); notice(interrupted ? '连接已更新，上一条结果请以已保存历史为准；草稿仍保留。' : ''); if ($('memory-target').disabled) { memoryRefreshId = crypto.randomUUID(); host.send('memory', { generation, id: memoryRefreshId, action: 'list' }); } maybeDispatchVoiceFinal(); }
   if (message.type === 'reply') {
     if (message.committed === true) appendCommitted(message.messages);
     if (!matchesRequest(message) || pendingRequest.cancelling) return;
     const pending = pendingRequest; releaseRequest();
     if (pending.origin === 'typed' && $('text').value === pending.draft) $('text').value = '';
     state(message.status.service); notice(''); $('text').focus();
+    maybeDispatchVoiceFinal();
   }
-  if (message.type === 'error') { if (!matchesRequest(message) || pendingRequest.cancelling) return; releaseRequest(); state(message.status?.service || service); notice(message.message); }
+  if (message.type === 'error') { if (!matchesRequest(message) || pendingRequest.cancelling) return; releaseRequest(); state(message.status?.service || service); notice(message.message); maybeDispatchVoiceFinal(); }
   if (message.type === 'cancel-ack') {
     if (message.outcome === 'alreadyCommitted') appendCommitted(message.messages);
     if (!matchesRequest(message) || !pendingRequest.cancelling) return;
     if (['cancelled', 'alreadyCommitted', 'notCommitted'].includes(message.outcome)) {
       releaseRequest(); state(message.status?.service || service);
       notice(message.outcome === 'alreadyCommitted' ? '文字已提交，历史保留；本轮下游语音已禁止。' : message.outcome === 'cancelled' ? '当前回复已取消，未写入历史。' : '本轮未提交，草稿保留。');
+      maybeDispatchVoiceFinal();
     } else { notice('回复取消结果未知，请重连后核对历史；不会自动重试。'); }
   }
   if (message.type === 'disconnected') { const uncertain = !!pendingRequest; voiceScope = null; voiceFinal = null; releaseRequest(); state('disconnected'); notice(uncertain ? '连接已断开，本轮提交或取消结果未知，请重新打开应用核对历史。' : '文字服务已断开，请重新打开应用。'); }
   if (message.type === 'notice') notice(message.text);
   if (message.type === 'memory' || message.type === 'memory-error') {
     if (message.action === 'list' && message.type === 'memory') { if (!$('memory-target').disabled || message.id === memoryRefreshId) { renderMemories(message.entries); $('memory-target').disabled = false; memoryRefreshId = null; if (!memoryPending) $('memory-status').textContent = message.entries.length ? '当前有效记忆已读取。' : '暂无有效陪伴记忆。'; } }
-    else if (memoryPending && (!message.id || message.id === memoryPending.id)) {
+    else if (memoryPending && message.id === memoryPending.id && message.generation === memoryPending.generation && (message.type === 'memory-error' || message.action === memoryPending.action)) {
       const pending = memoryPending; memoryPending = null; memoryBusy(false);
       if (message.type === 'memory-error') { $('memory-status').textContent = message.message; if (pending.action === 'remember') notice(message.message); }
       else {
@@ -157,6 +160,7 @@ host.subscribe(message => {
         if ($('memory-text').value === pending.memoryDraft) $('memory-text').value = '';
         memorySource = null; $('memory-source').textContent = '来源：新建的显式操作';
       }
+      maybeDispatchVoiceFinal();
     }
   }
   if (message.type === 'workbench') { const text = message.error || (!message.configured ? '尚未设置本机入口' : message.reachable ? '本机工作台可访问' : '已设置，当前不可达'); $('workbench-state').textContent = text; $('workbench-detail').textContent = text; }
@@ -184,6 +188,7 @@ host.subscribe(message => {
       showThinkingCommitted();
       $('thinking-quick-status').textContent = message.warning || '';
       $('thinking-status').textContent = message.warning || '正在使用已保存的思考设置。';
+      maybeDispatchVoiceFinal();
     } else if (message.action === 'save' && thinkingPending) {
       const completed = thinkingPending;
       thinkingPending = null;
@@ -206,15 +211,15 @@ host.subscribe(message => {
         $('thinking-save').disabled = false;
         showThinkingCommitted();
       }
+      maybeDispatchVoiceFinal();
     }
   }
-  if (message.type === 'thinking' && !message.error) dispatchVoiceFinal();
 });
 function dispatchUserText(value, origin = 'typed', voiceScope) {
   if (busy || memoryPending || $('text').disabled || !thinkingCommitted || thinkingPending) return false;
   let text; try { text = normalizeUserText(value); } catch (error) { notice(error.message); return false; }
-  if (/^记住\s*[:：]/u.test(text)) { const fact = text.replace(/^记住\s*[:：]/u, '').trim(); if (!fact || fact.length > 300) { notice('请在“记住：”后填写不超过 300 字的简短事实。'); return; } memoryCommand('remember', { text: fact, sourceKind: 'explicit_chat' }, origin === 'typed'); return; }
-  if (/记住|忘记记忆|更正记忆|(?:忘掉|忘记).*(?:我|记忆|偏好|喜欢)|(?:纠正|更正).*(?:记忆|偏好|喜欢)|(?:偏好|记忆|喜欢).*(?:忘掉|忘记|纠正|更正)/u.test(text)) { $('settings').showModal(); host.send('memory', { generation, id: crypto.randomUUID(), action: 'list' }); notice('请在陪伴记忆管理区明确填写事实或选择目标后提交。'); return; }
+  if (/^记住\s*[:：]/u.test(text)) { const fact = text.replace(/^记住\s*[:：]/u, '').trim(); if ((!fact || fact.length > 300) && origin === 'typed') { notice('请在“记住：”后填写不超过 300 字的简短事实。'); return; } memoryCommand('remember', { text: fact, sourceKind: 'explicit_chat', ...(origin === 'voice-final' ? { voiceScope, voiceResult: 'remember' } : {}) }, origin === 'typed'); return; }
+  if (/记住|忘记记忆|更正记忆|(?:忘掉|忘记).*(?:我|记忆|偏好|喜欢)|(?:纠正|更正).*(?:记忆|偏好|喜欢)|(?:偏好|记忆|喜欢).*(?:忘掉|忘记|纠正|更正)/u.test(text)) { $('settings').showModal(); host.send('memory', { generation, id: crypto.randomUUID(), action: 'list', ...(origin === 'voice-final' ? { voiceScope, voiceResult: 'management-opened' } : {}) }); notice('请在陪伴记忆管理区明确填写事实或选择目标后提交。'); return; }
   const requestId = crypto.randomUUID();
   busy = true; pendingGeneration = generation; pendingRequest = { requestId, origin, voiceScope, draft: $('text').value, cancelling: false };
   state(service); notice('正在等待 Emilia 回复…'); host.send('submit', { generation, id: requestId, requestId, text, origin, voiceScope }); return true;
