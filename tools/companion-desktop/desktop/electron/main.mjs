@@ -89,6 +89,11 @@ ipcMain.on('yuki:persona-reset', event => {
   if (!trusted(event)) return;
   void settings.resetRoleCard().then(saved => deliver({ type: 'persona', action: 'reset', roleCard: saved.roleCard })).catch(() => deliver({ type: 'persona', action: 'reset', error: '默认角色卡未能保存。' }));
 });
+ipcMain.on('yuki:thinking-load', event => { if (trusted(event)) deliver({ type: 'thinking', action: 'load', thinking: settings.snapshot().thinking, warning: settings.warning }); });
+ipcMain.on('yuki:thinking-save', (event, value) => {
+  if (!trusted(event)) return;
+  void Promise.resolve().then(() => settings.saveThinking(value)).then(saved => deliver({ type: 'thinking', action: 'save', thinking: saved.thinking })).catch(error => deliver({ type: 'thinking', action: 'save', error: error.message.startsWith('思考设置') ? error.message : '思考设置未能保存。' }));
+});
 ipcMain.on('yuki:quit', event => { if (trusted(event)) app.quit(); });
 
 void app.whenReady().then(async () => {

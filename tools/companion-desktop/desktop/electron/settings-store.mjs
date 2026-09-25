@@ -2,20 +2,31 @@ import { readFile, open, rename, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_ROLE_CARD, normalizeRoleCard } from '../../backend/prompt-composer.mjs';
+export const DEFAULT_THINKING = Object.freeze({ schemaVersion: 1, enabled: false, effort: 'high' });
+export function normalizeThinking(value) {
+  if (!value || value.schemaVersion !== 1 || typeof value.enabled !== 'boolean' || !['low', 'high', 'max'].includes(value.effort)) throw Error('思考设置无效。');
+  return { schemaVersion: 1, enabled: value.enabled, effort: value.effort };
+}
 
 export class SettingsStore {
   constructor(file, committed, warning = '') { this.file = file; this.committed = committed; this.warning = warning; this.queue = Promise.resolve(); this.rename = rename; }
   static async load(file) {
     let saved = {};
-    try { saved = JSON.parse(await readFile(file, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') return new SettingsStore(file, { workbenchUrl: '', roleCard: { ...DEFAULT_ROLE_CARD } }, '设置文件无法读取，已使用默认角色卡。'); }
+    try { saved = JSON.parse(await readFile(file, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') return new SettingsStore(file, { workbenchUrl: '', roleCard: { ...DEFAULT_ROLE_CARD }, thinking: { ...DEFAULT_THINKING } }, '设置文件无法读取，已使用默认设置。'); }
     let roleCard = { ...DEFAULT_ROLE_CARD }, warning = '';
     if (saved && Object.hasOwn(saved, 'roleCard')) {
       try { roleCard = normalizeRoleCard(saved.roleCard); }
       catch { warning = '已保存的角色卡无效，当前使用默认角色卡。'; }
     }
-    return new SettingsStore(file, { workbenchUrl: typeof saved?.workbenchUrl === 'string' ? saved.workbenchUrl : '', roleCard }, warning);
+    let thinking = { ...DEFAULT_THINKING };
+    if (saved && Object.hasOwn(saved, 'thinking')) {
+      try { thinking = normalizeThinking(saved.thinking); }
+      catch { warning += ' 已保存的思考设置无效，当前使用默认设置。'; }
+    }
+    return new SettingsStore(file, { workbenchUrl: typeof saved?.workbenchUrl === 'string' ? saved.workbenchUrl : '', roleCard, thinking }, warning.trim());
   }
-  snapshot() { return { workbenchUrl: this.committed.workbenchUrl, roleCard: { ...this.committed.roleCard } }; }
+  snapshot() { return { workbenchUrl: this.committed.workbenchUrl, roleCard: { ...this.committed.roleCard }, thinking: { ...this.committed.thinking } }; }
+  saveThinking(value) { const thinking = normalizeThinking(value); return this.commit(current => ({ ...current, thinking })); }
   saveRoleCard(value) { const card = normalizeRoleCard(value); return this.commit(current => ({ ...current, roleCard: card })); }
   resetRoleCard() { return this.saveRoleCard(DEFAULT_ROLE_CARD); }
   saveWorkbenchUrl(value) { return this.commit(current => ({ ...current, workbenchUrl: value })); }

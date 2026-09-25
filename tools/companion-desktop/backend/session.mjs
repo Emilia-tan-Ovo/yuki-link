@@ -26,7 +26,8 @@ export class BackendSession {
   history() {
     return this.memory.history();
   }
-  async submit(value, roleCard = DEFAULT_ROLE_CARD) {
+  displayHistory() { return this.memory.displayHistory(); }
+  async submit(value, roleCard = DEFAULT_ROLE_CARD, thinking = { schemaVersion: 1, enabled: false, effort: 'high' }) {
     const text = typeof value === 'string' ? value.trim() : '';
     if (!text || text.length > 20000 || text.includes('\0')) throw Error('请输入不超过 20000 字的文字。');
     if (!this.provider) throw Error('DeepSeek 凭据未配置；请在设置中配置后再发送。');
@@ -34,8 +35,7 @@ export class BackendSession {
     this.busy = true;
     try {
       const runtime = this.runtimeCapabilities();
-      const result = await this.pipeline.run(text, { roleCard, runtime, onProviderFailure: () => { if (this.mode === 'real') this.requestState = 'unknown'; } });
-      if (this.mode === 'real') this.requestState = 'verified';
+      const result = await this.pipeline.run(text, { roleCard, thinking, runtime, onProviderFailure: () => { if (this.mode === 'real') this.requestState = 'unknown'; }, onProviderSuccess: () => { if (this.mode === 'real') this.requestState = 'verified'; } });
       return { ...result, status: this.status() };
     } finally { this.busy = false; }
   }

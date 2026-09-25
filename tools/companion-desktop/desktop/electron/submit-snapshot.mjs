@@ -1,3 +1,4 @@
 export function submittedTurn(value, store) {
-  return { type: 'submit', text: value.text, id: value.id, roleCard: store.snapshot().roleCard };
+  const snapshot = store.snapshot();
+  return { type: 'submit', text: value.text, id: value.id, roleCard: snapshot.roleCard, thinking: snapshot.thinking };
 }
