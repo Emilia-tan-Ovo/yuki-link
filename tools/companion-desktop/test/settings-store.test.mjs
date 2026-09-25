@@ -1,0 +1,61 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SettingsStore } from '../desktop/electron/settings-store.mjs';
+import { DEFAULT_ROLE_CARD } from '../backend/prompt-composer.mjs';
+import { submittedTurn } from '../desktop/electron/submit-snapshot.mjs';
+
+async function fixture(t) { const dir = await mkdtemp(join(tmpdir(), 'yuki-settings-')); t.after(() => rm(dir, { recursive: true, force: true })); return join(dir, 'settings.json'); }
+
+test('legacy settings use default card and invalid saved card warns', async t => {
+  const file = await fixture(t);
+  await writeFile(file, JSON.stringify({ workbenchUrl: 'http://127.0.0.1:1234/' }));
+  const store = await SettingsStore.load(file);
+  assert.deepEqual(store.snapshot().roleCard, DEFAULT_ROLE_CARD);
+  assert.equal(store.snapshot().workbenchUrl, 'http://127.0.0.1:1234/');
+  await writeFile(file, JSON.stringify({ roleCard: { schemaVersion: 1, text: '' } }));
+  assert.match((await SettingsStore.load(file)).warning, /角色卡/);
+});
+
+test('persona and workbench writes serialize without losing either field', async t => {
+  const file = await fixture(t);
+  const store = await SettingsStore.load(file);
+  await Promise.all([store.saveRoleCard({ schemaVersion: 1, text: '卡 B' }), store.saveWorkbenchUrl('http://127.0.0.1:1234/')]);
+  assert.equal(store.snapshot().roleCard.text, '卡 B');
+  assert.equal(store.snapshot().workbenchUrl, 'http://127.0.0.1:1234/');
+  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), store.snapshot());
+  assert.deepEqual((await SettingsStore.load(file)).snapshot(), store.snapshot());
+  await store.resetRoleCard();
+  assert.deepEqual(store.snapshot().roleCard, DEFAULT_ROLE_CARD);
+  assert.equal(store.snapshot().workbenchUrl, 'http://127.0.0.1:1234/');
+});
+
+test('failed rename retains old committed snapshot and old settings file', async t => {
+  const file = await fixture(t);
+  const store = await SettingsStore.load(file);
+  await store.saveRoleCard({ schemaVersion: 1, text: '卡 A' });
+  const before = await readFile(file, 'utf8');
+  store.rename = async () => { throw Error('rename failed'); };
+  await assert.rejects(store.saveRoleCard({ schemaVersion: 1, text: '卡 B' }), /rename failed/);
+  assert.equal(store.snapshot().roleCard.text, '卡 A');
+  assert.equal(await readFile(file, 'utf8'), before);
+});
+
+test('accepted submit captures A while save B is pending; next submit captures B', async t => {
+  const file = await fixture(t);
+  const store = await SettingsStore.load(file);
+  await store.saveRoleCard({ schemaVersion: 1, text: '卡 A' });
+  let release;
+  const original = store.rename;
+  store.rename = async (...args) => { await new Promise(resolve => { release = resolve; }); return original(...args); };
+  const saving = store.saveRoleCard({ schemaVersion: 1, text: '卡 B' });
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  const first = submittedTurn({ id: 'T1', text: '你好' }, store);
+  release();
+  await saving;
+  const second = submittedTurn({ id: 'T2', text: '再见' }, store);
+  assert.equal(first.roleCard.text, '卡 A');
+  assert.equal(second.roleCard.text, '卡 B');
+});

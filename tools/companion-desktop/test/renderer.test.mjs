@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 
-test('new backend ready interrupts the old send and keeps its draft', () => {
+function harness() {
   const elements = new Map();
   const element = id => {
     if (!elements.has(id)) elements.set(id, {
       dataset: {}, value: '', textContent: '', disabled: false, scrollHeight: 0,
       replaceChildren() {}, append() {}, addEventListener(name, handler) { this[name] = handler; },
-      focus() {}, requestSubmit() { this.submit({ preventDefault() {} }); }
+      focus() {}, showModal() {}, close() {}, requestSubmit() { this.submit({ preventDefault() {} }); }
     });
     return elements.get(id);
   };
@@ -21,6 +21,11 @@ test('new backend ready interrupts the old send and keeps its draft', () => {
     window: { yukiDesktop: { subscribe(callback) { deliver = callback; }, send(...args) { sent.push(args); } } },
     crypto: { randomUUID: () => 'request-1' }
   });
+  return { element, sent, deliver };
+}
+
+test('new backend ready interrupts the old send and keeps its draft', () => {
+  const { element, sent, deliver } = harness();
 
   deliver({ type: 'connection', generation: 1 });
   deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
@@ -41,4 +46,32 @@ test('new backend ready interrupts the old send and keeps its draft', () => {
   assert.equal(sent.at(-1)[1].generation, 2);
   deliver({ type: 'reply', messages: [], status: { service: 'verified' } });
   assert.equal(element('text').value, '');
+});
+
+test('persona load, save, reset and failure keep draft separate from chat state', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  element('settings-open').onclick();
+  assert.equal(sent.at(-1)[0], 'persona-load');
+  deliver({ type: 'persona', action: 'load', roleCard: { schemaVersion: 1, text: '卡 A' } });
+  assert.equal(element('role-card').value, '卡 A');
+  element('role-card').value = '卡 B';
+  element('role-card').input();
+  assert.match(element('role-card-count').textContent, /3/);
+  element('role-card-save').onclick();
+  assert.equal(sent.at(-1)[0], 'persona-save');
+  assert.equal(sent.at(-1)[1].schemaVersion, 1);
+  assert.equal(sent.at(-1)[1].text, '卡 B');
+  deliver({ type: 'persona', action: 'save', error: '保存失败' });
+  assert.equal(element('role-card').value, '卡 B');
+  assert.equal(element('text').disabled, false);
+  assert.equal(element('notice').textContent, '');
+  assert.match(element('role-card-status').textContent, /保存失败/);
+  deliver({ type: 'error', status: { service: 'unknown' }, message: '网络失败' });
+  assert.equal(element('text').disabled, false);
+  assert.equal(element('service').dataset.state, 'unknown');
+  element('role-card-reset').onclick();
+  assert.equal(sent.at(-1)[0], 'persona-reset');
+  deliver({ type: 'persona', action: 'reset', roleCard: { schemaVersion: 1, text: '默认卡' } });
+  assert.equal(element('role-card').value, '默认卡');
 });

@@ -2,6 +2,7 @@
 // 2752349bcc7f7137b8b9e4ff9cccf34026d77aad. See THIRD_PARTY_NOTICES.md.
 import { DialoguePipeline } from './dialogue-pipeline.mjs';
 import { SqliteMemoryStore } from './sqlite-memory.mjs';
+import { DEFAULT_ROLE_CARD } from './prompt-composer.mjs';
 
 const IDENTITY = 'Emilia';
 
@@ -12,23 +13,29 @@ export class BackendSession {
     this.pipeline = provider ? new DialoguePipeline({ memory: this.memory, dialogue: provider }) : null;
     this.mode = mode;
     this.busy = false;
-    this.verified = false;
+    this.requestState = 'configured';
   }
   status() {
-    return { identity: IDENTITY, service: this.mode === 'preview' ? 'offline-preview' : this.provider ? (this.verified ? 'verified' : 'configured') : 'unconfigured', capabilities: { text: true, memoryManagement: false, voice: false, live2d: false, engineeringCards: false } };
+    const service = this.mode === 'preview' ? 'offline-preview' : this.provider ? this.requestState : 'unconfigured';
+    return { identity: IDENTITY, service, capabilities: this.runtimeCapabilities() };
   }
+  runtimeCapabilities() {
+    return { text: { implemented: true, mode: this.mode, service: this.statusService() }, memoryManagement: false, voice: false, live2d: false, engineeringCards: false };
+  }
+  statusService() { return this.mode === 'preview' ? 'offline-preview' : this.provider ? this.requestState : 'unconfigured'; }
   history() {
     return this.memory.history();
   }
-  async submit(value) {
+  async submit(value, roleCard = DEFAULT_ROLE_CARD) {
     const text = typeof value === 'string' ? value.trim() : '';
     if (!text || text.length > 20000 || text.includes('\0')) throw Error('请输入不超过 20000 字的文字。');
     if (!this.provider) throw Error('DeepSeek 凭据未配置；请在设置中配置后再发送。');
     if (this.busy) throw Error('上一条消息尚未完成。');
     this.busy = true;
     try {
-      const result = await this.pipeline.run(text);
-      if (this.mode === 'real') this.verified = true;
+      const runtime = this.runtimeCapabilities();
+      const result = await this.pipeline.run(text, { roleCard, runtime, onProviderFailure: () => { if (this.mode === 'real') this.requestState = 'unknown'; } });
+      if (this.mode === 'real') this.requestState = 'verified';
       return { ...result, status: this.status() };
     } finally { this.busy = false; }
   }

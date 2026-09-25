@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { BackendConnection } from './transport.mjs';
 import { assetResponse } from './assets.mjs';
 import { normalizeCredential } from './credential.mjs';
+import { SettingsStore } from './settings-store.mjs';
+import { submittedTurn } from './submit-snapshot.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const option = name => { const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1]; };
@@ -19,7 +21,7 @@ else app.setPath('userData', join(app.getPath('appData'), preview ? 'Yuki Link D
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 protocol.registerSchemesAsPrivileged([{ scheme: 'yuki', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
-let win, rendererReady = false, currentStatus, settings = { workbenchUrl: '' }, quitting = false;
+let win, rendererReady = false, currentStatus, settings, quitting = false;
 const dataDir = () => app.getPath('userData');
 const deliver = message => { if (rendererReady && win && !win.isDestroyed()) win.webContents.send('yuki:delivery', message); };
 const connection = new BackendConnection({ worker: resolve(here, '../../backend/worker.mjs'), onMessage: (message, generation) => { currentStatus = message?.status ?? currentStatus; deliver({ ...message, generation }); } });
@@ -32,7 +34,7 @@ async function key() {
 }
 async function start() {
   connection.start({ directory: dataDir(), key: preview ? '' : await key(), preview });
-  deliver({ type: 'connection', state: 'connecting', generation: connection.generation, workbenchUrl: settings.workbenchUrl });
+  deliver({ type: 'connection', state: 'connecting', generation: connection.generation, workbenchUrl: settings.snapshot().workbenchUrl });
 }
 function workbenchUrl(value) {
   try {
@@ -42,7 +44,7 @@ function workbenchUrl(value) {
   } catch { return null; }
 }
 async function checkWorkbench() {
-  const url = workbenchUrl(settings.workbenchUrl);
+  const url = workbenchUrl(settings.snapshot().workbenchUrl);
   if (!url) return { configured: false, reachable: false };
   try { const result = await fetch(url, { signal: AbortSignal.timeout(2000) }); return { configured: true, reachable: Boolean(result.ok && result.headers.get('content-type')?.includes('text/html') && (await result.text()).includes('Yuki Harness')) }; }
   catch { return { configured: true, reachable: false }; }
@@ -51,7 +53,7 @@ async function checkWorkbench() {
 ipcMain.on('yuki:ready', event => { if (!trusted(event) || rendererReady) return; rendererReady = true; void start(); });
 ipcMain.on('yuki:submit', (event, value) => {
   if (!trusted(event) || !value || typeof value.text !== 'string' || value.text.length > 20000 || typeof value.id !== 'string') return;
-  if (!connection.send({ type: 'submit', text: value.text, id: value.id }, value.generation)) deliver({ type: 'error', id: value.id, message: '文字服务尚未连接。' });
+  if (!connection.send(submittedTurn(value, settings), value.generation)) deliver({ type: 'error', id: value.id, message: '文字服务尚未连接。' });
 });
 ipcMain.on('yuki:credential', event => {
   if (!trusted(event) || preview) return;
@@ -71,19 +73,27 @@ ipcMain.on('yuki:workbench-save', (event, value) => {
   if (!trusted(event) || typeof value !== 'string') return;
   const url = workbenchUrl(value);
   if (!url) { deliver({ type: 'workbench', configured: false, reachable: false, error: '请输入本机工作台地址，例如 http://127.0.0.1:端口/' }); return; }
-  settings.workbenchUrl = url;
-  void writeFile(settingsFile(), JSON.stringify(settings), { mode: 0o600 }).then(async () => deliver({ type: 'workbench', ...await checkWorkbench(), url })).catch(() => deliver({ type: 'workbench', configured: false, reachable: false, error: '工作台地址未能保存。' }));
+  void settings.saveWorkbenchUrl(url).then(async () => deliver({ type: 'workbench', ...await checkWorkbench(), url })).catch(() => deliver({ type: 'workbench', configured: false, reachable: false, error: '工作台地址未能保存。' }));
 });
-ipcMain.on('yuki:workbench-check', event => { if (trusted(event)) void checkWorkbench().then(value => deliver({ type: 'workbench', ...value, url: settings.workbenchUrl })); });
+ipcMain.on('yuki:workbench-check', event => { if (trusted(event)) void checkWorkbench().then(value => deliver({ type: 'workbench', ...value, url: settings.snapshot().workbenchUrl })); });
 ipcMain.on('yuki:workbench-open', event => {
   if (!trusted(event)) return;
-  void checkWorkbench().then(value => value.reachable ? shell.openExternal(settings.workbenchUrl) : deliver({ type: 'workbench', ...value, url: settings.workbenchUrl, error: '工程工作台当前不可达。' }));
+  void checkWorkbench().then(value => value.reachable ? shell.openExternal(settings.snapshot().workbenchUrl) : deliver({ type: 'workbench', ...value, url: settings.snapshot().workbenchUrl, error: '工程工作台当前不可达。' }));
+});
+ipcMain.on('yuki:persona-load', event => { if (trusted(event)) deliver({ type: 'persona', action: 'load', roleCard: settings.snapshot().roleCard, warning: settings.warning }); });
+ipcMain.on('yuki:persona-save', (event, value) => {
+  if (!trusted(event)) return;
+  void Promise.resolve().then(() => settings.saveRoleCard(value)).then(saved => deliver({ type: 'persona', action: 'save', roleCard: saved.roleCard })).catch(error => deliver({ type: 'persona', action: 'save', error: error.message.startsWith('角色卡') ? error.message : '角色卡未能保存。' }));
+});
+ipcMain.on('yuki:persona-reset', event => {
+  if (!trusted(event)) return;
+  void settings.resetRoleCard().then(saved => deliver({ type: 'persona', action: 'reset', roleCard: saved.roleCard })).catch(() => deliver({ type: 'persona', action: 'reset', error: '默认角色卡未能保存。' }));
 });
 ipcMain.on('yuki:quit', event => { if (trusted(event)) app.quit(); });
 
 void app.whenReady().then(async () => {
   await mkdir(dataDir(), { recursive: true });
-  try { const saved = JSON.parse(await readFile(settingsFile(), 'utf8')); if (workbenchUrl(saved.workbenchUrl)) settings.workbenchUrl = saved.workbenchUrl; } catch {}
+  settings = await SettingsStore.load(settingsFile());
   const root = resolve(here, '..');
   win = new BrowserWindow({ title: 'Yuki Link · Emilia', width: 1120, height: 760, minWidth: 760, minHeight: 540, backgroundColor: '#f7f4ff', show: !smoke,
     webPreferences: { preload: resolve(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, partition: 'persist:yuki-desktop' } });
