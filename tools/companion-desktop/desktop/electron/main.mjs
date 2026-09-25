@@ -21,7 +21,7 @@ else app.setPath('userData', join(app.getPath('appData'), preview ? 'Yuki Link D
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 protocol.registerSchemesAsPrivileged([{ scheme: 'yuki', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
-let win, rendererReady = false, currentStatus, settings, quitting = false;
+let win, rendererReady = false, currentStatus, settings, quitting = false, smokeSubmittedThinking;
 const dataDir = () => app.getPath('userData');
 const deliver = message => { if (rendererReady && win && !win.isDestroyed()) win.webContents.send('yuki:delivery', message); };
 const connection = new BackendConnection({ worker: resolve(here, '../../backend/worker.mjs'), onMessage: (message, generation) => { currentStatus = message?.status ?? currentStatus; deliver({ ...message, generation }); } });
@@ -53,7 +53,9 @@ async function checkWorkbench() {
 ipcMain.on('yuki:ready', event => { if (!trusted(event) || rendererReady) return; rendererReady = true; void start(); });
 ipcMain.on('yuki:submit', (event, value) => {
   if (!trusted(event) || !value || typeof value.text !== 'string' || value.text.length > 20000 || typeof value.id !== 'string') return;
-  if (!connection.send(submittedTurn(value, settings), value.generation)) deliver({ type: 'error', id: value.id, message: '文字服务尚未连接。' });
+  const submitted = submittedTurn(value, settings);
+  if (smoke) smokeSubmittedThinking = submitted.thinking;
+  if (!connection.send(submitted, value.generation)) deliver({ type: 'error', id: value.id, message: '文字服务尚未连接。' });
 });
 ipcMain.on('yuki:credential', event => {
   if (!trusted(event) || preview) return;
@@ -119,6 +121,32 @@ void app.whenReady().then(async () => {
         await new Promise(done => setTimeout(done, 150));
       }
       if (!ready) throw Error('Renderer/backend did not become ready');
+      if (option('--smoke-phase') === 'first') {
+        let loaded = false;
+        while (Date.now() < deadline) {
+          loaded = await win.webContents.executeJavaScript("!document.getElementById('thinking-quick').disabled");
+          if (loaded) break;
+          await new Promise(done => setTimeout(done, 150));
+        }
+        if (!loaded) throw Error('Thinking setting was not loaded');
+        await win.webContents.executeJavaScript("const quick=document.getElementById('thinking-quick');quick.value='high';quick.dispatchEvent(new Event('change',{bubbles:true}))");
+        let saved = false;
+        while (Date.now() < deadline) {
+          saved = settings.snapshot().thinking.enabled && settings.snapshot().thinking.effort === 'high' && await win.webContents.executeJavaScript("!document.getElementById('send').disabled");
+          if (saved) break;
+          await new Promise(done => setTimeout(done, 150));
+        }
+        if (!saved) throw Error('Quick Thinking selection was not saved');
+      }
+      if (option('--smoke-phase') === 'reopen') {
+        let restored = false;
+        while (Date.now() < deadline) {
+          restored = await win.webContents.executeJavaScript("!document.getElementById('thinking-quick').disabled && document.getElementById('thinking-quick').value === 'high'");
+          if (restored) break;
+          await new Promise(done => setTimeout(done, 150));
+        }
+        if (!restored) throw Error('Quick Thinking selection was not restored');
+      }
       const before = await win.webContents.executeJavaScript("document.querySelectorAll('#messages .message').length");
       if (option('--smoke-phase') === 'reopen' && before < 2) throw Error('History was not restored');
       await win.webContents.executeJavaScript("document.getElementById('text').value='packaged smoke';document.getElementById('form').requestSubmit()");
@@ -129,6 +157,7 @@ void app.whenReady().then(async () => {
         await new Promise(done => setTimeout(done, 150));
       }
       if (!replied) throw Error('Renderer -> IPC -> backend -> renderer round trip failed');
+      if (!smokeSubmittedThinking?.enabled || smokeSubmittedThinking.effort !== 'high') throw Error('Submit did not capture saved Thinking effort');
       await win.webContents.executeJavaScript("document.getElementById('about-open').click()");
       let license = false;
       for (let attempt = 0; attempt < 20 && !license; attempt++) {
