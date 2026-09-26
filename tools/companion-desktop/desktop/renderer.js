@@ -300,7 +300,7 @@ function dispatchUserText(value, origin = 'typed', voiceScope) {
 }
 $('form').addEventListener('submit', event => { event.preventDefault(); void mediaUI.dispose(); dispatchUserText($('text').value); });
 $('engineering-card-panel').addEventListener('toggle', () => { if ($('engineering-card-panel').open) host.send('engineering-card', { generation, id: crypto.randomUUID(), action: 'list' }); });
-$('card-create').onclick = () => { if ($('card-original').value.trim()) cardCommand('create',{ original: $('card-original').value }); else $('card-status').textContent = '请先填写工作要求。'; };
+$('card-create').onclick = () => { if ($('card-original').value.trim()) cardCommand('create',{ original: $('card-original').value, focus: currentCardFocus() }); else $('card-status').textContent = '请先填写工作要求。'; };
 $('card-select').onchange = () => { renderCard(cardEntries.find(card => card.cardId === $('card-select').value) || null); cardFocusExplicit = !!verifiedFocus(cardCurrent); };
 $('card-choose').onclick = () => { if (!cardCurrent || cardPending || cardCurrent.content.resolution.status !== 'ambiguous') return; const selected = cardCurrent.content.candidates?.find(item => item.url === $('card-candidate').value); if (!selected) return; const fields = cardFields(); fields.project = cardCurrent.content.projectKey || 'yuki-link'; fields.ticket = `#${selected.number}`; fields.noTicket = false; cardCommand('edit', { cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision, fields }); updateCardConfirm(); };
 $('card-edit').onclick = () => { if (!cardCurrent) return; cardCommand('edit',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision, fields: cardFields() }); updateCardConfirm(); };

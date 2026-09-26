@@ -154,7 +154,7 @@ test('reopened verified card focus resolves shorthand through GitHub lookup even
   store.close();
   const reopened = new EngineeringCardStore(dir), calls=[];
   const resumed = new EngineeringCards({store:reopened,issueSource:{lookup:async (repo,n) => {calls.push(n);return issue(repo,n,'COMPANION-004');},search:async repo => [issue(repo,129,'COMPANION-004'),issue(repo,120,'ORCH-004')]}});
-  const card = await resumed.create('继续004');
+  const restored = reopened.list().find(value => value.cardId === first.cardId); const card = await resumed.create('继续004',{projectKey:restored.content.projectKey,ticket:restored.content.ticket});
   assert.equal(first.content.resolution.status,'verified_existing');
   assert.deepEqual(calls,[129]); assert.equal(card.content.ticket.number,129);
   assert.equal(card.content.resolution.status,'verified_existing'); assert.equal(card.dispatchStatus,'not-dispatched');
@@ -198,7 +198,10 @@ test('unavailable Harness hint does not block explicit GitHub ticket verificatio
 test('recent cards alone cannot silently choose among conflicting 004 routes', async t => {
   const store=new EngineeringCardStore(await fixture(t));
   const repo='Emilia-tan-Ovo/yuki-link';
-  for(const [n,title] of [[120,'ORCH-004'],[129,'COMPANION-004']]) store.create({original:`处理 ${title}`,repository:repo,projectKey:'yuki-link',ticket:issue(repo,n,title),resolution:{status:'verified_existing'}});
+  for(const [n,title] of [[120,'ORCH-004'],[129,'COMPANION-004']]) {
+    const card=store.create({original:'处理 '+title,repository:repo,projectKey:'yuki-link',ticket:issue(repo,n,title),resolution:{status:'verified_existing'},desiredPhase:'implementation',endpoint:'to-pr',extraAuthorization:{merge:false,deploy:false}});
+    store.confirm(card.cardId,card.revision,'desktop-user-action');
+  }
   const source={lookup:async(r,n)=>issue(r,n,n===120?'ORCH-004':'COMPANION-004'),search:async r=>[issue(r,120,'ORCH-004'),issue(r,129,'COMPANION-004')]};
   const card=await new EngineeringCards({store,issueSource:source}).create('继续004');
   assert.equal(card.content.resolution.status,'ambiguous'); assert.equal(card.content.candidates.length,2); store.close();

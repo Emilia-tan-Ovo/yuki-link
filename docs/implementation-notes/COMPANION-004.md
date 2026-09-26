@@ -200,3 +200,8 @@ resolution status 只回答“卡片目标是否已经明确且有依据”，�
 - 外层真实 worker + production Harness/GitHub 验收发现一个 IPC 合同缺口：成功的 card edit 曾返回裸 card，而 renderer 只消费 message.card，导致“选择候选→同卡新 revision”可能已持久化但界面不刷新。
 - 已将 BackendSession 的 edit 成功回包统一为 { card }，冲突回包保持原 conflict + card；新增 worker 回归测试验证 renderer 所需合同。
 - 修后定向测试 68/68 PASS；真实 production seam 已验证：COMPANION-004 焦点重开后“继续004”→#129；ORCH-004 焦点→#94；无焦点→5 个候选保持 ambiguous；选择 #129 后同 card_id revision 1→2、GitHub verified、not-dispatched。
+### SP-2 final focused follow-up（2026-09-26）
+
+- fresh final focused reviewer 复现：卡片面板 create 未传 focus，而后端在 focus 缺失时把最近第一张 verified/revision>1 卡自动升级成强焦点；当存在多条已确认 004 路线时可绕过歧义澄清。
+- 最小修复：后端 create 不再从 recentCards 自动制造 strong focus；recentCards 只保留 candidate-discovery 作用。卡片面板与普通聊天入口统一传 currentCardFocus()，该 focus 只有显式选择或唯一 verified target 时才成立。
+- 回归新增两条已确认不同 004 路线场景：无显式/唯一 focus 的面板“继续004”必须传 null focus 并保留歧义；显式选择 ORCH-004 后面板会传 #94 focus，最终仍需 GitHub lookup。

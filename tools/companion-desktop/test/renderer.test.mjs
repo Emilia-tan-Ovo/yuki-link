@@ -78,6 +78,23 @@ test('reopen restores verified card focus and ambiguous card offers same-card ca
   assert.match(h.element('card-state').textContent,/尚未派发/);
 });
 
+test('panel shorthand uses only explicit or unique focus and keeps conflicting routes ambiguous', () => {
+  const companion={cardId:'companion',revision:1,state:'confirmed',content:{original:'处理 #129',summary:'COMPANION-004',projectKey:'yuki-link',repository:'Emilia-tan-Ovo/yuki-link',ticket:{repository:'Emilia-tan-Ovo/yuki-link',number:129,title:'COMPANION-004',url:'https://github.com/Emilia-tan-Ovo/yuki-link/issues/129'},resolution:{status:'verified_existing'},desiredPhase:'implementation',endpoint:'to-pr'},confirmation:{revision:1}};
+  const orch={cardId:'orch',revision:1,state:'confirmed',content:{...companion.content,original:'处理 #94',summary:'ORCH-004',ticket:{repository:'Emilia-tan-Ovo/yuki-link',number:94,title:'ORCH-004',url:'https://github.com/Emilia-tan-Ovo/yuki-link/issues/94'}},confirmation:{revision:1}};
+
+  const h=harness();
+  h.deliver({type:'ready',generation:1,history:[],status:{service:'configured'}});
+  h.deliver({type:'engineering-card',generation:1,action:'list',cards:[companion,orch]});
+  h.element('card-original').value='继续004'; h.element('card-create').onclick();
+  assert.equal(h.sent.at(-1)[1].action,'create'); assert.equal(h.sent.at(-1)[1].focus,null);
+
+  const selected=harness();
+  selected.deliver({type:'ready',generation:1,history:[],status:{service:'configured'}});
+  selected.deliver({type:'engineering-card',generation:1,action:'list',cards:[companion,orch]});
+  selected.element('card-select').value='orch'; selected.element('card-select').onchange();
+  selected.element('card-original').value='继续004'; selected.element('card-create').onclick();
+  assert.equal(selected.sent.at(-1)[1].focus.ticket.number,94);
+});
 test('voice engineering card handoff consumes the matching final without starting dialogue', () => {
   const h = harness();
   h.deliver({type:'ready',generation:1,history:[],status:{service:'configured'}});
