@@ -4,6 +4,7 @@ import { DialoguePipeline } from './dialogue-pipeline.mjs';
 import { SqliteMemoryStore } from './sqlite-memory.mjs';
 import { EngineeringCardStore } from './engineering-card-store.mjs';
 import { EngineeringCards, modelCandidate } from './engineering-cards.mjs';
+import { EngineeringCoordinator } from './engineering-coordinator.mjs';
 import { DEFAULT_ROLE_CARD } from './prompt-composer.mjs';
 import { randomUUID } from 'node:crypto';
 import { TurnCancelledError } from './turn-cancellation.mjs';
@@ -15,11 +16,14 @@ const IDENTITY = 'Emilia';
 const COMPLETED_TURN_LIMIT = 32;
 
 export class BackendSession {
-  constructor({ directory, provider, mode = 'real', issueSource, workflowSource, candidateSources }) {
+  constructor({ directory, provider, mode = 'real', issueSource, workflowSource, candidateSources, engineeringConfig }) {
     this.memory = new SqliteMemoryStore(directory);
     this.cardStore = new EngineeringCardStore(directory);
     this.provider = provider;
     this.cards = new EngineeringCards({ store: this.cardStore, extract: text => modelCandidate(mode === 'real' ? provider : null,text), issueSource, workflowSource, candidateSources });
+    this.engineering = mode === 'real' && engineeringConfig?.configured
+      ? new EngineeringCoordinator({ store:this.cardStore, config:engineeringConfig.value }) : null;
+    this.engineeringReason = engineeringConfig?.reason ?? null;
     this.pipeline = provider ? new DialoguePipeline({ memory: this.memory, dialogue: provider }) : null;
     this.mode = mode;
     this.busy = false;
@@ -34,7 +38,7 @@ export class BackendSession {
   }
   runtimeCapabilities() {
     const mediaReadiness = this.mediaReadiness ?? initialMediaReadiness();
-    return { text: { implemented: true, mode: this.mode, service: this.statusService() }, memoryManagement: true, voice: this.mode === 'real' && this.statusService() === 'verified' && mediaReadiness.voice.ready === true, live2d: false, engineeringCards: { implemented: true, ticketSource: this.cards.issueSource ? 'configured-public-read-only' : 'unavailable', workflowSource: this.cards.workflowSource ? 'configured-read-only' : 'unavailable', dispatched: false }, mediaReadiness };
+    return { text: { implemented: true, mode: this.mode, service: this.statusService() }, memoryManagement: true, voice: this.mode === 'real' && this.statusService() === 'verified' && mediaReadiness.voice.ready === true, live2d: false, engineeringCards: { implemented: true, ticketSource: this.cards.issueSource ? 'configured-public-read-only' : 'unavailable', workflowSource: this.cards.workflowSource ? 'configured-read-only' : 'unavailable', dispatched: Boolean(this.engineering), dispatchReason:this.engineeringReason }, mediaReadiness };
   }
   statusService() { return this.mode === 'preview' ? 'offline-preview' : this.provider ? this.requestState : 'unconfigured'; }
   history() {
@@ -47,9 +51,14 @@ export class BackendSession {
     if (data.action === 'list') return { cards: this.cardStore.list() };
     if (data.action === 'create') return { card: await this.cards.create(data.original, data.focus) };
     if (data.action === 'edit') { const result = await this.cards.edit(data.cardId,data.expectedRevision,data.fields); return result?.conflict ? result : { card: result }; }
-    if (data.action === 'confirm') return this.cards.confirm(data.cardId,data.expectedRevision,'desktop-user-action');
+    if (data.action === 'confirm') {
+      const card = this.cardStore.get(data.cardId);
+      if (card?.content.ticket?.scope?.digest && !this.engineering) return { invalid:true, reason:'engineering-unavailable', card };
+      return await this.cards.confirm(data.cardId,data.expectedRevision,'desktop-user-action');
+    }
     if (data.action === 'revoke') return this.cards.revoke(data.cardId,data.expectedRevision);
-    if (data.action === 'refresh') return { card: await this.cards.refresh(data.cardId) };
+    if (data.action === 'refresh') { const card = await this.cards.refresh(data.cardId);
+      return { card, engineeringStatus: this.engineering ? await this.engineering.status(card) : null }; }
     throw Error('工程卡片操作无效。');
   }
   memoryMutation(fn) { if (this.busy) throw Error('上一条消息尚未完成，请稍后再管理记忆。'); return fn(); }

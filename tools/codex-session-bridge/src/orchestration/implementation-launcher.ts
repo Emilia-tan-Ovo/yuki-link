@@ -4,7 +4,7 @@ import path from 'node:path';
 import { inspectDependency, inspectHostCapabilities } from './preflight.ts';
 import { z } from 'zod';
 import { HarnessError } from '../harness/model.ts';
-import { executionContentIdentitySchema, implementationAuthorizationSchema, implementationAuthoritySourceIdentitySchema,
+import { companionDispatchProtectionSchema, executionContentIdentitySchema, implementationAuthorizationSchema, implementationAuthoritySourceIdentitySchema,
   implementationExecutableIdentitySchema, implementationLaunchContractSchema,
   implementationPolicySnapshotSchema } from '../harness/execution-model.ts';
 
@@ -48,6 +48,7 @@ export interface ImplementationLaunchAuthoritySource {
     policy: z.infer<typeof implementationPolicySnapshotSchema>;
     authorization: z.infer<typeof implementationAuthorizationSchema> | null;
     source: z.infer<typeof implementationAuthoritySourceIdentitySchema>;
+    companion?: z.infer<typeof companionDispatchProtectionSchema>;
   };
 }
 
@@ -339,6 +340,7 @@ export class ImplementationLauncher {
     const protection = {
       caller_fingerprint: callerFingerprint, contract, policy: snapshot.policy, authorization: snapshot.authorization,
       authority_source: snapshot.authority.source,
+      ...(snapshot.authority.companion ? { companion_dispatch: snapshot.authority.companion } : {}),
       prompt_context: { references: snapshot.references, current_delta: input.current_delta,
         cost: { prompt_utf8_bytes: Buffer.byteLength(prompt, 'utf8'), reference_count: snapshot.references.length,
           duplicate_reference_count: snapshot.duplicateReferences } },

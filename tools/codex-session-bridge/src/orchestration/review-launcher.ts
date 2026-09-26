@@ -3,7 +3,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { HarnessError } from '../harness/model.ts';
-import { executionContentIdentitySchema, implementationAuthoritySourceIdentitySchema,
+import { companionDispatchProtectionSchema, executionContentIdentitySchema, implementationAuthoritySourceIdentitySchema,
   reviewAuthorizationSchema, reviewLaunchContractSchema, reviewPolicySnapshotSchema } from '../harness/execution-model.ts';
 
 const text = z.string().min(1).max(512);
@@ -43,6 +43,7 @@ export interface ReviewLaunchAuthoritySource {
     policy: z.infer<typeof reviewPolicySnapshotSchema>;
     authorization: z.infer<typeof reviewAuthorizationSchema> | null;
     source: z.infer<typeof implementationAuthoritySourceIdentitySchema>;
+    companion?: z.infer<typeof companionDispatchProtectionSchema>;
   };
 }
 
@@ -199,6 +200,7 @@ export class ReviewLauncher {
         concurrency: { mode: 'single-line', decision_ref: null } },
       review: { caller_fingerprint: callerFingerprint, contract, policy: snapshot.policy,
         authorization: snapshot.authorization, authority_source: snapshot.authority.source,
+        ...(snapshot.authority.companion ? { companion_dispatch: snapshot.authority.companion } : {}),
         prompt_context: { references: prompt.references, current_delta: input.current_delta },
         preflight: { workflow_revision: input.expected.workflow_revision,
           subject_ref: input.expected.subject_ref, subject_identity: input.expected.subject_identity } },

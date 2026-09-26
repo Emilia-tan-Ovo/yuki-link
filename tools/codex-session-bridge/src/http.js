@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { createMcpServer } from './mcp.js';
+import { createCompanionMcpServer, createMcpServer } from './mcp.js';
 
 export function createHttpServer(manager, computer, observation = {}) {
   return http.createServer(async (request, response) => {
@@ -16,7 +16,7 @@ export function createHttpServer(manager, computer, observation = {}) {
     if (request.url === '/healthz' && request.method === 'GET') {
       response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ status: manager.closing ? 'stopping' : 'ok', service: 'yuki-computer-agent', version: '0.2.0' })); return;
     }
-    if (request.url !== '/mcp') { response.writeHead(404).end(); return; }
+    if (!['/mcp','/companion-mcp'].includes(request.url)) { response.writeHead(404).end(); return; }
     if (observation.draining) { response.writeHead(503).end('Stopping'); return; }
     if (request.method !== 'POST') { response.writeHead(405, { Allow: 'POST' }).end(); return; }
     if (!request.headers['content-type']?.startsWith('application/json')) { response.writeHead(415).end(); return; }
@@ -33,7 +33,7 @@ export function createHttpServer(manager, computer, observation = {}) {
       try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
       catch { response.writeHead(400).end('Invalid JSON'); return; }
       // MCP connections are stateless; Codex sessions belong to the shared manager.
-      const server = createMcpServer(manager, computer);
+      const server = request.url === '/companion-mcp' ? createCompanionMcpServer(manager) : createMcpServer(manager, computer);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       response.once('close', () => { transport.close().catch(() => {}); server.close().catch(() => {}); });
       await server.connect(transport);

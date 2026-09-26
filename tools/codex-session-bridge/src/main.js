@@ -17,6 +17,7 @@ import { createHarnessRuntime, createHarnessServer } from './harness/runtime.ts'
 import { FileImplementationLaunchAuthoritySource } from './orchestration/implementation-launcher.ts';
 import { FileReviewLaunchAuthoritySource } from './orchestration/review-launcher.ts';
 import { FileWorkflowAgentAuthoritySource } from './orchestration/workflow-agent-launcher.ts';
+import { CompanionDispatchService } from './orchestration/companion-dispatch.mjs';
 
 const toolRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { values } = parseArgs({ options: {
@@ -36,6 +37,7 @@ const { values } = parseArgs({ options: {
   'implementation-launch-authority': { type: 'string' },
   'review-launch-authority': { type: 'string' },
   'workflow-agent-authority': { type: 'string' },
+  'companion-card-store': { type: 'string' },
 } });
 
 if (values.help) {
@@ -44,6 +46,7 @@ if (values.help) {
   console.log('--implementation-launch-authority ABSOLUTE_JSON_PATH (trusted versioned policy and Ticket authorization source for start_ticket_implementation)');
   console.log('--review-launch-authority ABSOLUTE_JSON_PATH (trusted versioned policy and Ticket authorization source for start_ticket_review)');
   console.log('--workflow-agent-authority ABSOLUTE_JSON_PATH (trusted policies and Ticket authorizations for the unified Workflow Agent launcher)');
+  console.log('--companion-card-store ABSOLUTE_DIRECTORY (trusted Desktop engineering card store; existing SQLite required)');
   console.log('Yuki Computer Agent\n--transport stdio|http (default stdio)\n--port 7391 (HTTP binds only 127.0.0.1)\n--allow-cwd ABSOLUTE_PATH (repeatable; required; Codex cwd and filesystem write roots)\n--read-root ABSOLUTE_PATH (repeatable; optional additional read roots)\n--runtime ABSOLUTE_PATH (default tools/codex-session-bridge/runtime)\n--codex-bin EXECUTABLE (default codex)\n--pwsh-bin EXECUTABLE (default pwsh.exe on Windows)');
 } else {
   let store;
@@ -67,6 +70,7 @@ if (values.help) {
     const failures = outcomes.flatMap((outcome, index) => outcome.status === 'rejected'
       ? [{ source: sources[index], error: publicError(outcome.reason) }] : []);
     if (failures.length) throw new BridgeError('STOP_FAILED', 'Execution sources could not all close; retain the runtime writer and observation.', { failures });
+    manager?.companionDispatch?.close();
     if (manager) await manager.close(); // Final capture/recheck, then writer release.
     else store?.close();
   };
@@ -75,7 +79,8 @@ if (values.help) {
     if (!path.isAbsolute(values.runtime) || [...values['allow-cwd'], ...(values['read-root'] ?? []), ...(values['control-root'] ?? []),
       ...(values['implementation-launch-authority'] ? [values['implementation-launch-authority']] : []),
       ...(values['review-launch-authority'] ? [values['review-launch-authority']] : []),
-      ...(values['workflow-agent-authority'] ? [values['workflow-agent-authority']] : [])].some(p => !path.isAbsolute(p))) throw new Error('Runtime, allowlist and authority paths must be absolute.');
+      ...(values['workflow-agent-authority'] ? [values['workflow-agent-authority']] : []),
+      ...(values['companion-card-store'] ? [values['companion-card-store']] : [])].some(p => !path.isAbsolute(p))) throw new Error('Runtime, allowlist and authority paths must be absolute.');
     const port = Number(values.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid port.');
     const harnessPort = values['harness-port'] === undefined ? null : Number(values['harness-port']);
@@ -98,6 +103,8 @@ if (values.help) {
       }) : null;
     computer = new ComputerTools({ readRoots: [...values['allow-cwd'], ...(values['read-root'] ?? [])], writeRoots: values['allow-cwd'], runtime: values.runtime, controlRoots: values['control-root'], pwsh: values['pwsh-bin'] });
     manager.harness = createHarnessRuntime(manager, values['control-root'], computer.tasks);
+    manager.companionDispatch = values['companion-card-store']
+      ? new CompanionDispatchService({ manager, directory: values['companion-card-store'], forbiddenRoots:values['allow-cwd'] }) : null;
     let server;
     const observation = { active: 0 };
     let shuttingDown = false;

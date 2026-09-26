@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, renameSync, copyFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, copyFileSync, realpathSync } from 'node:fs';
 import { fail, get, readJson, run, sleep } from './common.js';
 import { matches } from './host.js';
 import { tunnelEvents } from './tunnel-events.js';
@@ -124,6 +124,17 @@ export class YcaUnit {
         forbiddenRoots: [this.config.repo, this.config.deploymentRoot],
       }).snapshot('', 'ticket-design', '');
     }
+    if (this.config.companionCardStore) {
+      if (!deployment?.launcherFlags?.companionCardStore) throw fail('DEPLOYMENT_LAUNCHER_UNSUPPORTED');
+      if (!existsSync(path.join(this.config.companionCardStore,'engineering-cards.sqlite')))
+        throw fail('COMPANION_CARD_STORE_UNAVAILABLE');
+      const store = realpathSync(this.config.companionCardStore);
+      for (const root of [this.config.repo, this.config.deploymentRoot].filter(Boolean)) {
+        const relative = path.relative(realpathSync(root),store);
+        if (relative === '' || relative !== '..' && !relative.startsWith('..'+path.sep) && !path.isAbsolute(relative))
+          throw fail('COMPANION_CARD_STORE_UNTRUSTED');
+      }
+    }
     const entry = deployment?.entry ?? this.config.entry, cwd = deployment?.cwd ?? this.config.cwd;
     for (const [name, file] of Object.entries({ NODE: this.config.node, YCA_ENTRY: entry, PWSH: this.config.pwsh })) if (!existsSync(file)) throw fail(`${name}_PATH_MISSING`);
     this.codexResolution = resolveCodexExecutable(this.config.codex);
@@ -154,6 +165,7 @@ export class YcaUnit {
     if (this.config.implementationLaunchAuthority) args.push('--implementation-launch-authority', this.config.implementationLaunchAuthority);
     if (this.config.reviewLaunchAuthority) args.push('--review-launch-authority', this.config.reviewLaunchAuthority);
     if (this.config.workflowAgentAuthority) args.push('--workflow-agent-authority', this.config.workflowAgentAuthority);
+    if (this.config.companionCardStore) args.push('--companion-card-store', this.config.companionCardStore);
     const child = this.spawnProcess(this.config.node, args, { cwd, shell: false, windowsHide: true, detached: true,
       env: { ...process.env, YUKI_CONTROL_TOKEN: this.state.token }, stdio: ['ignore', 'ignore', 'pipe'] });
     const launchedInstance = this.state.instance, stderrChunks = [];

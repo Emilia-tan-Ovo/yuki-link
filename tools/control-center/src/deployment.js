@@ -91,6 +91,7 @@ async function probeLauncherFlags(node, cwd) {
     implementationLaunchAuthority: result.output.includes('--implementation-launch-authority ABSOLUTE_JSON_PATH'),
     reviewLaunchAuthority: result.output.includes('--review-launch-authority ABSOLUTE_JSON_PATH'),
     workflowAgentAuthority: result.output.includes('--workflow-agent-authority ABSOLUTE_JSON_PATH'),
+    companionCardStore: result.output.includes('--companion-card-store ABSOLUTE_DIRECTORY'),
   };
 }
 
@@ -132,6 +133,7 @@ export async function verifyDeployment(root, commit, node = process.execPath) {
     implementationLaunchAuthority: manifest.launcherFlags?.implementationLaunchAuthority === true,
     reviewLaunchAuthority: manifest.launcherFlags?.reviewLaunchAuthority === true,
     workflowAgentAuthority: manifest.launcherFlags?.workflowAgentAuthority === true,
+    companionCardStore: manifest.launcherFlags?.companionCardStore === true,
   } };
 }
 

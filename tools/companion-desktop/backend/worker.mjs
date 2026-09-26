@@ -6,8 +6,9 @@ import { validRequestId } from '../desktop/turn-contract.mjs';
 import { WorkerVoice } from './voice-worker.mjs';
 import { githubIssueSource } from './github-issue-source.mjs';
 import { harnessCandidateSource } from './harness-candidate-source.mjs';
+import { loadEngineeringConfig } from './engineering-coordinator.mjs';
 
-export function createWorkerHandler({ post, createVoice, createSession = data => new BackendSession({ directory: data.directory, provider: data.preview ? previewProvider() : deepSeekProvider(data.key), mode: data.preview ? 'preview' : 'real', issueSource: githubIssueSource(), candidateSources: [harnessCandidateSource({url:data.workbenchUrl || process.env.YUKI_HARNESS_URL})].filter(Boolean) }) }) {
+export function createWorkerHandler({ post, createVoice, createSession = data => new BackendSession({ directory: data.directory, provider: data.preview ? previewProvider() : deepSeekProvider(data.key), mode: data.preview ? 'preview' : 'real', issueSource: githubIssueSource(), candidateSources: [harnessCandidateSource({url:data.workbenchUrl || process.env.YUKI_HARNESS_URL})].filter(Boolean), engineeringConfig: data.preview ? null : loadEngineeringConfig(data.directory) }) }) {
   let session, generation, voice, configRevision, preview;
   return async data => {
     if (data?.type === 'start') {
@@ -48,6 +49,15 @@ export function createWorkerHandler({ post, createVoice, createSession = data =>
     } else if (data?.type === 'engineering-card' && session) {
       const result = await session.cardCommand(data);
       if (session === owner) post({ type: 'engineering-card', id: data.id, action: data.action, ...result });
+      if (data.action === 'confirm' && result.card?.dispatchId && owner.engineering && !result.conflict && !result.invalid) {
+        post({ type:'engineering-status', cardId:result.card.cardId, revision:result.card.revision,
+          state:'turn-starting' });
+        void owner.engineering.dispatch(result.card).then(value => {
+          if (session === owner) post({ type:'engineering-status', cardId:result.card.cardId,
+            revision:result.card.revision, ...value });
+        }).catch(() => { if (session === owner) post({ type:'engineering-status', cardId:result.card.cardId,
+          revision:result.card.revision, state:'turn-unknown' }); });
+      }
     }
   } catch (error) {
     if (session !== owner || error instanceof TurnCancelledError) return;

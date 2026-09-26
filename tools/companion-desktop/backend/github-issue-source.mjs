@@ -1,7 +1,10 @@
+import { createHash } from 'node:crypto';
 const REPOSITORY = 'Emilia-tan-Ovo/yuki-link';
 const API = 'https://api.github.com';
 const canonical = (repository, item) => item && !item.pull_request && Number.isSafeInteger(item.number) && item.number > 0 && typeof item.title === 'string' && item.title.trim() && item.html_url === `https://github.com/${repository}/issues/${item.number}`
-  ? { repository, number: item.number, title: item.title, url: item.html_url, state: item.state ?? null } : null;
+  ? { repository, number: item.number, id: Number.isSafeInteger(item.id) ? item.id : null, title: item.title, url: item.html_url,
+    state: item.state ?? null, marker: item.title.match(/\b[A-Z][A-Z0-9]+-\d{3}\b/u)?.[0] ?? null,
+    scope: typeof item.body === 'string' && Number.isSafeInteger(item.id) ? { digest: createHash('sha256').update(JSON.stringify({ repository, id: item.id, number: item.number, title: item.title, body: item.body })).digest('hex'), observedAt: new Date().toISOString() } : null } : null;
 
 export function githubIssueSource({ fetchImpl = fetch, timeoutMs = 5000 } = {}) {
   async function read(url) {
@@ -17,6 +20,13 @@ export function githubIssueSource({ fetchImpl = fetch, timeoutMs = 5000 } = {}) 
       if (!Number.isSafeInteger(number) || number < 1) throw Error('Issue 编号无效。');
       const item = await read(`${API}/repos/${repository}/issues/${number}`);
       return canonical(repository, item);
+    },
+    async details(repository, number) {
+      check(repository);
+      if (!Number.isSafeInteger(number) || number < 1) throw Error('Issue 编号无效。');
+      const item = await read(`${API}/repos/${repository}/issues/${number}`);
+      const ticket = canonical(repository,item);
+      return ticket ? { ...ticket, body: item.body } : null;
     },
     async search(repository, token) {
       check(repository);

@@ -109,7 +109,7 @@ export class FileWorkflowAgentAuthoritySource {
 
 export class WorkflowAgentLauncher {
   private readonly dependencies: { manager: any; harness: any;
-    implementationAuthority?: any; reviewAuthority?: any; workflowAuthority?: FileWorkflowAgentAuthoritySource | null;
+    implementationAuthority?: any; reviewAuthority?: any; workflowAuthority?: FileWorkflowAgentAuthoritySource | { snapshot: (...args: any[]) => any } | null;
     environment?: HostImplementationEnvironmentSource; context?: (ticketId: string, action: string) => any };
   constructor(dependencies: WorkflowAgentLauncher['dependencies']) { this.dependencies = dependencies; }
 
@@ -269,6 +269,7 @@ export class WorkflowAgentLauncher {
       review_policy: input.action === 'finding-fix' ? 'delegated' : null };
     const protection = { caller_fingerprint: callerFingerprint, action: input.action, contract,
       policy: snapshot.policy, authorization: snapshot.authorization, authority_source: snapshot.authority.source,
+      ...(snapshot.authority.companion ? { companion_dispatch: snapshot.authority.companion } : {}),
       prompt_context: { references, current_delta: currentDelta },
       preflight: { workflow_revision: input.expected.workflow_revision, subject_ref: input.expected.subject_ref,
         subject_identity: input.expected.subject_identity, environment: snapshot.environment } };

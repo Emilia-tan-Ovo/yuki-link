@@ -78,6 +78,11 @@ export const implementationAuthoritySourceIdentitySchema = z.object({
   schema_version: z.literal(1), kind: z.enum(['file', 'adapter']), reference: text,
   canonical_path: z.string().min(1).nullable(), sha256: hash,
 }).strict();
+export const companionDispatchProtectionSchema = z.object({ schema_version: z.literal(1),
+  card_store_id: id, card_id: id, revision: z.number().int().positive(), dispatch_id: id,
+  content_digest: hash, confirmation_at: z.string().datetime(), ticket_scope_digest: hash,
+  product_endpoint: z.enum(['design-only','to-pr']), action: z.enum(['ticket-design','implementation','review']),
+  policy_digest: hash }).strict();
 
 export const implementationExecutableIdentitySchema = z.object({
   schema_version: z.literal(1), name: text, canonical_path: z.string().min(1), sha256: hash,
@@ -100,6 +105,7 @@ export const implementationExecutionProtectionSchema = z.object({
   caller_fingerprint: hash, contract: implementationLaunchContractSchema,
   policy: implementationPolicySnapshotSchema, authorization: implementationAuthorizationSchema,
   authority_source: implementationAuthoritySourceIdentitySchema.optional(),
+  companion_dispatch: companionDispatchProtectionSchema.optional(),
   prompt_context: z.object({ references: z.array(text).min(1).max(64), current_delta: z.array(deltaSchema).max(32),
     cost: z.object({ prompt_utf8_bytes: z.number().int().nonnegative(), reference_count: z.number().int().nonnegative(),
       duplicate_reference_count: z.number().int().nonnegative() }).strict().optional() }).strict(),
@@ -132,6 +138,7 @@ export const reviewExecutionProtectionSchema = z.object({
   caller_fingerprint: hash, contract: reviewLaunchContractSchema,
   policy: reviewPolicySnapshotSchema, authorization: reviewAuthorizationSchema,
   authority_source: implementationAuthoritySourceIdentitySchema,
+  companion_dispatch: companionDispatchProtectionSchema.optional(),
   prompt_context: z.object({ references: z.array(text).min(1).max(64),
     current_delta: z.array(deltaSchema).max(32) }).strict(),
   preflight: z.object({ workflow_revision: z.number().int().positive(),
@@ -163,6 +170,7 @@ export const workflowAgentExecutionProtectionSchema = z.object({
     finding: z.object({ origin_review_id: text, finding_id: text, report_ref: text,
       fix_baseline: text }).strict().optional() }).strict(),
   authority_source: implementationAuthoritySourceIdentitySchema,
+  companion_dispatch: companionDispatchProtectionSchema.optional(),
   prompt_context: z.object({ references: z.array(text).min(1).max(64),
     current_delta: z.array(deltaSchema).max(32) }).strict(),
   preflight: z.object({ workflow_revision: z.number().int().positive(), subject_ref: text,
