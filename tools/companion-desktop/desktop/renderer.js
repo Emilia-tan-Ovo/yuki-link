@@ -128,7 +128,7 @@ function renderEngineeringStatus(card) {
   if (!card) return;
   const status = engineeringViews.get(`${card.cardId}:${card.revision}`);
   const lines = [
-    `卡片交接：${status?.card_dispatch ?? card.dispatchStatus ?? '未知'}`,
+    `卡片交接：${status?.card_dispatch ?? card.dispatchStatus ?? (card.dispatchId ? '未知' : '尚未派发')}`,
     `DSH 编排回合：${status?.dsh_turn ?? '未观察到'} · exit ${status?.dsh_receipt?.exit_code ?? '未知'}`,
     `YCA operation：${status?.engineering_operation?.id ?? '暂无'} · ${status?.engineering_operation?.state ?? '未知'}`,
     `Sylvia run：${status?.receipt?.run_id ?? '暂无'} · ${status?.run?.status ?? '未知'}`,
@@ -166,7 +166,7 @@ function renderCard(card) {
   const workflow = card.observedWorkflow;
   $('card-workflow').textContent = workflow ? `Workflow 观察：${workflow.phase || '未知'} · revision ${workflow.revision ?? '未知'} · ${workflow.assessment || 'unknown'} · ${workflow.observedAt || '时间未知'}` : 'Workflow 观察：暂无；这不影响 Ticket 目标核验状态。';
   const authorization = ['merge','deploy'].map(kind => `${kind}：${content.extraAuthorization?.[kind]?.requested ? content.extraAuthorization[kind].target ? '显式请求 ' + content.extraAuthorization[kind].target : '已请求，对象待澄清' : '未请求'}`).join('；');
-  $('card-state').textContent = `${card.state === 'confirmed' ? `已确认 revision ${card.confirmation.revision}` : card.state === 'revoked' ? '已撤销' : '待确认'}；交接 ${card.dispatchStatus || '未知'}。${authorization}。to-PR 后续连续推进尚未接入；合并与部署需独立授权。`;
+  $('card-state').textContent = `${card.state === 'confirmed' ? `已确认 revision ${card.confirmation.revision}` : card.state === 'revoked' ? '已撤销' : '待确认'}；交接 ${card.dispatchStatus || (card.dispatchId ? '未知' : '尚未派发')}。${authorization}。to-PR 后续连续推进尚未接入；合并与部署需独立授权。`;
   renderEngineeringStatus(card);
   updateCardConfirm();
   $('card-edit').disabled = card.state === 'revoked' || card.dispatchStatus === 'engineering-received';
