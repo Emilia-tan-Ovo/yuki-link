@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
-import { z } from 'zod';
 import { EngineeringCardStore } from '../../../companion-desktop/backend/engineering-card-store.mjs';
 import { githubIssueSource } from '../../../companion-desktop/backend/github-issue-source.mjs';
 import { HarnessError } from '../harness/model.ts';
@@ -10,9 +9,8 @@ import { HarnessContextFactsSource } from './harness-context-source.ts';
 import { WorkflowAgentLauncher } from './workflow-agent-launcher.ts';
 import { reviewContractDigest } from './review-launcher.ts';
 
-export const companionDispatchInputSchema = z.object({ schema_version: z.literal(1),
-  card_store_id: z.string().uuid(), card_id: z.string().uuid(), revision: z.number().int().positive(),
-  dispatch_id: z.string().uuid() }).strict();
+import { companionDispatchInputSchema } from './companion-contract.mjs';
+export { companionDispatchInputSchema };
 
 const stable = value => Array.isArray(value) ? '[' + value.map(stable).join(',') + ']'
   : value && typeof value === 'object' ? '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + stable(value[key])).join(',') + '}'

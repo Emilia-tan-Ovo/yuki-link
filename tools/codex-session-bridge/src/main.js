@@ -17,7 +17,6 @@ import { createHarnessRuntime, createHarnessServer } from './harness/runtime.ts'
 import { FileImplementationLaunchAuthoritySource } from './orchestration/implementation-launcher.ts';
 import { FileReviewLaunchAuthoritySource } from './orchestration/review-launcher.ts';
 import { FileWorkflowAgentAuthoritySource } from './orchestration/workflow-agent-launcher.ts';
-import { CompanionDispatchService } from './orchestration/companion-dispatch.mjs';
 
 const toolRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { values } = parseArgs({ options: {
@@ -103,8 +102,11 @@ if (values.help) {
       }) : null;
     computer = new ComputerTools({ readRoots: [...values['allow-cwd'], ...(values['read-root'] ?? [])], writeRoots: values['allow-cwd'], runtime: values.runtime, controlRoots: values['control-root'], pwsh: values['pwsh-bin'] });
     manager.harness = createHarnessRuntime(manager, values['control-root'], computer.tasks);
-    manager.companionDispatch = values['companion-card-store']
-      ? new CompanionDispatchService({ manager, directory: values['companion-card-store'], forbiddenRoots:values['allow-cwd'] }) : null;
+    manager.companionDispatch = null;
+    if (values['companion-card-store']) {
+      const { CompanionDispatchService } = await import('./orchestration/companion-dispatch.mjs');
+      manager.companionDispatch = new CompanionDispatchService({ manager, directory: values['companion-card-store'], forbiddenRoots: values['allow-cwd'] });
+    }
     let server;
     const observation = { active: 0 };
     let shuttingDown = false;

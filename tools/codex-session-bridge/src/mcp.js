@@ -12,7 +12,7 @@ import { DEFAULT_MODEL, DEFAULT_REASONING } from './model-policy.js';
 import { startTicketReviewInputSchema } from './orchestration/review-launcher.ts';
 import { WorkflowAgentLauncher, startWorkflowAgentInputSchema } from './orchestration/workflow-agent-launcher.ts';
 import { EngineeringMemoryStore, RuleAuthorityVerifier, memoryDraft, memoryQuery } from './orchestration/engineering-memory.ts';
-import { companionDispatchInputSchema } from './orchestration/companion-dispatch.mjs';
+import { companionDispatchInputSchema } from './orchestration/companion-contract.mjs';
 
 export function createMcpServer(manager, computer) {
   const server = new McpServer({ name: 'yuki-computer-agent', version: '0.2.0' });
