@@ -54,7 +54,6 @@ export function validateDshConfig(config) {
   const url = new URL(config.ycaUrl);
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port || url.pathname !== '/companion-mcp'
     || url.search || url.hash || url.username || url.password) throw Error('YCA companion endpoint invalid');
-  if (!statSync(path.join(home,'profiles','headless','package.json')).isFile()) throw Error('DSH headless profile missing');
   return { node, home, bin, provider: config.provider, model: config.model, ycaUrl: url.href };
 }
 
