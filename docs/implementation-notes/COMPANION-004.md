@@ -175,3 +175,15 @@ resolution status 只回答“卡片目标是否已经明确且有依据”，�
 - **Related:** Source Spec #125 US12–15/US17/US19/US26/US32、ID03–06/ID08、AC04/AC06/AC09；`tools/codex-session-bridge/src/harness/{harness,model,workflow,workflow-source,routes}.ts`；`tools/codex-session-bridge/src/orchestration/{engineering-memory,harness-context-source}.ts`；`docs/design/companion-ui-polish-direction.md`；COMPANION-003 HEAD `192fe4e5a671629051d6c16812e35bb4ae4710b4` 仅用于基线整合核对。
 - **Retrieval:** `Harness.register()`、`workflowHistory.summary/detail`、`WorkflowSource.assess`、`EngineeringMemoryStore.query`、`RuleAuthorityVerifier`、`runtimeCapabilities().engineeringCards`、Desktop IPC/worker message contract、SQLite `PRAGMA user_version`、renderer submit/edit state。需要确认 GitHub tracker 时按 canonical repo + Issue ref 定向读取。
 - **Expansion triggers:** 启动 implementation 时最新默认分支意外不再包含 PR #147/003 验收内容，或 003 后续 Live2D 增量与 004 写集发生实质冲突；项目 canonical mapping 无法用小型受控配置表达；GitHub/Harness 当前接口不能提供所需只读事实；确认动作无法在单一后端事务完成 revision/state 检查；005/006 要求反向改变卡片身份/确认语义时另行设计，不在 004 预造完整派发协议。
+
+## Primary Review finding fix handoff（2026-09-26）
+
+- 修复基线：`6a80ad7282076ae28276a70062be912a86de90a1`；整票 fixed point 仍为 `d26ecc1cde4eb3242934bcd34f93f7c0433fb6b6`。仅处理 primary Review `ST-1/ST-2/SP-1～SP-5`，本 session 未启动 reviewer，未 push/PR/merge。
+- ST-1 / SP-4：卡片目标身份取 canonical Issue URL（无 Ticket 时取受控仓库的新需求身份）；目标修改在同一 SQLite 事务内删除旧 Workflow 观察，迟到刷新须匹配目标身份才能写入。编辑后按只读来源刷新。
+- ST-2：`engineeringCards` 能力字段拆为卡片实现、GitHub Ticket 只读来源配置、Workflow 来源配置及未派发状态；UI 明示局部接入和真实产品入口待验收。
+- SP-1：Desktop Worker 默认接入 `github-issue-source.mjs`，仅允许受控 `Emilia-tan-Ovo/yuki-link` 公共仓库；通过 GitHub REST 只读 lookup/search，校验 canonical URL、Issue 而非 PR、超时与非成功状态。未配置 Workflow 来源时观察标记 `source_unavailable`，不推断阶段。
+- SP-2：普通文字及语音的明确工程工作要求经确定性词法门进入同一 `engineering-card create`；当前选中卡片项目可作为简称焦点。生活聊天仍走原对话；语音卡片路径校验同一 voice final scope 后结束该回合。卡片仍须 Owner 明确确认。
+- SP-3：renderer 比较全部可编辑授权字段与持久卡片内容；dirty 或保存中不能确认，保存成功展示新 revision 后才能确认。确认命令仍只传 `cardId + expectedRevision`。
+- SP-5：原话中的 merge、deploy 显式请求分别保存在卡片，显示对象或待澄清；编辑器可分别填写对象，缺对象不能形成有效确认，`to-PR` 不自动包含二者。004 不执行合并或部署。
+- 定向验证：先观察新增用例红灯，再运行 `node --test test/engineering-cards.test.mjs test/renderer.test.mjs test/session.test.mjs`，58/58 PASS；`npm run check` 与新增后端/voice 模块 `node --check` 均 exit 0。此前 full suite 139/139、package 与 packaged smoke 是修复前基线，本 session 未重复运行。
+- 待 Emilia 真实验收：公共 GitHub `GET https://api.github.com/repos/Emilia-tan-Ovo/yuki-link/issues/129`，简称候选 `GET https://api.github.com/search/issues?q=repo%3AEmilia-tan-Ovo%2Fyuki-link+is%3Aissue+in%3Atitle+004&per_page=100`；Desktop 普通输入/语音 → 候选卡 → 编辑/确认、断网 `source_unavailable`、重开持久卡。Workflow 真实观察仍无来源，不得宣称已验收。确认后应始终 `not-dispatched`，005/006 未进入本票。

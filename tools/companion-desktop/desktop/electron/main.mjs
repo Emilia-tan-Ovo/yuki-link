@@ -179,8 +179,10 @@ ipcMain.on('yuki:memory', (event, value) => {
 });
 ipcMain.on('yuki:engineering-card', (event, value) => {
   if (!trusted(event) || !value || value.generation !== connection.generation || !validRequestId(value.id) || !['list','create','edit','confirm','revoke','refresh'].includes(value.action)) return;
+  if (value.action === 'create' && (typeof value.original !== 'string' || !value.original.trim() || value.original.length > 20000)) return;
+  if (value.voiceScope) { if (!voice.acceptCard(value)) return; deliver({ type: 'voice-state', generation: connection.generation, scope: value.voiceScope, state: voice.state, outcome: 'card-opened' }); }
   const command = { type: 'engineering-card', id: value.id, action: value.action };
-  if (value.action === 'create') { if (typeof value.original !== 'string' || !value.original.trim() || value.original.length > 20000) return; command.original = value.original; command.focus = value.focus; }
+  if (value.action === 'create') { command.original = value.original; command.focus = value.focus; }
   if (['edit','confirm','revoke','refresh'].includes(value.action)) { if (typeof value.cardId !== 'string' || value.cardId.length > 100) return; command.cardId = value.cardId; }
   if (['edit','confirm','revoke'].includes(value.action)) { if (!Number.isSafeInteger(value.expectedRevision) || value.expectedRevision < 1) return; command.expectedRevision = value.expectedRevision; }
   if (value.action === 'edit') { if (!value.fields || typeof value.fields !== 'object') return; command.fields = value.fields; }

@@ -119,6 +119,9 @@ function renderMemories(entries) {
   target.value = entries.some(entry => entry.id === selected) ? selected : '';
 }
 function cardCommand(action, details = {}) { if (cardPending) return; const id = crypto.randomUUID(); cardPending = id; $('card-status').textContent = '正在保存工程卡片…'; host.send('engineering-card', { generation, id, action, ...details }); }
+function cardFields() { return { original: $('card-original').value, summary: $('card-summary').value, project: $('card-project').value, ticket: $('card-ticket').value, noTicket: $('card-no-ticket').checked, desiredPhase: $('card-phase').value, endpoint: $('card-endpoint').value, mergeRequested: $('card-merge').checked, mergeTarget: $('card-merge-target').value, deployRequested: $('card-deploy').checked, deployTarget: $('card-deploy-target').value }; }
+function cardDirty() { return !!cardCurrent && JSON.stringify(cardFields()) !== JSON.stringify({ original: cardCurrent.content.original, summary: cardCurrent.content.summary, project: cardCurrent.content.projectKey || '', ticket: cardCurrent.content.ticket ? '#' + cardCurrent.content.ticket.number : '', noTicket: cardCurrent.content.resolution.status === 'explicit_new_requirement', desiredPhase: cardCurrent.content.desiredPhase || '', endpoint: cardCurrent.content.endpoint || '', mergeRequested: !!cardCurrent.content.extraAuthorization?.merge?.requested, mergeTarget: cardCurrent.content.extraAuthorization?.merge?.target || '', deployRequested: !!cardCurrent.content.extraAuthorization?.deploy?.requested, deployTarget: cardCurrent.content.extraAuthorization?.deploy?.target || '' }); }
+function updateCardConfirm() { if (!cardCurrent) return; const content = cardCurrent.content, merge = content.extraAuthorization?.merge, deploy = content.extraAuthorization?.deploy; const mergeTarget = merge?.target?.trim() || '', deployTarget = deploy?.target?.trim() || '', prefix = `https://github.com/${content.repository}/pull/`; $('card-confirm').disabled = Boolean(cardPending || cardDirty() || cardCurrent.state !== 'pending' || !['verified_existing','explicit_new_requirement'].includes(content.resolution.status) || !content.desiredPhase || !content.endpoint || merge?.requested && !(/^PR\s*#[1-9]\d*$/iu.test(mergeTarget) || mergeTarget.startsWith(prefix) && /^[1-9]\d*$/u.test(mergeTarget.slice(prefix.length))) || deploy?.requested && !/^[\w.-]{2,100}$/u.test(deployTarget)); }
 function renderCard(card) {
   cardCurrent = card;
   $('card-editor').hidden = !card;
@@ -132,12 +135,17 @@ function renderCard(card) {
   $('card-no-ticket').checked = content.resolution.status === 'explicit_new_requirement';
   $('card-phase').value = content.desiredPhase || '';
   $('card-endpoint').value = content.endpoint || '';
+  $('card-merge').checked = !!content.extraAuthorization?.merge?.requested;
+  $('card-merge-target').value = content.extraAuthorization?.merge?.target || '';
+  $('card-deploy').checked = !!content.extraAuthorization?.deploy?.requested;
+  $('card-deploy-target').value = content.extraAuthorization?.deploy?.target || '';
   $('card-identity').textContent = `卡片 ${card.cardId} · revision ${card.revision}`;
   $('card-target').textContent = `目标：${content.repository || '项目待明确'} · ${content.ticket ? content.ticket.title + ' (' + content.ticket.url + ')' : '尚无已核验 Ticket'} · ${content.resolution.status}：${content.resolution.reason} · 来源 ${content.resolution.source || '暂无'} · 观察于 ${content.resolution.observedAt || '未知'}${content.candidates?.length ? ' · 候选：' + content.candidates.map(item => item.title + ' (' + item.url + ')').join('；') : ''}`;
   const workflow = card.observedWorkflow;
   $('card-workflow').textContent = workflow ? `Workflow 观察：${workflow.phase || '未知'} · revision ${workflow.revision ?? '未知'} · ${workflow.assessment || 'unknown'} · ${workflow.observedAt || '时间未知'}` : 'Workflow 观察：暂无；这不影响 Ticket 目标核验状态。';
-  $('card-state').textContent = card.state === 'confirmed' ? `已确认 revision ${card.confirmation.revision}，尚未派发。merge/deploy 均未授权。` : card.state === 'revoked' ? '已撤销；重新安排请新建卡片。' : '待确认，尚未派发。merge/deploy 均未授权。';
-  $('card-confirm').disabled = card.state !== 'pending' || !['verified_existing','explicit_new_requirement'].includes(content.resolution.status) || !content.desiredPhase || !content.endpoint;
+  const authorization = ['merge','deploy'].map(kind => `${kind}：${content.extraAuthorization?.[kind]?.requested ? content.extraAuthorization[kind].target ? '显式请求 ' + content.extraAuthorization[kind].target : '已请求，对象待澄清' : '未请求'}`).join('；');
+  $('card-state').textContent = `${card.state === 'confirmed' ? `已确认 revision ${card.confirmation.revision}` : card.state === 'revoked' ? '已撤销' : '待确认'}，尚未派发。${authorization}。`;
+  updateCardConfirm();
   $('card-edit').disabled = card.state === 'revoked'; $('card-revoke').disabled = card.state === 'revoked';
 }
 function renderCardList(entries) {
@@ -270,6 +278,15 @@ function dispatchUserText(value, origin = 'typed', voiceScope) {
   }
   if (/^记住\s*[:：]/u.test(text)) { const fact = text.replace(/^记住\s*[:：]/u, '').trim(); if ((!fact || fact.length > 300) && origin === 'typed') { notice('请在“记住：”后填写不超过 300 字的简短事实。'); return; } memoryCommand('remember', { text: fact, sourceKind: 'explicit_chat', ...(origin === 'voice-final' ? { voiceScope, voiceResult: 'remember' } : {}) }, origin === 'typed'); return; }
   if (/记住|忘记记忆|更正记忆|(?:忘掉|忘记).*(?:我|记忆|偏好|喜欢)|(?:纠正|更正).*(?:记忆|偏好|喜欢)|(?:偏好|记忆|喜欢).*(?:忘掉|忘记|纠正|更正)/u.test(text)) { $('settings').showModal(); host.send('memory', { generation, id: crypto.randomUUID(), action: 'list', ...(origin === 'voice-final' ? { voiceScope, voiceResult: 'management-opened' } : {}) }); notice('请在陪伴记忆管理区明确填写事实或选择目标后提交。'); return; }
+  if (/(?:继续|处理|完成|做|设计|实现|审查|做到\s*PR|合并|部署)/iu.test(text) && /(?:#\d+|\b0?\d{3}\b|yuki.link|新需求|Ticket)/iu.test(text)) {
+    if (cardPending) { notice('上一张工程卡片仍在保存，请稍后重试。'); return false; }
+    $('engineering-card-panel').open = true;
+    $('card-original').value = text;
+    cardCommand('create', { original: text, focus: cardCurrent?.content?.projectKey ? { projectKey: cardCurrent.content.projectKey } : undefined, ...(origin === 'voice-final' ? { voiceScope } : {}) });
+    if (origin === 'typed' && $('text').value === text) $('text').value = '';
+    notice('工程要求正在整理为待确认卡片。');
+    return true;
+  }
   const requestId = crypto.randomUUID();
   busy = true; pendingGeneration = generation; pendingRequest = { requestId, origin, voiceScope, draft: $('text').value, cancelling: false };
   state(service); notice('正在等待 Emilia 回复…'); host.send('submit', { generation, id: requestId, requestId, text, origin, voiceScope }); return true;
@@ -278,8 +295,9 @@ $('form').addEventListener('submit', event => { event.preventDefault(); void med
 $('engineering-card-panel').addEventListener('toggle', () => { if ($('engineering-card-panel').open) host.send('engineering-card', { generation, id: crypto.randomUUID(), action: 'list' }); });
 $('card-create').onclick = () => { if ($('card-original').value.trim()) cardCommand('create',{ original: $('card-original').value }); else $('card-status').textContent = '请先填写工作要求。'; };
 $('card-select').onchange = () => renderCard(cardEntries.find(card => card.cardId === $('card-select').value) || null);
-$('card-edit').onclick = () => { if (!cardCurrent) return; cardCommand('edit',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision, fields: { original: $('card-original').value, summary: $('card-summary').value, project: $('card-project').value, ticket: $('card-ticket').value, noTicket: $('card-no-ticket').checked, desiredPhase: $('card-phase').value, endpoint: $('card-endpoint').value } }); };
-$('card-confirm').onclick = () => { if (cardCurrent) cardCommand('confirm',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision }); };
+$('card-edit').onclick = () => { if (!cardCurrent) return; cardCommand('edit',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision, fields: cardFields() }); updateCardConfirm(); };
+$('card-confirm').onclick = () => { if (cardCurrent && !cardPending && !cardDirty() && !$('card-confirm').disabled) cardCommand('confirm',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision }); };
+for (const id of ['card-original','card-summary','card-project','card-ticket','card-no-ticket','card-phase','card-endpoint','card-merge','card-merge-target','card-deploy','card-deploy-target']) { $(id).addEventListener('input', updateCardConfirm); $(id).addEventListener('change', updateCardConfirm); }
 $('card-revoke').onclick = () => { if (cardCurrent) cardCommand('revoke',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision }); };
 $('cancel-reply').onclick = () => {
   if (!pendingRequest || pendingRequest.cancelling) return;

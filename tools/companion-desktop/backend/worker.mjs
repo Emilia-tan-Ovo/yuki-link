@@ -4,8 +4,9 @@ import { LocalPersistenceError } from './dialogue-pipeline.mjs';
 import { TurnCancelledError } from './turn-cancellation.mjs';
 import { validRequestId } from '../desktop/turn-contract.mjs';
 import { WorkerVoice } from './voice-worker.mjs';
+import { githubIssueSource } from './github-issue-source.mjs';
 
-export function createWorkerHandler({ post, createVoice, createSession = data => new BackendSession({ directory: data.directory, provider: data.preview ? previewProvider() : deepSeekProvider(data.key), mode: data.preview ? 'preview' : 'real' }) }) {
+export function createWorkerHandler({ post, createVoice, createSession = data => new BackendSession({ directory: data.directory, provider: data.preview ? previewProvider() : deepSeekProvider(data.key), mode: data.preview ? 'preview' : 'real', issueSource: githubIssueSource() }) }) {
   let session, generation, voice, configRevision, preview;
   return async data => {
     if (data?.type === 'start') {

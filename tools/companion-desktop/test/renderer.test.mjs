@@ -43,6 +43,45 @@ test('engineering card UI confirms saved revision only and shows not dispatched'
   assert.equal(h.sent.some(([name]) => /dispatch|task-stop|codex/.test(name)), false);
 });
 
+test('ordinary engineering text creates a card candidate while everyday chat remains dialogue', () => {
+  const h = harness();
+  h.deliver({ type:'ready', generation:1, history:[], status:{service:'configured'} });
+  h.deliver({ type:'thinking', action:'load', thinking:{schemaVersion:1,enabled:false,effort:'high'} });
+  h.element('text').value = '给 yuki-link 的 #129 只做设计'; h.element('form').requestSubmit();
+  assert.equal(h.sent.at(-1)[0],'engineering-card');
+  assert.equal(h.sent.at(-1)[1].original,'给 yuki-link 的 #129 只做设计');
+  assert.equal(h.element('engineering-card-panel').open,true);
+  assert.equal(h.sent.filter(([name]) => name === 'submit').length,0);
+  h.element('text').value = '今晚吃什么'; h.element('form').requestSubmit();
+  assert.equal(h.sent.at(-1)[0],'submit');
+});
+
+test('voice engineering card handoff consumes the matching final without starting dialogue', () => {
+  const h = harness();
+  h.deliver({type:'ready',generation:1,history:[],status:{service:'configured'}});
+  h.deliver({type:'thinking',action:'load',thinking:{schemaVersion:1,enabled:false,effort:'high'}});
+  const scope = {schemaVersion:1,connectionGeneration:1,voiceTurnId:'voice-1',voiceEpoch:1,requestId:'voice-request'};
+  h.deliver({type:'voice-state',generation:1,scope,state:'awaiting-submit'});
+  h.deliver({type:'voice-final',generation:1,scope,text:'给 yuki-link 的 #129 只做设计'});
+  assert.equal(h.sent.at(-1)[0],'engineering-card');
+  assert.equal(h.sent.at(-1)[1].voiceScope.voiceTurnId,'voice-1');
+  assert.equal(h.sent.filter(([name]) => name === 'submit').length,0);
+});
+
+test('dirty engineering card fields block confirmation until saved revision is shown', () => {
+  const h = harness();
+  h.deliver({ type:'ready', generation:1, history:[], status:{service:'configured'} });
+  const card = {cardId:'card-1',revision:1,state:'pending',content:{original:'给 yuki-link 的 #129 只做设计',summary:'设计',projectKey:'yuki-link',repository:'Emilia-tan-Ovo/yuki-link',ticket:{number:129,title:'COMPANION-004',url:'https://github.com/Emilia-tan-Ovo/yuki-link/issues/129'},resolution:{status:'verified_existing',reason:'GitHub'},desiredPhase:'ticket-design',endpoint:'design-only',extraAuthorization:{merge:false,deploy:false}}};
+  h.deliver({type:'engineering-card',generation:1,action:'list',cards:[card]});
+  h.element('card-summary').value = '修改后的设计'; h.element('card-summary').input();
+  assert.equal(h.element('card-confirm').disabled,true);
+  const count = h.sent.length; h.element('card-confirm').onclick(); assert.equal(h.sent.length,count);
+  h.element('card-edit').onclick(); const save = h.sent.at(-1)[1]; assert.equal(save.action,'edit');
+  h.deliver({type:'engineering-card',generation:1,id:save.id,action:'edit',card:{...card,revision:2,content:{...card.content,summary:'修改后的设计'}}});
+  assert.equal(h.element('card-confirm').disabled,false);
+  h.element('card-confirm').onclick(); assert.equal(h.sent.at(-1)[1].expectedRevision,2);
+});
+
 test('voice settings/control wiring never acquires devices on load or calls engineering', async () => {
   const h = harness(), readiness = new VoiceReadiness(); readiness.reset(true);
   h.deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });

@@ -34,7 +34,7 @@ export class BackendSession {
   }
   runtimeCapabilities() {
     const mediaReadiness = this.mediaReadiness ?? initialMediaReadiness();
-    return { text: { implemented: true, mode: this.mode, service: this.statusService() }, memoryManagement: true, voice: this.mode === 'real' && this.statusService() === 'verified' && mediaReadiness.voice.ready === true, live2d: false, engineeringCards: true, mediaReadiness };
+    return { text: { implemented: true, mode: this.mode, service: this.statusService() }, memoryManagement: true, voice: this.mode === 'real' && this.statusService() === 'verified' && mediaReadiness.voice.ready === true, live2d: false, engineeringCards: { implemented: true, ticketSource: this.cards.issueSource ? 'configured-public-read-only' : 'unavailable', workflowSource: this.cards.workflowSource ? 'configured-read-only' : 'unavailable', dispatched: false }, mediaReadiness };
   }
   statusService() { return this.mode === 'preview' ? 'offline-preview' : this.provider ? this.requestState : 'unconfigured'; }
   history() {
