@@ -9,7 +9,7 @@ export async function assetResponse(root, value) {
     if (name.includes('\\') || name.includes(':') || name.includes('\0') || name.split('/').some(part => part === '..' || part === '.')) return new Response(null, { status: 403 });
     const base = await realpath(root), file = await realpath(resolve(base, name)), part = relative(base, file);
     if (!part || part === '..' || part.startsWith('..' + sep) || isAbsolute(part)) return new Response(null, { status: 403 });
-    const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' }[extname(file)] || 'application/octet-stream';
+    const mime = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css' }[extname(file)] || 'application/octet-stream';
     return new Response(await readFile(file), { headers: { 'content-type': mime, 'cache-control': 'no-store' } });
   } catch { return new Response(null, { status: 404 }); }
 }

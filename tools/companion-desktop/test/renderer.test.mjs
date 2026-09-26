@@ -2,28 +2,280 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
+import { normalizeUserText, sameVoiceScope } from '../desktop/turn-contract.mjs';
+import { RendererVoice } from '../desktop/voice-ui.mjs';
+import { RendererLive2D } from '../desktop/live2d-ui.mjs';
+import { initialLive2DReadiness } from '../desktop/live2d-loader.mjs';
+import { DEFAULT_VOICE } from '../desktop/voice-config.mjs';
+import { VoiceReadiness } from '../desktop/electron/voice-readiness.mjs';
 
-function harness() {
+test('missing Live2D resources remain pending in the same window without blocking text or voice controls', () => {
+  const h = harness(), readiness = new VoiceReadiness(); readiness.reset(true);
+  h.deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  h.deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  h.deliver({ type: 'live2d-settings', readiness: initialLive2DReadiness() });
+  h.deliver({ type: 'voice-settings', voice: { ...DEFAULT_VOICE, enabled: true }, readiness: readiness.snapshot(true, 'configured'), credentialConfigured: true });
+  assert.equal(h.element('live2d-status').dataset.ready, 'false');
+  assert.match(h.element('live2d-status').textContent, /SDK 未配置/);
+  assert.equal(h.element('send').disabled, false); assert.equal(h.element('voice-start').disabled, false);
+  h.element('live2d-select').onclick(); assert.equal(h.sent.at(-1)[0], 'live2d-select'); assert.equal(h.sent.at(-1).length, 1);
+  const facts = { ...initialLive2DReadiness(), configured: true, resourcesVerified: true, displayName: 'C:\\private\\avatar.model3.json', code: 'SDK_UNCONFIGURED' };
+  h.deliver({ type: 'live2d-settings', readiness: facts });
+  assert.equal(h.element('live2d-status').textContent.includes('private'), false);
+  assert.match(h.element('live2d-status').textContent, /实际加载待验证/);
+  assert.equal(h.element('live2d-status').dataset.ready, 'false');
+});
+
+test('voice settings/control wiring never acquires devices on load or calls engineering', async () => {
+  const h = harness(), readiness = new VoiceReadiness(); readiness.reset(true);
+  h.deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  h.deliver({ type: 'voice-settings', voice: { ...DEFAULT_VOICE, enabled: true }, readiness: readiness.snapshot(true, 'configured'), credentialConfigured: true });
+  assert.equal(h.element('voice-start').disabled, false); assert.match(h.element('voice-readiness').textContent, /语音已准备好/);
+  h.element('voice-start').onclick(); await new Promise(r => setImmediate(r));
+  assert.equal(h.sent.at(-1)[0], 'voice-command'); assert.equal(h.sent.at(-1)[1].action, 'start');
+  assert.equal(h.sent.some(([name]) => /engineering|task-stop/.test(name)), false);
+});
+import { VoiceTurnCoordinator } from '../desktop/electron/voice-turn.mjs';
+
+function harness(onSend = () => {}) {
   const elements = new Map();
   const makeNode = tag => ({ tag, dataset: {}, children: [], value: '', textContent: '', disabled: false, open: false, append(...nodes) { this.children.push(...nodes); }, replaceChildren(...nodes) { this.children = [...nodes]; }, addEventListener(name, handler) { this[name] = handler; }, scrollIntoView() {} });
   const element = id => {
     if (!elements.has(id)) elements.set(id, {
       ...makeNode('element'), scrollHeight: 0,
       addEventListener(name, handler) { this[name] = handler; },
-      focus() {}, showModal() {}, close() {}, requestSubmit() { this.submit({ preventDefault() {} }); }
+      focus() {}, showModal() { this.open = true; }, close() {}, requestSubmit() { this.submit({ preventDefault() {} }); }
     });
     return elements.get(id);
   };
   let deliver;
   const sent = [];
+  let sequence = 0;
   const source = readFileSync(new URL('../desktop/renderer.js', import.meta.url), 'utf8');
-  runInNewContext(source, {
+  runInNewContext(source.replace(/^import .*;\r?$/gm, ''), {
+    normalizeUserText, sameVoiceScope, RendererVoice, RendererLive2D, setTimeout, clearTimeout,
     document: { getElementById: element, createElement: makeNode, querySelectorAll: () => [] },
-    window: { yukiDesktop: { subscribe(callback) { deliver = callback; }, send(...args) { sent.push(args); } } },
-    crypto: { randomUUID: () => 'request-1' }
+    window: { yukiDesktop: { subscribe(callback) { deliver = callback; }, send(...args) { sent.push(args); onSend(...args); } } },
+    crypto: { randomUUID: () => 'request-' + ++sequence }
   });
   return { element, sent, deliver };
 }
+
+// Execute the actual main Memory IPC and backend delivery seams with synthetic transport.
+function voiceMemoryHarness() {
+  const handlers = new Map(), commands = [];
+  const voice = new VoiceTurnCoordinator({ canAttempt: () => true });
+  const ui = harness((channel, value) => handlers.get('yuki:' + channel)?.({}, value));
+  let backend;
+  const main = readFileSync(new URL('../desktop/electron/main.mjs', import.meta.url), 'utf8');
+  const callback = main.slice(main.indexOf('  currentStatus = message?.status'), main.indexOf('\n} });'));
+  const memory = main.slice(main.indexOf("ipcMain.on('yuki:memory'"), main.indexOf("ipcMain.on('yuki:credential'"));
+  runInNewContext(`let currentStatus; setBackend((message, generation) => {${callback}\n});\n${memory}`, {
+    voice, media: { backend: () => false, state() {}, publish() {} }, deliver: ui.deliver, trusted: () => true,
+    connection: { generation: 1, send(command) { commands.push(command); return true; } },
+    ipcMain: { on(name, handler) { handlers.set(name, handler); } },
+    setBackend(callback) { backend = callback; }
+  });
+  ui.deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  ui.deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  const final = text => {
+    const { scope } = voice.start(1); voice.captureReady(scope); voice.finish(scope);
+    ui.deliver({ type: 'voice-state', generation: 1, scope, state: voice.state });
+    ui.deliver(voice.final(scope, text)); return scope;
+  };
+  return { ...ui, voice, commands, final, backend };
+}
+
+test('voice Memory waits for matching backend success or failure then releases main owner', () => {
+  for (const type of ['memory', 'memory-error']) {
+    const h = voiceMemoryHarness();
+    h.final('记住：喜欢绿茶');
+    const command = h.commands.at(-1);
+    assert.equal(h.voice.start(1).outcome, 'busy');
+    h.backend({ type, id: 'unrelated', action: 'remember', entries: [], message: '保存失败' }, 1);
+    h.backend({ type, id: command.id, action: 'remember', entries: [], message: '保存失败' }, 0);
+    assert.equal(h.voice.start(1).outcome, 'busy');
+    h.backend({ type, id: command.id, action: 'remember', entries: [], message: '保存失败' }, 1);
+    assert.equal(h.voice.state, type === 'memory' ? 'idle' : 'error');
+    assert.equal(h.voice.start(1).outcome, 'accepted');
+    assert.equal(h.sent.filter(([channel]) => channel === 'submit').length, 0);
+  }
+});
+
+test('voice management handoff releases main only after local UI opened without claiming mutation', () => {
+  const h = voiceMemoryHarness();
+  h.final('帮我更正记忆');
+  assert.equal(h.element('settings').open, true);
+  assert.match(h.element('notice').textContent, /管理区/);
+  assert.doesNotMatch(h.element('notice').textContent, /已记住|已更正/);
+  assert.equal(h.voice.state, 'idle');
+  assert.equal(h.voice.start(1).outcome, 'accepted');
+});
+
+function queuedVoiceHarness() {
+  const h = harness();
+  h.deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  h.deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  const scope = { schemaVersion: 1, connectionGeneration: 1, voiceTurnId: 'queued', voiceEpoch: 1 };
+  const final = { type: 'voice-final', generation: 1, scope, text: '待发送的语音' };
+  const queue = () => { h.deliver({ type: 'voice-state', generation: 1, scope, state: 'transcribing' }); h.deliver(final); };
+  const submits = () => h.sent.filter(([channel]) => channel === 'submit');
+  return { ...h, scope, final, queue, submits };
+}
+
+test('queued voice final wakes once after matching memoryPending ack or error', () => {
+  for (const type of ['memory', 'memory-error']) {
+    const h = queuedVoiceHarness();
+    h.element('text').value = '记住：喜欢绿茶'; h.element('form').requestSubmit();
+    const memory = h.sent.at(-1)[1]; h.queue();
+    assert.equal(h.submits().length, 0);
+    h.deliver({ type, generation: 1, id: 'stale', action: 'remember', entries: [], message: '失败' });
+    assert.equal(h.submits().length, 0);
+    h.deliver({ type, generation: 1, action: 'remember', entries: [], message: '无标识' });
+    assert.equal(h.submits().length, 0);
+    h.deliver({ type, generation: 1, id: memory.id, action: 'remember', entries: [], message: '失败' });
+    assert.equal(h.submits().length, 1);
+    h.deliver(h.final);
+    assert.equal(h.submits().length, 1);
+  }
+});
+
+test('queued voice final wakes once after typed reply, error or matching cancel acknowledgement', () => {
+  for (const type of ['reply', 'error', 'cancel-ack']) {
+    const h = queuedVoiceHarness();
+    h.element('text').value = '文字问题'; h.element('form').requestSubmit();
+    const typed = h.submits()[0][1]; h.queue();
+    if (type === 'cancel-ack') h.element('cancel-reply').onclick();
+    h.deliver({ type, generation: 1, requestId: 'old', outcome: 'cancelled', messages: [], status: { service: 'verified' } });
+    assert.equal(h.submits().length, 1);
+    h.deliver({ type, generation: 1, requestId: typed.requestId, outcome: 'cancelled', messages: [], status: { service: 'verified' } });
+    assert.equal(h.submits().length, 2);
+    assert.equal(h.submits()[1][1].text, h.final.text);
+    h.deliver(h.final); h.deliver({ type: 'notice', text: '通知' });
+    assert.equal(h.submits().length, 2);
+  }
+});
+
+test('queued voice final never wakes a cancelled, unknown or reconnected owner', () => {
+  for (const state of ['cancelling', 'cancelled', 'unknown', 'error', 'reconnect']) {
+    const h = queuedVoiceHarness();
+    h.element('thinking-save').onclick(); h.queue();
+    if (state === 'reconnect') {
+      h.deliver({ type: 'connection', generation: 2 });
+      h.deliver({ type: 'ready', generation: 2, history: [], status: { service: 'verified' } });
+    } else h.deliver({ type: 'voice-state', generation: 1, scope: h.scope, state });
+    h.deliver({ type: 'thinking', action: 'save', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+    h.deliver(h.final);
+    assert.equal(h.submits().length, 0, state);
+  }
+});
+
+test('queued voice final waits for Thinking save and an unknown model cancel owner', () => {
+  const h = queuedVoiceHarness();
+  h.element('text').value = '文字问题'; h.element('form').requestSubmit();
+  const typed = h.submits()[0][1];
+  h.element('thinking-save').onclick(); h.queue(); h.element('cancel-reply').onclick();
+  h.deliver({ type: 'cancel-ack', generation: 1, requestId: typed.requestId, outcome: 'unknown-request' });
+  h.deliver({ type: 'reply', generation: 1, requestId: typed.requestId, messages: [], status: { service: 'verified' } });
+  h.deliver({ type: 'thinking', action: 'save', thinking: { schemaVersion: 1, enabled: true, effort: 'high' } });
+  h.deliver(h.final);
+  assert.equal(h.submits().length, 1);
+  h.deliver({ type: 'cancel-ack', generation: 1, requestId: typed.requestId, outcome: 'cancelled' });
+  assert.equal(h.submits().length, 2);
+  const voice = h.submits()[1][1];
+  h.deliver({ type: 'reply', generation: 1, requestId: voice.requestId, origin: 'voice-final', voiceScope: h.scope, messages: [], status: { service: 'verified' } });
+  h.deliver(h.final); h.element('settings-open').onclick();
+  h.deliver({ type: 'notice', text: '通知' });
+  h.deliver({ type: 'persona', action: 'load', roleCard: { text: '已保存角色卡' } });
+  h.deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: true, effort: 'high' } });
+  assert.equal(h.submits().length, 2);
+});
+
+test('queued voice final dispatches after Thinking save resolves to committed settings', () => {
+  for (const error of [undefined, '保存失败，原设置继续生效']) {
+    const h = queuedVoiceHarness();
+    h.element('thinking-save').onclick(); h.queue();
+    h.deliver({ type: 'notice', text: '通知' });
+    assert.equal(h.submits().length, 0);
+    h.deliver({ type: 'thinking', action: 'save', error, thinking: { schemaVersion: 1, enabled: true, effort: 'high' } });
+    assert.equal(h.submits().length, 1);
+  }
+});
+
+test('only matching request can release a round; cancel acknowledgement preserves a newer draft', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  element('text').value = '第一条'; element('form').requestSubmit();
+  const first = sent.at(-1)[1];
+  deliver({ type: 'error', generation: 1, requestId: 'old', message: '旧错误' });
+  assert.equal(element('text').disabled, true);
+  element('cancel-reply').onclick();
+  assert.equal(sent.at(-1)[0], 'cancel-model');
+  assert.match(element('notice').textContent, /等待.*确认/);
+  assert.equal(element('text').disabled, true);
+  deliver({ type: 'cancel-ack', generation: 1, requestId: first.requestId, outcome: 'cancelled' });
+  assert.equal(element('text').disabled, false);
+  element('text').value = '第二条'; element('form').requestSubmit();
+  const second = sent.at(-1)[1];
+  assert.notEqual(first.requestId, second.requestId);
+  deliver({ type: 'cancel-ack', generation: 1, requestId: first.requestId, outcome: 'cancelled' });
+  deliver({ type: 'reply', generation: 1, requestId: first.requestId, committed: false, messages: [], status: { service: 'verified' } });
+  deliver({ type: 'ready', generation: 0, history: [], status: { service: 'unconfigured' } });
+  assert.equal(element('text').disabled, true);
+  assert.equal(element('text').value, '第二条');
+  element('text').value = '新草稿';
+  deliver({ type: 'reply', generation: 1, requestId: second.requestId, committed: true, messages: [], status: { service: 'verified' } });
+  assert.equal(element('text').disabled, false);
+  assert.equal(element('text').value, '新草稿');
+});
+
+test('voice final uses typed dispatcher once, preserves typed draft and follows Thinking and Memory gates', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  const scope = { schemaVersion: 1, connectionGeneration: 1, voiceTurnId: 'v1', voiceEpoch: 1 };
+  deliver({ type: 'voice-state', generation: 1, scope, state: 'transcribing' });
+  element('text').value = '正在编辑的草稿';
+  const final = { type: 'voice-final', generation: 1, scope, text: ' 识别\r\n文字 ' };
+  deliver(final);
+  assert.equal(sent.filter(x => x[0] === 'submit').length, 0);
+  deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  assert.equal(sent.filter(x => x[0] === 'submit').length, 1);
+  const submitted = sent.at(-1)[1];
+  assert.equal(submitted.text, '识别\n文字');
+  assert.equal(submitted.origin, 'voice-final');
+  deliver(final);
+  assert.equal(sent.filter(x => x[0] === 'submit').length, 1);
+  deliver({ type: 'reply', generation: 1, requestId: submitted.requestId, origin: 'voice-final', voiceScope: scope, committed: true, messages: [], status: { service: 'verified' } });
+  assert.equal(element('text').value, '正在编辑的草稿');
+  const nextScope = { ...scope, voiceTurnId: 'v2', voiceEpoch: 2 };
+  deliver({ type: 'voice-state', generation: 1, scope: nextScope, state: 'transcribing' });
+  deliver({ type: 'voice-final', generation: 1, scope: nextScope, text: '记住：喜欢绿茶' });
+  assert.equal(sent.at(-1)[0], 'memory');
+  assert.equal(sent.at(-1)[1].text, '喜欢绿茶');
+  deliver({ type: 'memory', generation: 1, id: sent.at(-1)[1].id, action: 'remember', entries: [] });
+  assert.equal(element('text').value, '正在编辑的草稿');
+  assert.equal(sent.filter(x => /engineering|task-stop|card-cancel/.test(x[0])).length, 0);
+});
+
+test('cancel disconnect is unknown; committed acknowledgement restores history once without clearing draft', () => {
+  const { element, sent, deliver } = harness();
+  deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  deliver({ type: 'thinking', action: 'load', thinking: { schemaVersion: 1, enabled: false, effort: 'high' } });
+  element('text').value = '保留'; element('form').requestSubmit();
+  const request = sent.at(-1)[1];
+  element('cancel-reply').onclick();
+  const row = { id: 'committed', turnId: 'turn', role: 'assistant', text: '已落库', createdAt: '2026-01-01' };
+  const ack = { type: 'cancel-ack', generation: 1, requestId: request.requestId, outcome: 'alreadyCommitted', messages: [row] };
+  deliver(ack); deliver(ack);
+  assert.equal(element('messages').children.filter(x => x.tag === 'article').length, 1);
+  assert.equal(element('text').value, '保留');
+  assert.match(element('notice').textContent, /已提交/);
+  element('form').requestSubmit(); element('cancel-reply').onclick();
+  deliver({ type: 'disconnected', generation: 1 });
+  assert.match(element('notice').textContent, /未知/);
+  assert.equal(element('text').disabled, true);
+});
 
 test('new backend ready interrupts the old send and keeps its draft', () => {
   const { element, sent, deliver } = harness();
@@ -42,11 +294,11 @@ test('new backend ready interrupts the old send and keeps its draft', () => {
   assert.equal(element('text').disabled, false);
   assert.equal(element('send').disabled, false);
   assert.equal(element('text').value, '这条草稿');
-  assert.match(element('notice').textContent, /上一条未完成的发送已中断/);
+  assert.match(element('notice').textContent, /已保存历史为准/);
 
   element('form').requestSubmit();
   assert.equal(sent.at(-1)[1].generation, 2);
-  deliver({ type: 'reply', messages: [], status: { service: 'verified' } });
+  deliver({ type: 'reply', generation: 2, requestId: sent.at(-1)[1].requestId, committed: true, messages: [], status: { service: 'verified' } });
   assert.equal(element('text').value, '');
 });
 
@@ -187,7 +439,7 @@ test('saving Thinking during generation leaves the accepted turn running', () =>
   deliver({ type: 'thinking', action: 'save', thinking: { schemaVersion: 1, enabled: true, effort: 'max' } });
   assert.equal(element('text').disabled, true);
   assert.equal(element('thinking-quick').value, 'max');
-  deliver({ type: 'reply', messages: [], status: { service: 'offline-preview' } });
+  deliver({ type: 'reply', generation: 1, requestId: sent.find(x => x[0] === 'submit')[1].requestId, committed: true, messages: [], status: { service: 'offline-preview' } });
   assert.equal(element('text').disabled, false);
   element('text').value = '下一条'; element('form').requestSubmit();
   assert.equal(sent.filter(x => x[0] === 'submit').length, 2);
@@ -214,7 +466,7 @@ test('persona load, save, reset and failure keep draft separate from chat state'
   assert.match(element('role-card-status').textContent, /保存失败/);
   deliver({ type: 'error', status: { service: 'unknown' }, message: '网络失败' });
   assert.equal(element('text').disabled, false);
-  assert.equal(element('service').dataset.state, 'unknown');
+  assert.equal(element('service').dataset.state, 'configured'); // uncorrelated errors cannot change service truth
   element('role-card-reset').onclick();
   assert.equal(sent.at(-1)[0], 'persona-reset');
   deliver({ type: 'persona', action: 'reset', roleCard: { schemaVersion: 1, text: '默认卡' } });
@@ -250,14 +502,14 @@ test('explicit remember waits for committed worker reply; management correct/for
   assert.equal(sent.at(-1)[1].action, 'remember');
   assert.equal(sent.filter(x => x[0] === 'submit').length, 0);
   assert.doesNotMatch(element('notice').textContent, /已记住/);
-  deliver({ type: 'memory', generation: 1, action: 'remember', entry: { id: 'm1', text: '喜欢红茶' }, entries: [{ id: 'm1', text: '喜欢红茶' }] });
+  deliver({ type: 'memory', generation: 1, id: sent.at(-1)[1].id, action: 'remember', entry: { id: 'm1', text: '喜欢红茶' }, entries: [{ id: 'm1', text: '喜欢红茶' }] });
   assert.match(element('notice').textContent, /已记住/);
   assert.equal(element('text').value, '');
   element('settings-open').onclick();
   element('memory-target').value = 'm1'; element('memory-text').value = '喜欢绿茶'; element('memory-correct').onclick();
   assert.equal(sent.at(-1)[1].action, 'correct');
   assert.doesNotMatch(element('memory-status').textContent, /已更正/);
-  deliver({ type: 'memory-error', generation: 1, message: '保存失败' });
+  deliver({ type: 'memory-error', generation: 1, id: sent.at(-1)[1].id, message: '保存失败' });
   assert.match(element('memory-status').textContent, /保存失败/);
   assert.equal(element('memory-text').value, '喜欢绿茶');
   element('memory-correct').onclick();
@@ -330,7 +582,7 @@ test('correct and forget only display success after matching committed replies',
   assert.equal(element('memory-text').value, '');
   element('memory-target').value = 'new'; element('memory-forget').onclick();
   assert.equal(sent.at(-1)[1].action, 'forget');
-  deliver({ type: 'memory', generation: 1, id: 'request-1', action: 'forget', entries: [] });
+  deliver({ type: 'memory', generation: 1, id: sent.at(-1)[1].id, action: 'forget', entries: [] });
   assert.match(element('memory-status').textContent, /已从本机有效陪伴记忆移除/);
 });
 
