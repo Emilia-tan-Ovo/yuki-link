@@ -5,8 +5,9 @@ import { TurnCancelledError } from './turn-cancellation.mjs';
 import { validRequestId } from '../desktop/turn-contract.mjs';
 import { WorkerVoice } from './voice-worker.mjs';
 import { githubIssueSource } from './github-issue-source.mjs';
+import { harnessCandidateSource } from './harness-candidate-source.mjs';
 
-export function createWorkerHandler({ post, createVoice, createSession = data => new BackendSession({ directory: data.directory, provider: data.preview ? previewProvider() : deepSeekProvider(data.key), mode: data.preview ? 'preview' : 'real', issueSource: githubIssueSource() }) }) {
+export function createWorkerHandler({ post, createVoice, createSession = data => new BackendSession({ directory: data.directory, provider: data.preview ? previewProvider() : deepSeekProvider(data.key), mode: data.preview ? 'preview' : 'real', issueSource: githubIssueSource(), candidateSources: [harnessCandidateSource({url:data.workbenchUrl || process.env.YUKI_HARNESS_URL})].filter(Boolean) }) }) {
   let session, generation, voice, configRevision, preview;
   return async data => {
     if (data?.type === 'start') {
@@ -18,6 +19,7 @@ export function createWorkerHandler({ post, createVoice, createSession = data =>
     }
     if (data?.type === 'close') { voice?.close(); session?.close(); session = undefined; post({ type: 'closed' }); return; }
     if (!session || data?.generation !== generation) { data?.wav?.fill(0); return; }
+    if (data.type === 'candidate-source-configure') { session.setCandidateSource?.(harnessCandidateSource({url:data.workbenchUrl || process.env.YUKI_HARNESS_URL})); return; }
     if (data.type === 'voice-configure') {
       if (!Number.isSafeInteger(data.configRevision) || data.configRevision <= configRevision) return;
       voice?.close();

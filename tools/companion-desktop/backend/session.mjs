@@ -42,6 +42,7 @@ export class BackendSession {
   }
   displayHistory() { return this.memory.displayHistory(); }
   listMemories() { return this.memory.listMemories(); }
+  setCandidateSource(source) { this.cards.candidateSources = source ? [source] : []; }
   async cardCommand(data) {
     if (data.action === 'list') return { cards: this.cardStore.list() };
     if (data.action === 'create') return { card: await this.cards.create(data.original, data.focus) };

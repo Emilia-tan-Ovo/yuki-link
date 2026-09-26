@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { normalizeUserText, sameVoiceScope } from '../desktop/turn-contract.mjs';
+import { normalizeUserText, sameVoiceScope, validRequestId } from '../desktop/turn-contract.mjs';
 import { RendererVoice } from '../desktop/voice-ui.mjs';
 import { RendererLive2D } from '../desktop/live2d-ui.mjs';
 import { initialLive2DReadiness } from '../desktop/live2d-loader.mjs';
@@ -56,6 +56,28 @@ test('ordinary engineering text creates a card candidate while everyday chat rem
   assert.equal(h.sent.at(-1)[0],'submit');
 });
 
+test('reopen restores verified card focus and ambiguous card offers same-card candidate choice', () => {
+  const h = harness();
+  h.deliver({type:'ready',generation:1,history:[],status:{service:'configured'}});
+  h.deliver({type:'thinking',action:'load',thinking:{schemaVersion:1,enabled:false,effort:'high'}});
+  const focused={cardId:'focused',revision:1,state:'confirmed',content:{original:'处理 #129',summary:'处理 COMPANION-004',projectKey:'yuki-link',repository:'Emilia-tan-Ovo/yuki-link',ticket:{repository:'Emilia-tan-Ovo/yuki-link',number:129,title:'COMPANION-004',url:'https://github.com/Emilia-tan-Ovo/yuki-link/issues/129'},resolution:{status:'verified_existing'},desiredPhase:'implementation',endpoint:'to-pr',extraAuthorization:{merge:false,deploy:false}},confirmation:{revision:1}};
+  h.deliver({type:'engineering-card',generation:1,action:'list',cards:[focused]});
+  h.element('text').value='继续004'; h.element('form').requestSubmit();
+  assert.equal(h.sent.at(-1)[1].focus.ticket.number,129);
+  const request=h.sent.at(-1)[1];
+  const candidates=[{repository:'Emilia-tan-Ovo/yuki-link',number:120,title:'ORCH-004',routeKey:'ORCH-004',url:'https://github.com/Emilia-tan-Ovo/yuki-link/issues/120'},{repository:'Emilia-tan-Ovo/yuki-link',number:129,title:'COMPANION-004',routeKey:'COMPANION-004',url:'https://github.com/Emilia-tan-Ovo/yuki-link/issues/129'}];
+  const ambiguous={...focused,cardId:'pending',state:'pending',confirmation:null,content:{...focused.content,original:'继续004',summary:'继续004',ticket:null,candidates,resolution:{status:'ambiguous',reason:'存在多个候选'}}};
+  h.deliver({type:'engineering-card',generation:1,id:request.id,action:'create',card:ambiguous});
+  assert.equal(h.element('card-clarify').hidden,false);
+  assert.match(h.element('card-candidate').children[1].textContent,/COMPANION-004.*#129/);
+  h.element('card-candidate').value=candidates[1].url; h.element('card-choose').onclick();
+  const edit=h.sent.at(-1)[1]; assert.equal(edit.action,'edit'); assert.equal(edit.cardId,'pending'); assert.equal(edit.fields.ticket,'#129');
+  h.deliver({type:'engineering-card',generation:1,id:edit.id,action:'edit',card:{...focused,cardId:'pending',revision:2,state:'pending',confirmation:null}});
+  assert.equal(h.element('card-identity').textContent.includes('revision 2'),true);
+  assert.equal(h.element('card-clarify').hidden,true);
+  assert.match(h.element('card-state').textContent,/尚未派发/);
+});
+
 test('voice engineering card handoff consumes the matching final without starting dialogue', () => {
   const h = harness();
   h.deliver({type:'ready',generation:1,history:[],status:{service:'configured'}});
@@ -89,7 +111,7 @@ test('voice settings/control wiring never acquires devices on load or calls engi
   assert.equal(h.element('voice-start').disabled, false); assert.match(h.element('voice-readiness').textContent, /语音已准备好/);
   h.element('voice-start').onclick(); await new Promise(r => setImmediate(r));
   assert.equal(h.sent.at(-1)[0], 'voice-command'); assert.equal(h.sent.at(-1)[1].action, 'start');
-  assert.equal(h.sent.some(([name]) => /engineering|task-stop/.test(name)), false);
+  assert.equal(h.sent.some(([name,value]) => name === 'engineering-card' && value.action !== 'list' || name === 'task-stop'), false);
 });
 import { VoiceTurnCoordinator } from '../desktop/electron/voice-turn.mjs';
 
@@ -127,7 +149,7 @@ function voiceMemoryHarness() {
   const callback = main.slice(main.indexOf('  currentStatus = message?.status'), main.indexOf('\n} });'));
   const memory = main.slice(main.indexOf("ipcMain.on('yuki:memory'"), main.indexOf("ipcMain.on('yuki:credential'"));
   runInNewContext(`let currentStatus; setBackend((message, generation) => {${callback}\n});\n${memory}`, {
-    voice, media: { backend: () => false, state() {}, publish() {} }, deliver: ui.deliver, trusted: () => true,
+    voice, validRequestId, media: { backend: () => false, state() {}, publish() {} }, deliver: ui.deliver, trusted: () => true,
     connection: { generation: 1, send(command) { commands.push(command); return true; } },
     ipcMain: { on(name, handler) { handlers.set(name, handler); } },
     setBackend(callback) { backend = callback; }
@@ -311,7 +333,7 @@ test('voice final uses typed dispatcher once, preserves typed draft and follows 
   assert.equal(sent.at(-1)[1].text, '喜欢绿茶');
   deliver({ type: 'memory', generation: 1, id: sent.at(-1)[1].id, action: 'remember', entries: [] });
   assert.equal(element('text').value, '正在编辑的草稿');
-  assert.equal(sent.filter(x => /engineering|task-stop|card-cancel/.test(x[0])).length, 0);
+  assert.equal(sent.filter(x => x[0] === 'engineering-card' && x[1].action !== 'list' || /task-stop|card-cancel/.test(x[0])).length, 0);
 });
 
 test('cancel disconnect is unknown; committed acknowledgement restores history once without clearing draft', () => {
@@ -633,7 +655,7 @@ test('correct and forget only display success after matching committed replies',
   element('memory-target').value = 'old'; element('memory-text').value = '喜欢绿茶'; element('memory-correct').onclick();
   assert.equal(sent.at(-1)[1].action, 'correct');
   assert.doesNotMatch(element('memory-status').textContent, /已更正/);
-  deliver({ type: 'memory', generation: 1, id: 'request-1', action: 'correct', entries: [{ id: 'new', text: '喜欢绿茶' }] });
+  deliver({ type: 'memory', generation: 1, id: sent.at(-1)[1].id, action: 'correct', entries: [{ id: 'new', text: '喜欢绿茶' }] });
   assert.match(element('memory-status').textContent, /已更正/);
   assert.equal(element('memory-text').value, '');
   element('memory-target').value = 'new'; element('memory-forget').onclick();

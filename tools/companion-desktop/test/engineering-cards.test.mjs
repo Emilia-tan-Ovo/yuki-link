@@ -8,6 +8,7 @@ import { EngineeringCards, resolveTarget, modelCandidate, localCandidate } from 
 import { BackendSession } from '../backend/session.mjs';
 import { createWorkerHandler } from '../backend/worker.mjs';
 import { githubIssueSource } from '../backend/github-issue-source.mjs';
+import { harnessCandidateSource } from '../backend/harness-candidate-source.mjs';
 
 const projects = [{ key: 'yuki-link', aliases: ['Yuki', 'yuki-link'], repository: 'Emilia-tan-Ovo/yuki-link' }, { key: 'other', aliases: ['other'], repository: 'example/other' }];
 const issue = (repository, number, title = 'COMPANION-004') => ({ repository, number, title, url: `https://github.com/${repository}/issues/${number}`, state: 'closed' });
@@ -129,4 +130,85 @@ test('a merge PR reference does not replace the target Ticket reference', () => 
   const candidate = localCandidate('合并 PR #147，给 yuki-link 的 #129 做到 PR');
   assert.equal(candidate.ticket,'#129');
   assert.equal(candidate.extraAuthorization.merge.target,'PR #147');
+});
+
+test('reopened verified card focus resolves shorthand through GitHub lookup even with competing routes', async t => {
+  const dir = await fixture(t), store = new EngineeringCardStore(dir);
+  const cards = new EngineeringCards({store,issueSource:{lookup:async (repo,n) => issue(repo,n,'COMPANION-004'),search:async repo => [issue(repo,129,'COMPANION-004'),issue(repo,120,'ORCH-004')]}});
+  const first = await cards.create('给 yuki-link 的 #129 做到 PR');
+  store.confirm(first.cardId,1,'desktop-user-action');
+  store.close();
+  const reopened = new EngineeringCardStore(dir), calls=[];
+  const resumed = new EngineeringCards({store:reopened,issueSource:{lookup:async (repo,n) => {calls.push(n);return issue(repo,n,'COMPANION-004');},search:async repo => [issue(repo,129,'COMPANION-004'),issue(repo,120,'ORCH-004')]}});
+  const card = await resumed.create('继续004');
+  assert.equal(first.content.resolution.status,'verified_existing');
+  assert.deepEqual(calls,[129]); assert.equal(card.content.ticket.number,129);
+  assert.equal(card.content.resolution.status,'verified_existing'); assert.equal(card.dispatchStatus,'not-dispatched');
+  reopened.close();
+});
+
+test('ORCH focus stays on ORCH and no focus with multiple 004 candidates stays ambiguous', async () => {
+  const source={lookup:async(repo,n)=>issue(repo,n,n===120?'ORCH-004':'COMPANION-004'),search:async repo=>[issue(repo,120,'ORCH-004'),issue(repo,129,'COMPANION-004')]};
+  const focused=await resolveTarget({ticket:'004'},{issueSource:source,focus:{projectKey:'yuki-link',ticket:issue('Emilia-tan-Ovo/yuki-link',120,'ORCH-004')}});
+  assert.equal(focused.ticket.number,120);
+  const ambiguous=await resolveTarget({ticket:'004'},{issueSource:source});
+  assert.equal(ambiguous.resolution.status,'ambiguous'); assert.equal(ambiguous.candidates.length,2);
+});
+
+test('selecting an ambiguous candidate edits the same card and verifies GitHub', async t => {
+  const store=new EngineeringCardStore(await fixture(t));
+  const source={lookup:async(repo,n)=>issue(repo,n,n===129?'COMPANION-004':'ORCH-004'),search:async repo=>[issue(repo,120,'ORCH-004'),issue(repo,129,'COMPANION-004')]};
+  const cards=new EngineeringCards({store,issueSource:source});
+  const pending=await cards.create('继续004'); assert.equal(pending.content.resolution.status,'ambiguous');
+  const chosen=await cards.edit(pending.cardId,1,{project:'yuki-link',ticket:'#129',summary:pending.content.summary,desiredPhase:'implementation',endpoint:'to-pr'});
+  assert.equal(chosen.cardId,pending.cardId); assert.equal(chosen.revision,2);
+  assert.equal(chosen.content.ticket.number,129); assert.equal(chosen.content.resolution.status,'verified_existing');
+  assert.equal(chosen.dispatchStatus,'not-dispatched'); store.close();
+});
+
+test('Harness candidates use only validated loopback URL, root cookie and canonical references', async () => {
+  const calls=[];
+  const source=harnessCandidateSource({url:'http://127.0.0.1:4321/',fetchImpl:async (url,options)=>{calls.push([url,options]);return url.endsWith('/')?{ok:true,headers:{get:()=> 'yuki_harness=opaque; HttpOnly; Path=/'},body:null}:{ok:true,json:async()=>({projects:[{key:'yuki-link',tickets:[{key:'COMPANION-004',title:'COMPANION-004',reference:'https://github.com/Emilia-tan-Ovo/yuki-link/issues/129'}]}]})};}});
+  assert.equal((await source.search('Emilia-tan-Ovo/yuki-link','004'))[0].number,129);
+  assert.equal(calls[1][1].headers.Cookie,'yuki_harness=opaque');
+  assert.equal(calls.every(([,options])=>options.redirect==='error' && options.signal),true);
+  for(const url of ['https://127.0.0.1:4321/','http://localhost:4321/','http://user:pass@127.0.0.1:4321/','http://127.0.0.1:4321/other','http://127.0.0.1:4321/?x=1']) assert.equal(harnessCandidateSource({url}),null);
+  await assert.rejects(harnessCandidateSource({url:'http://127.0.0.1:4321/',fetchImpl:async()=>({ok:true,redirected:true})}).search('Emilia-tan-Ovo/yuki-link','004'));
+});
+
+test('unavailable Harness hint does not block explicit GitHub ticket verification', async () => {
+  const resolved=await resolveTarget({project:'yuki-link',ticket:'#129'},{issueSource:{lookup:async(repo,n)=>issue(repo,n)},candidateSources:[{search:async()=>{throw Error('offline');}}]});
+  assert.equal(resolved.resolution.status,'verified_existing');
+});
+
+test('recent cards alone cannot silently choose among conflicting 004 routes', async t => {
+  const store=new EngineeringCardStore(await fixture(t));
+  const repo='Emilia-tan-Ovo/yuki-link';
+  for(const [n,title] of [[120,'ORCH-004'],[129,'COMPANION-004']]) store.create({original:`处理 ${title}`,repository:repo,projectKey:'yuki-link',ticket:issue(repo,n,title),resolution:{status:'verified_existing'}});
+  const source={lookup:async(r,n)=>issue(r,n,n===120?'ORCH-004':'COMPANION-004'),search:async r=>[issue(r,120,'ORCH-004'),issue(r,129,'COMPANION-004')]};
+  const card=await new EngineeringCards({store,issueSource:source}).create('继续004');
+  assert.equal(card.content.resolution.status,'ambiguous'); assert.equal(card.content.candidates.length,2); store.close();
+});
+
+test('candidate source outage keeps shorthand conservative when GitHub finds only one candidate', async () => {
+  const repo='Emilia-tan-Ovo/yuki-link';
+  const resolved=await resolveTarget({ticket:'004'},{issueSource:{search:async()=>[issue(repo,129)],lookup:async()=>issue(repo,129)},candidateSources:[{search:async()=>{throw Error('offline');}}]});
+  assert.equal(resolved.resolution.status,'ambiguous');
+});
+
+test('default worker accepts saved workbench URL and explicit env seam without fixed port', async t => {
+  const previous=process.env.YUKI_HARNESS_URL, requests=[], events=[];
+  process.env.YUKI_HARNESS_URL='http://127.0.0.1:4322/';
+  const originalFetch=globalThis.fetch;
+  globalThis.fetch=async (url,options)=>{requests.push(url); if(url.endsWith('/')) return {ok:true,headers:{get:()=> 'yuki_harness=opaque; Path=/'},body:null}; if(url.endsWith('/api/projects')) return {ok:true,json:async()=>({projects:[{key:'yuki-link',tickets:[{key:'COMPANION-004',title:'COMPANION-004',reference:'https://github.com/Emilia-tan-Ovo/yuki-link/issues/129'}]}]})}; if(url.includes('/search/issues')) return {ok:true,json:async()=>({total_count:1,items:[{number:129,title:'COMPANION-004',html_url:'https://github.com/Emilia-tan-Ovo/yuki-link/issues/129',repository_url:'https://api.github.com/repos/Emilia-tan-Ovo/yuki-link'}]})}; return {ok:true,json:async()=>({number:129,title:'COMPANION-004',html_url:'https://github.com/Emilia-tan-Ovo/yuki-link/issues/129'})};};
+  t.after(()=>{globalThis.fetch=originalFetch;if(previous===undefined) delete process.env.YUKI_HARNESS_URL; else process.env.YUKI_HARNESS_URL=previous;});
+  const handle=createWorkerHandler({post:event=>events.push(event)});
+  await handle({type:'start',generation:1,preview:true,directory:await fixture(t),workbenchUrl:'http://127.0.0.1:4321/'});
+  await handle({type:'engineering-card',generation:1,id:'one',action:'create',original:'继续004'});
+  assert.equal(events.at(-1).card.content.resolution.status,'verified_existing');
+  assert.equal(requests.some(url=>url.startsWith('http://127.0.0.1:4321/')),true);
+  await handle({type:'candidate-source-configure',generation:1,workbenchUrl:''});
+  await handle({type:'engineering-card',generation:1,id:'two',action:'create',original:'继续 COMPANION-004'});
+  assert.equal(requests.some(url=>url.startsWith('http://127.0.0.1:4322/')),true);
+  await handle({type:'close',generation:1});
 });

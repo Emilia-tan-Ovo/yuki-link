@@ -68,7 +68,7 @@ async function start() {
     // Reconfiguration can replace the queue while either credential read is pending.
     if (epoch !== media.configurationEpoch || media.pendingConfigurations) continue;
     media.configure(!!voiceKey);
-    connection.start({ directory: dataDir(), key: textKey, preview, voiceConfig: settings.snapshot().voice, voiceKey, configRevision: readiness.revision });
+    connection.start({ directory: dataDir(), key: textKey, preview, workbenchUrl: settings.snapshot().workbenchUrl, voiceConfig: settings.snapshot().voice, voiceKey, configRevision: readiness.revision });
     deliver({ type: 'connection', state: 'connecting', generation: connection.generation, workbenchUrl: settings.snapshot().workbenchUrl });
     return;
   }
@@ -206,7 +206,7 @@ ipcMain.on('yuki:workbench-save', (event, value) => {
   if (!trusted(event) || typeof value !== 'string') return;
   const url = workbenchUrl(value);
   if (!url) { deliver({ type: 'workbench', configured: false, reachable: false, error: '请输入本机工作台地址，例如 http://127.0.0.1:端口/' }); return; }
-  void settings.saveWorkbenchUrl(url).then(async () => deliver({ type: 'workbench', ...await checkWorkbench(), url })).catch(() => deliver({ type: 'workbench', configured: false, reachable: false, error: '工作台地址未能保存。' }));
+  void settings.saveWorkbenchUrl(url).then(async () => { connection.send({ type: 'candidate-source-configure', workbenchUrl: url }, connection.generation); deliver({ type: 'workbench', ...await checkWorkbench(), url }); }).catch(() => deliver({ type: 'workbench', configured: false, reachable: false, error: '工作台地址未能保存。' }));
 });
 ipcMain.on('yuki:workbench-check', event => { if (trusted(event)) void checkWorkbench().then(value => deliver({ type: 'workbench', ...value, url: settings.snapshot().workbenchUrl })); });
 ipcMain.on('yuki:workbench-open', event => {

@@ -10,6 +10,9 @@ let personaPending = null;
 let memoryPending = null, memorySource = null;
 let memoryRefreshId = null;
 let cardCurrent = null, cardEntries = [], cardPending = null;
+let cardFocusExplicit = false;
+const verifiedFocus = card => card?.state !== 'revoked' && card?.content?.resolution?.status === 'verified_existing' && card.content.ticket?.url ? { projectKey: card.content.projectKey, ticket: card.content.ticket } : null;
+function currentCardFocus() { const targets = new Set(cardEntries.map(card => verifiedFocus(card)?.ticket.url).filter(Boolean)); return cardFocusExplicit || targets.size === 1 ? verifiedFocus(cardCurrent) : null; }
 let thinkingCommitted = null, thinkingPending = null, thinkingDesired = null;
 let thinkingDraftVersion = 0;
 let thinkingSyncedVersion = 0, thinkingHasSaved = false;
@@ -141,6 +144,10 @@ function renderCard(card) {
   $('card-deploy-target').value = content.extraAuthorization?.deploy?.target || '';
   $('card-identity').textContent = `卡片 ${card.cardId} · revision ${card.revision}`;
   $('card-target').textContent = `目标：${content.repository || '项目待明确'} · ${content.ticket ? content.ticket.title + ' (' + content.ticket.url + ')' : '尚无已核验 Ticket'} · ${content.resolution.status}：${content.resolution.reason} · 来源 ${content.resolution.source || '暂无'} · 观察于 ${content.resolution.observedAt || '未知'}${content.candidates?.length ? ' · 候选：' + content.candidates.map(item => item.title + ' (' + item.url + ')').join('；') : ''}`;
+  const choices = $('card-candidate'); choices.replaceChildren();
+  const candidates = content.resolution.status === 'ambiguous' ? content.candidates ?? [] : [];
+  for (const item of candidates) { const option = document.createElement('option'); option.value = item.url; option.textContent = `${item.routeKey || item.title} · ${item.title} · #${item.number}`; choices.append(option); }
+  $('card-clarify').hidden = candidates.length === 0;
   const workflow = card.observedWorkflow;
   $('card-workflow').textContent = workflow ? `Workflow 观察：${workflow.phase || '未知'} · revision ${workflow.revision ?? '未知'} · ${workflow.assessment || 'unknown'} · ${workflow.observedAt || '时间未知'}` : 'Workflow 观察：暂无；这不影响 Ticket 目标核验状态。';
   const authorization = ['merge','deploy'].map(kind => `${kind}：${content.extraAuthorization?.[kind]?.requested ? content.extraAuthorization[kind].target ? '显式请求 ' + content.extraAuthorization[kind].target : '已请求，对象待澄清' : '未请求'}`).join('；');
@@ -152,7 +159,7 @@ function renderCardList(entries) {
   cardEntries = entries; const selected = cardCurrent?.cardId; const select = $('card-select'); select.replaceChildren();
   const blank = document.createElement('option'); blank.value = ''; blank.textContent = '选择卡片'; select.append(blank);
   for (const card of entries) { const option = document.createElement('option'); option.value = card.cardId; option.textContent = `${card.content.summary || card.content.original} · ${card.state}`; select.append(option); }
-  renderCard(entries.find(card => card.cardId === selected) || entries[0] || null);
+  renderCard(entries.find(card => card.cardId === selected) || entries.find(card => verifiedFocus(card)) || entries[0] || null);
 }
 host.subscribe(message => {
   if (message.generation !== undefined && message.generation < generation) { if (message.wav instanceof Uint8Array) message.wav.fill(0); return; }
@@ -171,7 +178,7 @@ host.subscribe(message => {
     try { voiceFinal ??= { scope: message.scope, text: normalizeUserText(message.text) }; $('voice-transcript').value = voiceFinal.text; $('voice-transcript').hidden = true; notice('已识别：' + voiceFinal.text); maybeDispatchVoiceFinal(); }
     catch (error) { notice(error.message); }
   }
-  if (message.type === 'ready') { if (pendingRequest && pendingGeneration === message.generation) return; const interrupted = busy && pendingGeneration !== message.generation; if (generation !== message.generation) { voiceScope = null; voiceFinal = null; } generation = message.generation; messages = message.history; render(); if (interrupted) releaseRequest(); state(message.status.service); notice(interrupted ? '连接已更新，上一条结果请以已保存历史为准；草稿仍保留。' : ''); if ($('memory-target').disabled) { memoryRefreshId = crypto.randomUUID(); host.send('memory', { generation, id: memoryRefreshId, action: 'list' }); } cardPending = null; if ($('engineering-card-panel').open) host.send('engineering-card', { generation, id: crypto.randomUUID(), action: 'list' }); maybeDispatchVoiceFinal(); }
+  if (message.type === 'ready') { if (pendingRequest && pendingGeneration === message.generation) return; const interrupted = busy && pendingGeneration !== message.generation; if (generation !== message.generation) { voiceScope = null; voiceFinal = null; cardCurrent = null; cardEntries = []; cardFocusExplicit = false; } generation = message.generation; messages = message.history; render(); if (interrupted) releaseRequest(); state(message.status.service); notice(interrupted ? '连接已更新，上一条结果请以已保存历史为准；草稿仍保留。' : ''); if ($('memory-target').disabled) { memoryRefreshId = crypto.randomUUID(); host.send('memory', { generation, id: memoryRefreshId, action: 'list' }); } cardPending = null; host.send('engineering-card', { generation, id: crypto.randomUUID(), action: 'list' }); maybeDispatchVoiceFinal(); }
   if (message.type === 'reply') {
     if (message.committed === true) appendCommitted(message.messages);
     if (!matchesRequest(message) || pendingRequest.cancelling) return;
@@ -198,7 +205,7 @@ host.subscribe(message => {
     else if (message.id === cardPending) {
       cardPending = null;
       if (message.type === 'engineering-card-error') $('card-status').textContent = message.message;
-      else { if (message.card) { renderCard(message.card); const index = cardEntries.findIndex(card => card.cardId === message.card.cardId); if (index < 0) cardEntries.unshift(message.card); else cardEntries[index] = message.card; renderCardList(cardEntries); } $('card-status').textContent = message.conflict ? '卡片已变化，请核对最新 revision 后重试。' : message.invalid ? '项目、Ticket、期望阶段或授权终点尚未明确，不能确认。' : '工程卡片已保存；尚未派发。'; }
+      else { if (message.card) { cardFocusExplicit = !!verifiedFocus(message.card); renderCard(message.card); const index = cardEntries.findIndex(card => card.cardId === message.card.cardId); if (index < 0) cardEntries.unshift(message.card); else cardEntries[index] = message.card; renderCardList(cardEntries); } $('card-status').textContent = message.conflict ? '卡片已变化，请核对最新 revision 后重试。' : message.invalid ? '项目、Ticket、期望阶段或授权终点尚未明确，不能确认。' : '工程卡片已保存；尚未派发。'; }
     }
   }
   if (message.type === 'memory' || message.type === 'memory-error') {
@@ -282,7 +289,7 @@ function dispatchUserText(value, origin = 'typed', voiceScope) {
     if (cardPending) { notice('上一张工程卡片仍在保存，请稍后重试。'); return false; }
     $('engineering-card-panel').open = true;
     $('card-original').value = text;
-    cardCommand('create', { original: text, focus: cardCurrent?.content?.projectKey ? { projectKey: cardCurrent.content.projectKey } : undefined, ...(origin === 'voice-final' ? { voiceScope } : {}) });
+    cardCommand('create', { original: text, focus: currentCardFocus(), ...(origin === 'voice-final' ? { voiceScope } : {}) });
     if (origin === 'typed' && $('text').value === text) $('text').value = '';
     notice('工程要求正在整理为待确认卡片。');
     return true;
@@ -294,7 +301,8 @@ function dispatchUserText(value, origin = 'typed', voiceScope) {
 $('form').addEventListener('submit', event => { event.preventDefault(); void mediaUI.dispose(); dispatchUserText($('text').value); });
 $('engineering-card-panel').addEventListener('toggle', () => { if ($('engineering-card-panel').open) host.send('engineering-card', { generation, id: crypto.randomUUID(), action: 'list' }); });
 $('card-create').onclick = () => { if ($('card-original').value.trim()) cardCommand('create',{ original: $('card-original').value }); else $('card-status').textContent = '请先填写工作要求。'; };
-$('card-select').onchange = () => renderCard(cardEntries.find(card => card.cardId === $('card-select').value) || null);
+$('card-select').onchange = () => { renderCard(cardEntries.find(card => card.cardId === $('card-select').value) || null); cardFocusExplicit = !!verifiedFocus(cardCurrent); };
+$('card-choose').onclick = () => { if (!cardCurrent || cardPending || cardCurrent.content.resolution.status !== 'ambiguous') return; const selected = cardCurrent.content.candidates?.find(item => item.url === $('card-candidate').value); if (!selected) return; const fields = cardFields(); fields.project = cardCurrent.content.projectKey || 'yuki-link'; fields.ticket = `#${selected.number}`; fields.noTicket = false; cardCommand('edit', { cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision, fields }); updateCardConfirm(); };
 $('card-edit').onclick = () => { if (!cardCurrent) return; cardCommand('edit',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision, fields: cardFields() }); updateCardConfirm(); };
 $('card-confirm').onclick = () => { if (cardCurrent && !cardPending && !cardDirty() && !$('card-confirm').disabled) cardCommand('confirm',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision }); };
 for (const id of ['card-original','card-summary','card-project','card-ticket','card-no-ticket','card-phase','card-endpoint','card-merge','card-merge-target','card-deploy','card-deploy-target']) { $(id).addEventListener('input', updateCardConfirm); $(id).addEventListener('change', updateCardConfirm); }

@@ -187,3 +187,10 @@ resolution status 只回答“卡片目标是否已经明确且有依据”，�
 - SP-5：原话中的 merge、deploy 显式请求分别保存在卡片，显示对象或待澄清；编辑器可分别填写对象，缺对象不能形成有效确认，`to-PR` 不自动包含二者。004 不执行合并或部署。
 - 定向验证：先观察新增用例红灯，再运行 `node --test test/engineering-cards.test.mjs test/renderer.test.mjs test/session.test.mjs`，58/58 PASS；`npm run check` 与新增后端/voice 模块 `node --check` 均 exit 0。此前 full suite 139/139、package 与 packaged smoke 是修复前基线，本 session 未重复运行。
 - 待 Emilia 真实验收：公共 GitHub `GET https://api.github.com/repos/Emilia-tan-Ovo/yuki-link/issues/129`，简称候选 `GET https://api.github.com/search/issues?q=repo%3AEmilia-tan-Ovo%2Fyuki-link+is%3Aissue+in%3Atitle+004&per_page=100`；Desktop 普通输入/语音 → 候选卡 → 编辑/确认、断网 `source_unavailable`、重开持久卡。Workflow 真实观察仍无来源，不得宣称已验收。确认后应始终 `not-dispatched`，005/006 未进入本票。
+
+## SP-2 remaining final fix handoff（2026-09-26）
+
+- 修复基线 `58f71ba307bb475e1493a639609db0cff738c8ef`；只处理 focused re-review 剩余的 SP-2，未启动 reviewer，未 push/PR/merge。
+- 普通文字/语音建卡携带当前已核验卡的 canonical Ticket 焦点；重开时读取持久卡列表，确认/编辑过的近期卡也可恢复焦点。简称仅在焦点路线匹配时优先使用，仍重新 GitHub lookup；无明确焦点且多路线时保留 `ambiguous`。
+- Harness 候选只读来源从已保存 `workbenchUrl` 或显式 `YUKI_HARNESS_URL` 取得本机根地址，经 root cookie 读取项目/Ticket 引用；拒绝非 loopback、凭据、跳转，限时读取。候选源失败保守澄清，不替代 GitHub 事实。工程卡 UI 可选路线/#编号，在同一 `card_id` 保存新 revision 后重新核验。
+- 定向验证：`node --test test/engineering-cards.test.mjs test/renderer.test.mjs test/session.test.mjs` 67/67 PASS；`npm run check`、`git diff --check` PASS。后续由 Emilia 对真实 Desktop 普通输入/语音、重开焦点、Harness 可用/不可用、GitHub #129 核验及确认后 `not-dispatched` 做产品入口验收；Live2D 实际资源链继续保持原 pending 状态。
