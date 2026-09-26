@@ -89,10 +89,11 @@ test('YCA observation binds OS identity to the current authenticated instance an
   const actual = { pid: 12345, created: '2026-01-01T00:00:00Z', matches: true };
   let diagnostic = { service: 'yuki-local-control', instance, pid: actual.pid,
     active: { codex: 0, computer: 0, requests: 0 }, tools: { count: 1, sha256: 'b'.repeat(64) } };
-  let denied = false;
+  let denied = false, healthStatus = 200;
   const server = http.createServer((request, response) => {
     response.setHeader('content-type', 'application/json');
-    if (request.url === '/healthz') return response.end(JSON.stringify({ service: 'yuki-computer-agent', status: 'ok' }));
+    if (request.url === '/healthz') { response.statusCode = healthStatus;
+      return response.end(JSON.stringify({ service: 'yuki-computer-agent', status: 'ok' })); }
     if (denied || request.headers.authorization !== `Bearer ${token}`) { response.statusCode = 403; return response.end('{}'); }
     response.end(JSON.stringify(diagnostic));
   });
@@ -104,9 +105,15 @@ test('YCA observation binds OS identity to the current authenticated instance an
   const host = { inspect: async () => [actual], free: async () => {} };
   const unit = new YcaUnit(config, host, state, () => {}, new Events(root));
   assert.equal((await unit.observe()).healthy, true);
-  denied = true;
+  healthStatus = 503;
   let observation = await unit.observe();
+  assert.equal(observation.code, 'HEALTH_FAILED');
+  assert.deepEqual(observation.healthProbe, { status: 503, code: 'HEALTH_HTTP_ERROR' });
+  healthStatus = 200;
+  denied = true;
+  observation = await unit.observe();
   assert.equal(observation.owned, false); assert.equal(observation.activity, null); assert.equal(observation.healthy, false);
+  assert.deepEqual(observation.diagnosticProbe, { status: 403, code: 'OBSERVED_UNOWNED' });
   await assert.rejects(unit.stop(), { code: 'OBSERVED_UNOWNED' });
   denied = false; diagnostic = { ...diagnostic, instance: 'previous-instance' };
   assert.equal((await unit.observe()).owned, false, 'old instance response cannot authenticate this launch');

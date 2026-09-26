@@ -46,24 +46,38 @@ export class YcaUnit {
     const processMatches = matches(p, this.state.process);
     const identityChanged = this.state.process && (p.pid !== this.state.process.pid || p.created !== this.state.process.created);
     let owned = false;
+    const [statusResult, healthResult] = await Promise.allSettled([
+      get(`http://127.0.0.1:${this.config.controlPort}/status`, { token: this.state.token, timeout: YCA_LOCAL_PROBE_TIMEOUT_MS }),
+      get(`http://127.0.0.1:${this.config.port}/healthz`, { timeout: YCA_LOCAL_PROBE_TIMEOUT_MS }),
+    ]);
     let diagnostic, diagnosticCode = null;
-    try {
-      const response = await get(`http://127.0.0.1:${this.config.controlPort}/status`, { token: this.state.token, timeout: YCA_LOCAL_PROBE_TIMEOUT_MS });
+    let diagnosticProbe = { code: null, status: null };
+    if (statusResult.status === 'fulfilled') {
+      const response = statusResult.value;
+      diagnosticProbe.status = response.status;
       if (response.status === 200) {
         diagnostic = response.json;
         if (diagnostic?.instance !== this.state.instance || diagnostic?.pid !== p.pid || diagnostic?.service !== 'yuki-local-control') {
           diagnostic = null; diagnosticCode = 'OBSERVED_UNOWNED';
+          diagnosticProbe.code = diagnosticCode;
         }
       } else {
         diagnosticCode = [401, 403].includes(response.status) ? 'OBSERVED_UNOWNED' : 'ACTIVITY_UNKNOWN';
+        diagnosticProbe.code = diagnosticCode;
       }
-    } catch { diagnosticCode = 'ACTIVITY_UNKNOWN'; /* unknown activity is not idle */ }
+    } else {
+      diagnosticCode = 'ACTIVITY_UNKNOWN';
+      diagnosticProbe.code = statusResult.reason?.code ?? 'LOCAL_PROBE_FAILED';
+    }
     owned = processMatches && Boolean(diagnostic);
     if (!this.state.process && this.state.instance && diagnostic) {
       this.state.process = p; this.persist(); owned = true; // recover a spawn/persist interruption with instance authentication
     }
-    let health;
-    try { const h = await get(`http://127.0.0.1:${this.config.port}/healthz`, { timeout: YCA_LOCAL_PROBE_TIMEOUT_MS }); health = h.status === 200 && h.json?.service === 'yuki-computer-agent' && h.json.status === 'ok'; } catch { health = false; }
+    const h = healthResult.status === 'fulfilled' ? healthResult.value : null;
+    const health = h?.status === 200 && h.json?.service === 'yuki-computer-agent' && h.json.status === 'ok';
+    const healthProbe = { status: h?.status ?? null, code: health ? null : h
+      ? h.status === 200 ? 'HEALTH_RESPONSE_INVALID' : 'HEALTH_HTTP_ERROR'
+      : healthResult.reason?.code ?? 'LOCAL_PROBE_FAILED' };
     if (owned && diagnostic && !this.state.lock) {
       const lock = readJson(path.join(this.config.runtime, 'bridge.lock'), null);
       if (lock?.pid === p.pid) { this.state.lock = lock; this.persist(); }
@@ -80,6 +94,7 @@ export class YcaUnit {
     return { running: true, owned, authenticated: Boolean(diagnostic), instance: diagnostic?.instance ?? null,
       pid: p.pid, created: p.created, healthy: Boolean(health && owned && validActivity && !diagnostic.closing && (!expected || verified)), deployment,
       activity: validActivity ? activity : null, tools: validTools ? diagnostic.tools : null, lastBridge: diagnostic?.lastBridge ?? null,
+      diagnosticProbe, healthProbe,
       code: identityChanged ? 'OWNERSHIP_CHANGED' : !diagnostic ? (diagnosticCode ?? 'ACTIVITY_UNKNOWN') : !owned ? 'OBSERVED_UNOWNED' : !validActivity ? 'ACTIVITY_UNKNOWN'
         : expected && !runningSource ? 'DEPLOYMENT_OBSERVATION_PENDING' : expected && !verified ? 'DEPLOYMENT_UNVERIFIED'
           : !health ? 'HEALTH_FAILED' : deploymentCode };
