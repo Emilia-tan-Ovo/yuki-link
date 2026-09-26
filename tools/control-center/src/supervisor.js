@@ -2,15 +2,19 @@ import { randomUUID } from 'node:crypto';
 import { fail, saveJson, readJson, sleep } from './common.js';
 
 const ids = ['yca', 'tunnel'];
-const defaults = () => ({ version: 1, autoRecovery: false, confirmedTools: null, units: Object.fromEntries(ids.map(id => [id,
-  { desired: 'stopped', attempts: [], nextAt: null, blocked: null, stableSince: null, ownership: {} }])) });
+const defaults = () => ({ version: 2, autoRecovery: true, confirmedTools: null, units: Object.fromEntries(ids.map(id => [id,
+  { desired: 'stopped', attempts: [], nextAt: null, blocked: null, stableSince: null, lastFailure: null, ownership: {} }])) });
+const recoverable = new Set(['STARTUP_TIMEOUT', 'HEALTH_FAILED', 'YCA_NOT_READY', 'MCP_NOT_READY',
+  'SPAWN_FAILED', 'NATIVE_CONNECT_FAILED', 'ACTIVITY_UNKNOWN', 'ACTIVITY_UNKNOWN_OR_BUSY', 'YCA_RECOVERY_FAILED']);
+const retryDelays = [2000, 5000, 10_000, 30_000, 30_000];
+const retryBudget = retryDelays.length;
 const permanent = new Set(['VERSION_UNSUPPORTED', 'PATH_MISSING', 'PORT_CONFLICT', 'MULTIPLE_INSTANCES', 'LEGACY_RUNTIME_LOCK', 'ORPHAN_TASK_REVIEW', 'RUNTIME_LOCKED', 'OBSERVED_UNOWNED', 'TOPOLOGY_CHANGED', 'PROFILE_REVIEW_REQUIRED', 'PID_CONFLICT', 'NATIVE_RUNTIME_CONFLICT', 'STATE_UNREADABLE', 'ACTIVITY_UNKNOWN', 'AUTH_REQUIRED', 'STOP_TIMEOUT', 'OWNERSHIP_CHANGED']);
 for (const code of ['CODEX_EXECUTABLE_UNAVAILABLE', 'NODE_PATH_MISSING', 'YCA_ENTRY_PATH_MISSING', 'PWSH_PATH_MISSING']) permanent.add(code);
 const unknownOperation = error => Object.assign(error, { operationOutcome: 'unknown' });
 const validActivity = activity => Boolean(activity && ['codex', 'computer', 'requests'].every(key => Number.isSafeInteger(activity[key]) && activity[key] >= 0));
 const sameProcess = (a, b) => Boolean(a?.pid && a?.created && b?.pid === a.pid && b?.created === a.created);
 const recoveredYcaStartup = (state, observation) => {
-  if (state.desired !== 'running' || state.blocked !== 'STARTUP_TIMEOUT' || !observation?.running
+  if (state.desired !== 'running' || !['STARTUP_TIMEOUT', 'RECOVERY_BUDGET_EXHAUSTED'].includes(state.blocked) || !observation?.running
     || !observation.healthy || !observation.owned || observation.authenticated !== true || observation.code
     || !state.ownership?.instance || observation.instance !== state.ownership.instance
     || !sameProcess(observation, state.ownership.process) || !validActivity(observation.activity)) return false;
@@ -21,7 +25,7 @@ const recoveredYcaStartup = (state, observation) => {
     && running?.commit === expected.commit && running.dirty === false
     && observation.tools?.count === expected.tools?.count && observation.tools?.sha256 === expected.tools?.sha256;
 };
-const recoveredTunnelStartup = (state, observation) => Boolean(state.desired === 'running' && state.blocked === 'STARTUP_TIMEOUT'
+const recoveredTunnelStartup = (state, observation) => Boolean(state.desired === 'running' && ['STARTUP_TIMEOUT', 'RECOVERY_BUDGET_EXHAUSTED'].includes(state.blocked)
   && observation?.running === true && observation.owned === true && observation.healthy === true && !observation.code
   && sameProcess(observation, state.ownership?.process));
 
@@ -29,9 +33,14 @@ export class Supervisor {
   constructor({ stateFile, events, createUnits, clock = Date.now, observeOnly = false, startupMs = 30_000, intervalMs = 5000 }) {
     Object.assign(this, { stateFile, events, clock, observeOnly, startupMs, intervalMs });
     this.state = readJson(stateFile, defaults());
-    if (this.state.version !== 1 || ids.some(id => !this.state.units?.[id] || !Array.isArray(this.state.units[id].attempts))) throw fail('STATE_INVALID');
+    if (![1, 2].includes(this.state.version) || ids.some(id => !this.state.units?.[id] || !Array.isArray(this.state.units[id].attempts))) throw fail('STATE_INVALID');
+    // v1 deliberately disabled recovery during the first acceptance period. The
+    // new policy enables it once on upgrade; later explicit user choices persist.
+    if (this.state.version === 1 && !observeOnly) {
+      this.state.version = 2; this.state.autoRecovery = true; this.persist();
+    }
     this.units = createUnits(this.state, () => this.persist()); this.observations = {}; this.tail = Promise.resolve();
-    this.lastTick = clock(); this.graceUntil = 0; this.busy = null; this.codex = { cli: '未检查', account: '未检查', inference: '未在此验证' };
+    this.lastTick = clock(); this.busy = null; this.codex = { cli: '未检查', account: '未检查', inference: '未在此验证' };
     this.deploymentLatest = null;
   }
   persist() { saveJson(this.stateFile, this.state); }
@@ -64,7 +73,8 @@ export class Supervisor {
         : o.healthy ? (id === 'tunnel' && (o.controlPlane?.state !== 'healthy' || o.communication?.state !== 'recent-local-evidence') ? '降级' : '可用') : '降级';
       if (s.nextAt && !stale) status = '恢复中';
       if (this.busy?.endsWith('start') && this.busy.startsWith(id)) status = '启动中';
-      const value = { ...o, status, stale, desired: s.desired, blocked: s.blocked, nextAt: s.nextAt, retries: s.attempts.length };
+      const value = { ...o, status, stale, desired: s.desired, blocked: s.blocked, nextAt: s.nextAt,
+        retries: s.attempts.length, failureReason: s.lastFailure ?? null };
       if (id === 'yca') {
         const deployment = { ...(o.deployment ?? {}) };
         if (this.deploymentLatest) deployment.latest = this.deploymentLatest;
@@ -142,18 +152,21 @@ export class Supervisor {
         if (!running.healthy || (previous.toolsSha && running.tools?.sha256 !== previous.toolsSha)) throw fail('DEPLOYMENT_ROLLBACK_FAILED');
         return 'restored';
       }
+      if (this.candidateVerified(running, candidate, prepared)) {
+        await this.observe(); running = this.observations.yca;
+        if (this.candidateVerified(running, candidate, prepared)) return 'switched';
+      }
       const owned = this.state.units.yca.ownership;
+      const candidateCommit = running.deployment?.running?.commit ?? null;
       const isCandidate = candidate?.instance && owned?.instance === candidate.instance && running.instance === candidate.instance
         && running.owned && running.authenticated === true && sameProcess(running, owned.process)
-        && (!candidate.process || sameProcess(running, candidate.process)) && recorded === prepared.commit;
+        && (!candidate.process || sameProcess(running, candidate.process)) && owned.deployment?.commit === prepared.commit;
       if (!isCandidate) {
-        if (running.owned && commit && (commit !== prepared.commit || owned?.instance !== candidate?.instance
+        if (running.owned && candidateCommit && (candidateCommit !== prepared.commit || owned?.instance !== candidate?.instance
             || running.instance && running.instance !== candidate?.instance || candidate?.process && !sameProcess(running, candidate.process)))
           throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
         throw unknownOperation(fail('DEPLOYMENT_SWITCH_UNKNOWN'));
       }
-      if (running.healthy && commit === prepared.commit && running.deployment?.running?.dirty === false
-          && running.tools?.sha256 === prepared.tools?.sha256 && running.tools?.count === prepared.tools?.count && validActivity(running.activity)) return 'switched';
       if (!validActivity(running.activity)) throw unknownOperation(fail('DEPLOYMENT_SWITCH_UNKNOWN'));
       this.busy = 'yca:rollback-stop'; await this.units.yca.stop(confirm);
       await this.observe(); running = this.observations.yca;
@@ -204,6 +217,8 @@ export class Supervisor {
         await this.observe();
         const running = this.observations.yca;
         if (!this.candidateVerified(running, candidate, prepared)) throw fail('DEPLOYMENT_SWITCH_UNVERIFIED');
+        await this.observe();
+        if (!this.candidateVerified(this.observations.yca, candidate, prepared)) throw fail('DEPLOYMENT_SWITCH_UNVERIFIED');
         switched = true;
       }
     } catch (e) {
@@ -228,7 +243,7 @@ export class Supervisor {
       }
     }
     if (switched) this.report('deployment-switched');
-    try { this.busy = null; this.persist(); await this.observe(); }
+    try { this.busy = null; this.persist(); if (!switched) await this.observe(); }
     catch (finalizationError) { throw unknownOperation(finalizationError); }
     if (failure) {
       if (failure.operationOutcome === 'unknown') throw failure;
@@ -317,7 +332,10 @@ export class Supervisor {
           }
         }
       } catch (e) {
-        for (const key of selected) this.state.units[key].blocked = e.code ?? 'ACTION_FAILED';
+        for (const key of selected) {
+          this.state.units[key].blocked = e.code ?? 'ACTION_FAILED';
+          this.state.units[key].lastFailure = e.code ?? 'ACTION_FAILED';
+        }
         try { this.events.add(id, action, e.code ?? 'ACTION_FAILED'); }
         catch (eventError) { failure = unknownOperation(eventError); }
         failure ??= e;
@@ -349,57 +367,83 @@ export class Supervisor {
   reconcileStartup() { return this.serial(async () => {
     await this.observe();
     if (this.observeOnly) return this.snapshot();
-    const state = this.state.units.yca, observation = this.observations.yca;
-    if (state.desired !== 'running' || observation?.running !== false || observation.code) return this.snapshot();
-    const commit = state.ownership?.deployment?.commit ?? null;
-    try {
-      await this.startOne('yca', { recovery: true, commit });
-      this.events.add('yca', 'startup-reconciled');
-    } catch (error) {
-      this.events.add('yca', 'startup-reconciliation-failed', error.code ?? 'RECOVERY_FAILED');
+    for (const id of ids) {
+      if (id === 'tunnel' && !this.state.autoRecovery) continue;
+      const state = this.state.units[id], observation = this.observations[id];
+      if (state.desired !== 'running' || observation?.running !== false || observation.code
+          || id === 'tunnel' && !this.observations.yca?.healthy) continue;
+      try {
+        await this.startOne(id, { recovery: true, commit: id === 'yca' ? state.ownership?.deployment?.commit ?? null : null });
+        this.events.add(id, 'startup-reconciled');
+      } catch (error) {
+        state.lastFailure = error.code ?? 'RECOVERY_FAILED';
+        this.events.add(id, 'startup-reconciliation-failed', state.lastFailure);
+      }
     }
-    await this.observe();
+    this.persist(); await this.observe();
     return this.snapshot();
   }); }
   tick() { return this.serial(async () => {
     const at = this.clock();
     if (at - this.lastTick > this.intervalMs * 3) {
-      this.graceUntil = at + 30_000;
-      for (const s of Object.values(this.state.units)) { s.failures = 0; if (s.nextAt) s.nextAt = this.graceUntil; }
       this.events.add('supervisor', 'long-check-gap');
     }
     this.lastTick = at; await this.observe();
     if (this.observeOnly || !this.state.autoRecovery) return;
     for (const id of ids) {
       const s = this.state.units[id], o = this.observations[id];
-      if (s.desired !== 'running' || s.blocked) continue;
+      if (s.desired !== 'running') continue;
+      if (id === 'tunnel' && !this.observations.yca?.healthy && !permanent.has(o.code)) {
+        s.stableSince = null;
+        s.blocked = this.state.units.yca.blocked === 'RECOVERY_BUDGET_EXHAUSTED' ? 'YCA_RECOVERY_FAILED' : 'YCA_NOT_READY';
+        s.lastFailure = this.observations.yca?.code ?? 'YCA_NOT_READY';
+        s.nextAt = s.blocked === 'YCA_NOT_READY' ? this.state.units.yca.nextAt ?? at + this.intervalMs : null;
+        continue;
+      }
       if (o.healthy) {
         s.failures = 0; s.nextAt = null; s.stableSince ??= at;
+        if (recoverable.has(s.blocked)) s.blocked = null;
+        if (!s.blocked) s.lastFailure = null;
         if (at - s.stableSince >= 600_000) s.attempts = [];
         continue;
       }
       s.stableSince = null;
-      if (at < this.graceUntil) continue;
-      // A live tunnel owns its network retries. No restart for auth/network
-      // faults, unknown observations, or tasks of unknown activity.
-      if (o.running === null || o.running === undefined || (o.running && !o.owned)) continue;
-      if (id === 'tunnel' && o.running) continue;
-      if (o.code?.startsWith('DEPLOYMENT_')) { s.blocked = o.code; continue; }
+      if (s.blocked && !recoverable.has(s.blocked)) continue;
+      if (o.code && (permanent.has(o.code) && o.code !== 'ACTIVITY_UNKNOWN' || o.code.startsWith('DEPLOYMENT_'))) {
+        s.blocked = o.code; s.lastFailure = o.code; s.nextAt = null; continue;
+      }
+      if (id === 'tunnel' && s.blocked === 'YCA_NOT_READY') { s.blocked = null; s.nextAt = o.running ? null : at; }
+      if (id === 'tunnel' && s.blocked === 'YCA_RECOVERY_FAILED') { s.blocked = null; s.nextAt = null; }
+      // A live tunnel owns its network retries. Never restart it for a remote
+      // timeout or MCP readiness loss while it retains verified ownership.
+      if (o.running === null || o.running === undefined || o.running && !o.owned || id === 'tunnel' && o.running) continue;
       if (o.running) {
         s.failures = (s.failures ?? 0) + 1;
         if (s.failures < 3) continue;
-        if (!o.activity || Object.values(o.activity).some(n => n > 0)) { s.blocked = 'ACTIVITY_UNKNOWN_OR_BUSY'; continue; }
+        if (!o.activity || Object.values(o.activity).some(n => n > 0)) {
+          s.blocked = 'ACTIVITY_UNKNOWN_OR_BUSY'; s.lastFailure = o.code ?? s.blocked; s.nextAt = null; continue;
+        }
       }
-      if (id === 'tunnel' && !this.observations.yca?.healthy) continue;
+      if (s.blocked === 'ACTIVITY_UNKNOWN_OR_BUSY') s.blocked = null;
       if (!s.nextAt) {
-        if (s.attempts.filter(t => at - t < 600_000).length >= 5) { s.blocked = 'RECOVERY_BUDGET_EXHAUSTED'; this.events.add(id, 'recovery-paused', s.blocked); continue; }
-        s.nextAt = at + [2000, 5000, 10_000, 30_000][Math.min(s.attempts.length, 3)]; this.persist(); continue;
+        if (s.attempts.length >= retryBudget) {
+          s.blocked = 'RECOVERY_BUDGET_EXHAUSTED'; s.lastFailure = o.code ?? s.lastFailure ?? 'RECOVERY_FAILED';
+          this.events.add(id, 'recovery-paused', s.blocked); continue;
+        }
+        s.nextAt = at + retryDelays[s.attempts.length]; this.persist(); continue;
       }
       if (at < s.nextAt) continue;
-      s.attempts.push(at); s.attempts = s.attempts.slice(-5); s.nextAt = null; this.persist();
+      s.attempts.push(at); s.nextAt = null; this.persist();
       this.events.add(id, 'recovery-attempt', o.code ?? 'PROCESS_EXITED');
-      try { if (o.running) await this.units[id].stop(false); await this.startOne(id, { recovery: true, commit: id === 'yca' ? this.state.units.yca.ownership?.deployment?.commit ?? null : null }); }
-      catch (e) { if (permanent.has(e.code) || e.code?.startsWith('DEPLOYMENT_')) s.blocked = e.code; this.events.add(id, 'recovery-failed', e.code ?? 'RECOVERY_FAILED'); }
+      try {
+        if (o.running) await this.units[id].stop(false);
+        await this.startOne(id, { recovery: true, commit: id === 'yca' ? this.state.units.yca.ownership?.deployment?.commit ?? null : null });
+        s.blocked = null; s.lastFailure = null; s.failures = 0;
+      } catch (e) {
+        s.lastFailure = e.code ?? 'RECOVERY_FAILED';
+        if (permanent.has(e.code) && e.code !== 'ACTIVITY_UNKNOWN' || e.code?.startsWith('DEPLOYMENT_')) s.blocked = e.code;
+        this.events.add(id, 'recovery-failed', s.lastFailure);
+      }
     }
     this.persist();
   }); }
