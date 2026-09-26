@@ -17,12 +17,13 @@ test('coordinator keeps DSH turn and typed engineering facts separate and never 
   const coordinator = new EngineeringCoordinator({store,config:{ycaUrl:'http://127.0.0.1:7391/companion-mcp'},
     runTurn:async()=>{turns++;return {state:'turn-completed',exit_code:0,summary:'我完成了'};},
     receipt:async()=>{reads++;return {schema_version:1,operation_id:'operation-1',operation_state:'started',
-      run_id:'run-1',run:{status:'running'},workflow:{current:{phase:'implementation'}},
+      run_id:'run-1',run:{status:'completed',final_response:'已完成实际修改'},workflow:{current:{phase:'implementation'}},
       acceptance:{status:'pending'},pr_delivery:{state:'unknown'},reconciliation:false};}});
   const first = await coordinator.dispatch(confirmed);
   assert.equal(first.dsh_turn.state,'turn-completed');
   assert.equal(first.status.engineering_operation.state,'started');
-  assert.equal(first.status.run.status,'running');
+  assert.equal(first.status.run.status,'completed');
+  assert.equal(first.status.run.final_response,'已完成实际修改');
   assert.equal(first.status.acceptance.status,'pending');
   assert.equal(first.status.pr_delivery.state,'unknown');
   assert.equal((await coordinator.dispatch(confirmed)).state,'already-started');

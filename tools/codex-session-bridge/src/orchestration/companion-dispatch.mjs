@@ -88,7 +88,7 @@ export class CompanionDispatchService {
     const runId = runtime?.run_id ?? null;
     const sessionId = runtime?.session_id ?? null;
     let run = null;
-    try { if (runId) run = this.manager.status({ run_id: runId }); } catch { /* Observation remains unknown. */ }
+    try { if (runId) run = this.manager.status({ run_id: runId })?.run ?? null; } catch { /* Observation remains unknown. */ }
     return { schema_version: 1, card_store_id: input.card_store_id, card_id: input.card_id,
       revision: input.revision, dispatch_id: input.dispatch_id,
       card_state: card?.state ?? 'unknown', dispatch_state: claim ? 'engineering-received'

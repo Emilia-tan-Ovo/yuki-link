@@ -127,11 +127,15 @@ function renderEngineeringStatus(card) {
   const target = $('card-engineering-status'); target.replaceChildren();
   if (!card) return;
   const status = engineeringViews.get(`${card.cardId}:${card.revision}`);
+  const finalResponse = status?.run?.final_response;
+  const result = typeof finalResponse === 'string' && finalResponse.trim()
+    ? finalResponse.trim().slice(0, 240) : '暂无';
   const lines = [
     `卡片交接：${status?.card_dispatch ?? card.dispatchStatus ?? (card.dispatchId ? '未知' : '尚未派发')}`,
     `DSH 编排回合：${status?.dsh_turn ?? '未观察到'} · exit ${status?.dsh_receipt?.exit_code ?? '未知'}`,
     `YCA operation：${status?.engineering_operation?.id ?? '暂无'} · ${status?.engineering_operation?.state ?? '未知'}`,
     `Sylvia run：${status?.receipt?.run_id ?? '暂无'} · ${status?.run?.status ?? '未知'}`,
+    `Sylvia 实际回复：${result}`,
     `Workflow / Acceptance：${status?.workflow?.current?.phase ?? '未知'} / ${status?.acceptance?.status ?? '未知'}`,
     `PR 交付：${status?.pr_delivery?.state ?? '未知'}${status?.pr_delivery?.reference ? ' · ' + status.pr_delivery.reference : ''}`,
   ];

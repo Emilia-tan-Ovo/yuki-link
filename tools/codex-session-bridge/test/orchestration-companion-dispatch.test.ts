@@ -31,7 +31,8 @@ test('duplicate and lost receipt resolve the original execution without a second
     findByRequest: (_ticket: string, request: string) => operation?.request_id === request ? operation : null,
     reconcile: () => operation,
   }, detail: () => ({ workflow: { current: { phase:'implementation',acceptance:{status:'pending'} } } }) },
-  status: () => ({ status:'running' }) };
+  status: () => ({ session:{session_id:'session-1'},
+    run:{run_id:'run-1',status:'completed',final_response:'已完成实际修改'}, session_status:'idle' }) };
   const service: any = new CompanionDispatchService({manager,directory,launch: async (claim: any) => {
     launches++;
     operation = {operation_id:'operation-1',ticket_id:claim.ticket_id,request_id:claim.request_id,
@@ -44,6 +45,7 @@ test('duplicate and lost receipt resolve the original execution without a second
   const accepted = await service.dispatch(input);
   assert.equal(accepted.operation_id,'operation-1');
   assert.equal(accepted.run_id,'run-1');
+  assert.deepEqual(accepted.run,{run_id:'run-1',status:'completed',final_response:'已完成实际修改'});
   assert.equal(accepted.acceptance.status,'pending');
   assert.equal(accepted.pr_delivery.state,'unknown');
   service.close();
