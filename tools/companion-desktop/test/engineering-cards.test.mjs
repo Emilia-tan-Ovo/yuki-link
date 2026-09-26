@@ -77,6 +77,20 @@ test('worker card command creates and confirms no-ticket intent without invoking
   await handle({ type: 'close', generation: 1 });
 });
 
+test('worker edit response wraps the persisted new revision for the renderer contract', async t => {
+  const dir = await fixture(t), events = [], repo = 'Emilia-tan-Ovo/yuki-link';
+  const source = { lookup: async (repository, n) => issue(repository, n, 'COMPANION-004') };
+  const handle = createWorkerHandler({ post: event => events.push(event), createSession: () => new BackendSession({ directory: dir, mode: 'preview', issueSource: source }) });
+  await handle({ type: 'start', generation: 1, preview: true });
+  await handle({ type: 'engineering-card', generation: 1, id: 'create-edit-contract', action: 'create', original: '给 yuki-link 的 #129 只做设计' });
+  const first = events.at(-1).card;
+  await handle({ type: 'engineering-card', generation: 1, id: 'edit-contract', action: 'edit', cardId: first.cardId, expectedRevision: first.revision,
+    fields: { original: first.content.original, summary: '继续设计', project: 'yuki-link', ticket: '#129', noTicket: false, desiredPhase: 'ticket-design', endpoint: 'design-only' } });
+  const edited = events.at(-1);
+  assert.equal(edited.action, 'edit'); assert.equal(edited.card.cardId, first.cardId); assert.equal(edited.card.revision, 2);
+  assert.equal(edited.card.content.ticket.number, 129); assert.equal(edited.card.dispatchStatus, 'not-dispatched');
+  await handle({ type: 'close', generation: 1 });
+});
 test('target changes invalidate old workflow and late observation cannot attach to new target', async t => {
   const store = new EngineeringCardStore(await fixture(t));
   const content = { original: '做 #129', projectKey: 'yuki-link', repository: 'Emilia-tan-Ovo/yuki-link', ticket: issue('Emilia-tan-Ovo/yuki-link',129), resolution: {status:'verified_existing'}, desiredPhase:'implementation', endpoint:'to-pr', extraAuthorization:{merge:false,deploy:false} };

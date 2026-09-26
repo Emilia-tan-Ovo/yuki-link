@@ -194,3 +194,9 @@ resolution status 只回答“卡片目标是否已经明确且有依据”，�
 - 普通文字/语音建卡携带当前已核验卡的 canonical Ticket 焦点；重开时读取持久卡列表，确认/编辑过的近期卡也可恢复焦点。简称仅在焦点路线匹配时优先使用，仍重新 GitHub lookup；无明确焦点且多路线时保留 `ambiguous`。
 - Harness 候选只读来源从已保存 `workbenchUrl` 或显式 `YUKI_HARNESS_URL` 取得本机根地址，经 root cookie 读取项目/Ticket 引用；拒绝非 loopback、凭据、跳转，限时读取。候选源失败保守澄清，不替代 GitHub 事实。工程卡 UI 可选路线/#编号，在同一 `card_id` 保存新 revision 后重新核验。
 - 定向验证：`node --test test/engineering-cards.test.mjs test/renderer.test.mjs test/session.test.mjs` 67/67 PASS；`npm run check`、`git diff --check` PASS。后续由 Emilia 对真实 Desktop 普通输入/语音、重开焦点、Harness 可用/不可用、GitHub #129 核验及确认后 `not-dispatched` 做产品入口验收；Live2D 实际资源链继续保持原 pending 状态。
+
+### SP-2 deterministic acceptance follow-up（2026-09-26）
+
+- 外层真实 worker + production Harness/GitHub 验收发现一个 IPC 合同缺口：成功的 card edit 曾返回裸 card，而 renderer 只消费 message.card，导致“选择候选→同卡新 revision”可能已持久化但界面不刷新。
+- 已将 BackendSession 的 edit 成功回包统一为 { card }，冲突回包保持原 conflict + card；新增 worker 回归测试验证 renderer 所需合同。
+- 修后定向测试 68/68 PASS；真实 production seam 已验证：COMPANION-004 焦点重开后“继续004”→#129；ORCH-004 焦点→#94；无焦点→5 个候选保持 ambiguous；选择 #129 后同 card_id revision 1→2、GitHub verified、not-dispatched。

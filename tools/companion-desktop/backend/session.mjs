@@ -46,7 +46,7 @@ export class BackendSession {
   async cardCommand(data) {
     if (data.action === 'list') return { cards: this.cardStore.list() };
     if (data.action === 'create') return { card: await this.cards.create(data.original, data.focus) };
-    if (data.action === 'edit') return await this.cards.edit(data.cardId,data.expectedRevision,data.fields);
+    if (data.action === 'edit') { const result = await this.cards.edit(data.cardId,data.expectedRevision,data.fields); return result?.conflict ? result : { card: result }; }
     if (data.action === 'confirm') return this.cards.confirm(data.cardId,data.expectedRevision,'desktop-user-action');
     if (data.action === 'revoke') return this.cards.revoke(data.cardId,data.expectedRevision);
     if (data.action === 'refresh') return { card: await this.cards.refresh(data.cardId) };
