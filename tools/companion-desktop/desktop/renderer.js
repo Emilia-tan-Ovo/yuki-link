@@ -131,7 +131,7 @@ host.subscribe(message => {
     if (['cancelling', 'cancelled', 'error', 'unknown'].includes(message.state)) { voiceFinal = null; voiceFinalConsumed = true; }
   }
   if (message.type === 'voice-final' && sameVoiceScope(message.scope, voiceScope) && !voiceFinalConsumed) {
-    try { voiceFinal ??= { scope: message.scope, text: normalizeUserText(message.text) }; $('voice-transcript').value = voiceFinal.text; $('voice-transcript').hidden = false; notice('已识别，待提交：' + voiceFinal.text); maybeDispatchVoiceFinal(); }
+    try { voiceFinal ??= { scope: message.scope, text: normalizeUserText(message.text) }; $('voice-transcript').value = voiceFinal.text; $('voice-transcript').hidden = true; notice('已识别：' + voiceFinal.text); maybeDispatchVoiceFinal(); }
     catch (error) { notice(error.message); }
   }
   if (message.type === 'ready') { if (pendingRequest && pendingGeneration === message.generation) return; const interrupted = busy && pendingGeneration !== message.generation; if (generation !== message.generation) { voiceScope = null; voiceFinal = null; } generation = message.generation; messages = message.history; render(); if (interrupted) releaseRequest(); state(message.status.service); notice(interrupted ? '连接已更新，上一条结果请以已保存历史为准；草稿仍保留。' : ''); if ($('memory-target').disabled) { memoryRefreshId = crypto.randomUUID(); host.send('memory', { generation, id: memoryRefreshId, action: 'list' }); } maybeDispatchVoiceFinal(); }

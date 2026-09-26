@@ -1,6 +1,6 @@
 // Adapted Qwen request/splitSpeech seams from phoiex/AAAAGENT providers/qwen-{asr,tts}.ts
 // at 2752349bcc7f7137b8b9e4ff9cccf34026d77aad. No MediaStore, emotion, cloning or retry.
-import { inspectPcmWav, joinPcmWav, CAPTURE_LIMITS, PLAYBACK_LIMITS } from '../desktop/media/wav.mjs';
+import { inspectPcmWav, pcm16BytesWav, joinPcmWav, CAPTURE_LIMITS, PLAYBACK_LIMITS } from '../desktop/media/wav.mjs';
 import { normalizeVoice } from '../desktop/voice-config.mjs';
 import { normalizeCredential } from '../desktop/electron/credential.mjs';
 export class VoiceError extends Error {
@@ -101,10 +101,10 @@ export function createVoiceProvider({ config, key, fetcher = fetch, timeoutMs = 
         try {
           for (const text of segments) {
             const clip = await deadline('tts', combined, timeoutMs, async partSignal => {
-              const raw = await post('/api/v1/services/audio/tts/SpeechSynthesizer', { model: settings.ttsModel, input: { text, voice: settings.voice, format: 'wav', sample_rate: 24000, instruction: '用自然、中性的语气清晰朗读。' } }, partSignal, 'tts');
+              const raw = await post('/api/v1/services/audio/tts/SpeechSynthesizer', { model: settings.ttsModel, input: { text, voice: settings.voice, format: 'pcm', sample_rate: 24000, instruction: '用自然、中性的语气清晰朗读。' } }, partSignal, 'tts');
               if (raw.output?.finish_reason !== 'stop') throw new VoiceError('tts', 'INVALID_RESPONSE');
-              const bytes = await request(audioDownloadUrl(raw.output?.audio?.url, settings.region), { method: 'GET' }, partSignal, 'tts', PLAYBACK_LIMITS.maxBytes - bytesTotal);
-              try { inspectPcmWav(bytes, PLAYBACK_LIMITS); partSignal.throwIfAborted(); return { wav: bytes }; } catch (error) { bytes.fill(0); throw error; }
+              const bytes = await request(audioDownloadUrl(raw.output?.audio?.url, settings.region), { method: 'GET' }, partSignal, 'tts', PLAYBACK_LIMITS.maxBytes - bytesTotal - 44);
+              try { const wav = pcm16BytesWav(bytes, 24000, 1, PLAYBACK_LIMITS); partSignal.throwIfAborted(); return { wav }; } finally { bytes.fill(0); }
             });
             clips.push(clip.wav); bytesTotal += clip.wav.length; duration += inspectPcmWav(clip.wav, PLAYBACK_LIMITS).durationMs;
             if (duration > 120000 || bytesTotal > PLAYBACK_LIMITS.maxBytes) throw new VoiceError('tts', 'AUDIO_LIMIT');

@@ -343,3 +343,16 @@ node --test tools/companion-desktop/test/session.test.mjs tools/companion-deskto
 - `node --check` **9/9 PASS**：`tools/companion-desktop/` 下的 `backend/session.mjs`、`backend/provider.mjs`、`backend/dialogue-pipeline.mjs`、`backend/worker.mjs`、`desktop/renderer.js`、`desktop/electron/main.mjs`、`desktop/electron/transport.mjs`、`desktop/electron/voice-turn.mjs`、`desktop/turn-contract.mjs`。`git diff --check` PASS。
 - 本轮未运行 full suite/package、真实 DeepSeek/ASR/TTS、麦克风或播放/Cubism 验收；后置检查由 Emilia/YCA 执行。未启动 DSH，未 push/PR/merge/deploy。以上仅为 deterministic code 证据，不代表真实语音/Live2D 可用。
 - Phase A 当前 blocker：无。durable usage 本 session 无可核实结果，记 unknown；run 终态 checkpoint 与 usage 由 Emilia/YCA 后置记录。
+
+
+## 2026-09-26 真实语音验收
+
+- Owner 使用真实 Windows 麦克风、北京区百炼 Key、`qwen-audio-3.0-asr-flash`、现有 DeepSeek Emilia 路径与真实扬声器执行实机验收。
+- 首轮真实结果：ASR 与 DeepSeek 回复成功；TTS 返回后被现有媒体边界判为 `tts / INVALID_RESPONSE`。文字历史正常保留。
+- 修复：TTS 请求改取 24 kHz / mono / 16-bit PCM，下行字节受原有 HTTPS/host/size/deadline/cancel 约束后由 Yuki Link 本地封装为标准 PCM16 WAV，再进入既有严格 playback / duration / owner fencing；上行麦克风 WAV 校验不放宽。
+- 同时将语音日常入口收敛为单主按钮状态流：开始说话 → 说完 → 自动识别/提交/播放；取消、停止声音、播放重试只在对应状态出现；识别文本不再额外常驻调试框。
+- 修复后 Owner 再次真实说话，ASR → DeepSeek → TTS → 物理扬声器完整成功，Owner 明确反馈“听到了，没什么问题”。
+- deterministic evidence：受影响语音/renderer 回归 **65/65 PASS**；full suite **133/133 PASS**；`npm run check` PASS；Windows package 成功；packaged first/reopen/voice-credential smoke 全 PASS。
+- 本次实机语音通过满足本票“真实麦克风→识别→模型回复→真实扬声器”的 voice 部分，不把 synthetic 证据冒充真实结果。
+- Live2D 真模型 / Cubism Core / 实际 draw + mouth 仍因 Owner 暂无模型而保持 external-resource gate，未伪造通过。
+- 后续完整视觉打磨明确延期；设计输入记录于 `docs/design/companion-ui-polish-direction.md`，要求先用 GPT Image 产出多张参考稿并由 Owner 选定后再实施，不在后续工程票中临时自由发挥 UI。

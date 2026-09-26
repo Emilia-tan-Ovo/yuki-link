@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pcm16Wav, inspectPcmWav, CAPTURE_LIMITS } from '../desktop/media/wav.mjs';
+import { pcm16Wav, pcm16BytesWav, inspectPcmWav, CAPTURE_LIMITS } from '../desktop/media/wav.mjs';
 import { createVoiceProvider, audioDownloadUrl, splitSpeech } from '../backend/voice-provider.mjs';
 
 const config = { schemaVersion: 1, enabled: true, provider: 'qwen', region: 'cn', asrModel: 'qwen-audio-3.0-asr-flash', ttsModel: 'qwen-audio-3.0-tts-flash', voice: 'longanfengyue', inputDevice: 'default', outputDevice: 'default' };
@@ -16,6 +16,7 @@ test('PCM16 preserves actual rate and validates RIFF, mono, duration and bounds 
   }
   assert.throws(() => pcm16Wav(new Float32Array(8000 * 30 + 1), 8000), /AUDIO_LIMIT/);
   assert.throws(() => pcm16Wav(new Float32Array([NaN]), 16000));
+  const wrapped = pcm16BytesWav(new Uint8Array([0, 0, 255, 127]), 24000); assert.equal(inspectPcmWav(wrapped).sampleRate, 24000);
 });
 test('ASR sends only bounded audio and exact pinned request, releases bytes, returns final transcript', async () => {
   const bytes = wav(), encoded = Buffer.from(bytes).toString('base64'), calls = [];
@@ -29,12 +30,12 @@ test('ASR sends only bounded audio and exact pinned request, releases bytes, ret
 });
 test('TTS uses only committed text projection, exact request, signed HTTPS download without auth', async () => {
   const calls = [], url = 'http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/a%2Fb.wav?Signature=x%2By%3D';
-  const provider = createVoiceProvider({ config, key: 'fixture-key', fetcher: async (target, options) => { calls.push({ target, options }); return calls.length === 1 ? json({ output: { finish_reason: 'stop', audio: { url } } }) : new Response(wav()); } });
+  const provider = createVoiceProvider({ config, key: 'fixture-key', fetcher: async (target, options) => { calls.push({ target, options }); return calls.length === 1 ? json({ output: { finish_reason: 'stop', audio: { url } } }) : new Response(new Uint8Array([0, 0, 1, 0, 255, 255, 2, 0])); } });
   const result = await provider.synthesize({ finalText: '完整正文', reasoningContent: '不得进入媒体' });
   assert.equal(calls.length, 2); assert.equal(calls[0].target, 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer');
-  assert.deepEqual(JSON.parse(calls[0].options.body), { model: config.ttsModel, input: { text: '完整正文', voice: 'longanfengyue', format: 'wav', sample_rate: 24000, instruction: '用自然、中性的语气清晰朗读。' } });
+  assert.deepEqual(JSON.parse(calls[0].options.body), { model: config.ttsModel, input: { text: '完整正文', voice: 'longanfengyue', format: 'pcm', sample_rate: 24000, instruction: '用自然、中性的语气清晰朗读。' } });
   assert.equal(calls[1].target, url.replace('http:', 'https:')); assert.equal(calls[1].options.headers, undefined); assert.equal(calls[1].options.redirect, 'error');
-  assert.equal(inspectPcmWav(result.wav).sampleRate, 48000);
+  assert.equal(inspectPcmWav(result.wav).sampleRate, 24000);
   const text = '中文🌸'.repeat(450); assert.equal(splitSpeech(text).join(''), text); assert.ok(splitSpeech(text).every(s => Array.from(s).length <= 600));
 });
 test('ASR rejects non-final/empty/bad response and classifies HTTP errors without raw data or retry', async () => {
@@ -55,7 +56,7 @@ test('caller abort and deadline bound even ignored fetch/body abort; never retry
 });
 test('untrusted downloads, redirect, excessive stream, broken WAV and oversized text fail closed', async () => {
   for (const url of ['https://127.0.0.1/a', 'https://evil.test/a', 'https://user@dashscope-result-bj.oss-cn-beijing.aliyuncs.com/a', 'https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com:444/a', 'http://evil.test/a']) assert.throws(() => audioDownloadUrl(url, 'cn'));
-  for (const download of [new Response('not wav'), new Response(null, { status: 302 }), new Response(new Uint8Array(16 * 1024 * 1024 + 1))]) {
+  for (const download of [new Response(new Uint8Array([1])), new Response(null, { status: 302 }), new Response(new Uint8Array(16 * 1024 * 1024 + 1))]) {
     let calls = 0; const p = createVoiceProvider({ config, key: 'fixture-key', fetcher: async () => ++calls === 1 ? json({ output: { finish_reason: 'stop', audio: { url: 'https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/a' } } }) : download });
     await assert.rejects(p.synthesize({ finalText: '正文' })); assert.equal(calls, 2);
   }

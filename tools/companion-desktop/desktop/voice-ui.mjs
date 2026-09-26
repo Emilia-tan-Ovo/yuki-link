@@ -13,13 +13,15 @@ export class RendererVoice {
   closePlaybackSignal() { if (this.playbackSignal) this.playbackSignal.active = false; this.observePlayback({ type: 'reset' }); }
   command(action) { if (['stop-output','cancel-turn'].includes(action)) this.closePlaybackSignal(); this.host.send('voice-command', { schemaVersion: 1, generation: this.getGeneration(), scope: this.scope, action }); }
   update() {
-    const $ = this.element;
-    $('voice-start').disabled = !this.ready?.voice.canAttempt || this.queuedStart;
-    $('voice-finish').disabled = this.state !== 'listening';
-    $('voice-cancel').disabled = !this.scope || ['idle','cancelled','error','cancelling'].includes(this.state);
-    $('voice-stop').disabled = !['synthesizing','playback-pending','speaking'].includes(this.state);
-    $('voice-play').disabled = !this.retryAudio || this.state !== 'playback-pending';
-    const states = { idle:'空闲', preparing:'正在准备麦克风', listening:'正在录音', transcribing:'正在识别', 'awaiting-submit':'已识别，等待提交', thinking:'正在回复', synthesizing:'正在合成声音', 'playback-pending':'正在准备播放', speaking:'正在播放', cancelling:'取消结果待确认', cancelled:'已取消', error:'语音未完成' };
+    const $ = this.element, idle = ['idle','cancelled','error'].includes(this.state);
+    const start = $('voice-start'), finish = $('voice-finish'), cancel = $('voice-cancel'), stop = $('voice-stop'), play = $('voice-play');
+    start.hidden = !idle; start.disabled = !this.ready?.voice.canAttempt || this.queuedStart;
+    finish.hidden = this.state !== 'listening'; finish.disabled = this.state !== 'listening';
+    cancel.hidden = !this.scope || idle || ['listening','speaking','cancelling'].includes(this.state);
+    cancel.disabled = cancel.hidden;
+    stop.hidden = this.state !== 'speaking'; stop.disabled = this.state !== 'speaking';
+    play.hidden = !this.retryAudio || this.state !== 'playback-pending'; play.disabled = play.hidden;
+    const states = { idle:'可以说话', preparing:'正在打开麦克风…', listening:'正在听你说话', transcribing:'正在听懂…', 'awaiting-submit':'准备发送…', thinking:'Emilia 正在想…', synthesizing:'Emilia 正在开口…', 'playback-pending':'准备播放…', speaking:'Emilia 正在说话', cancelling:'正在取消…', cancelled:'已取消', error:'这一轮语音没完成' };
     $('voice-state').textContent = states[this.state] ?? this.state;
   }
   async dispose() { this.closePlaybackSignal(); const capture = this.capture, playback = this.playback; this.capture = null; this.playback = null; this.retryAudio?.wav.fill(0); this.retryAudio = null; await Promise.all([capture?.cancel(), playback?.stop()]); }
@@ -44,7 +46,7 @@ export class RendererVoice {
         void this.devices();
       }
       const v = this.ready.voice;
-      this.element('voice-readiness').textContent = `实现：${v.implemented ? '已实现' : '未实现'}；配置：${v.configured ? '已配置' : '未配置/停用'}；独立凭据：${message.credentialConfigured ? '已导入' : '未导入'}；ASR：${v.provider.asr.state}；TTS：${v.provider.tts.state}；权限：${v.device.permission}；采集：${v.device.capture}；播放：${v.playback.state}；可尝试：${v.canAttempt ? '是' : '否'}。缺项：${v.missing.join('、') || '无'}。保存不代表已验证。`;
+      this.element('voice-readiness').textContent = v.canAttempt ? '语音已准备好。' : `还需要：${v.missing.join('、') || '完成语音配置'}。`;
       this.update(); return;
     }
     if (message.generation !== undefined && message.generation !== this.getGeneration()) { message.wav?.fill(0); return; }

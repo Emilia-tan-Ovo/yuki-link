@@ -30,7 +30,7 @@ test('voice settings/control wiring never acquires devices on load or calls engi
   const h = harness(), readiness = new VoiceReadiness(); readiness.reset(true);
   h.deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
   h.deliver({ type: 'voice-settings', voice: { ...DEFAULT_VOICE, enabled: true }, readiness: readiness.snapshot(true, 'configured'), credentialConfigured: true });
-  assert.equal(h.element('voice-start').disabled, false); assert.match(h.element('voice-readiness').textContent, /保存不代表已验证/);
+  assert.equal(h.element('voice-start').disabled, false); assert.match(h.element('voice-readiness').textContent, /语音已准备好/);
   h.element('voice-start').onclick(); await new Promise(r => setImmediate(r));
   assert.equal(h.sent.at(-1)[0], 'voice-command'); assert.equal(h.sent.at(-1)[1].action, 'start');
   assert.equal(h.sent.some(([name]) => /engineering|task-stop/.test(name)), false);

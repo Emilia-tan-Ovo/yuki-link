@@ -22,6 +22,14 @@ export function pcm16Wav(samples, sampleRate) {
   catch (error) { bytes.fill(0); throw error; }
   return bytes;
 }
+export function pcm16BytesWav(pcm, sampleRate, channels = 1, limits = PLAYBACK_LIMITS) {
+  if (!(pcm instanceof Uint8Array) || !pcm.length || !Number.isInteger(sampleRate) || sampleRate < 8000 || sampleRate > 48000 || !Number.isInteger(channels) || channels < 1 || channels > limits.maxChannels || pcm.length % (channels * 2)) invalid();
+  const samples = pcm.length / (channels * 2), durationMs = samples / sampleRate * 1000;
+  if (samples > limits.maxSamples || durationMs > limits.maxDurationMs || pcm.length + 44 > limits.maxBytes) limit();
+  const bytes = header(pcm.length, sampleRate, channels);
+  bytes.set(pcm, 44);
+  return bytes;
+}
 export function inspectPcmWav(bytes, limits = CAPTURE_LIMITS) {
   if (!(bytes instanceof Uint8Array) || bytes.length < 44) invalid();
   if (bytes.length > limits.maxBytes) limit();

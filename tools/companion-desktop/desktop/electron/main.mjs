@@ -266,7 +266,7 @@ void app.whenReady().then(async () => {
         await new Promise(done => setTimeout(done, 150));
       }
       if (!ready) throw Error('Renderer/backend did not become ready');
-      const voiceFailureReady = await win.webContents.executeJavaScript("document.getElementById('voice-start').disabled && document.getElementById('voice-readiness').textContent.includes('未配置/停用')");
+      const voiceFailureReady = await win.webContents.executeJavaScript("document.getElementById('voice-start').disabled && document.getElementById('voice-readiness').textContent.includes('还需要：')");
       if (!voiceFailureReady) throw Error('Voice unconfigured readiness was not projected');
       const live2dPending = await win.webContents.executeJavaScript("document.getElementById('live2d-status').dataset.ready === 'false' && document.getElementById('live2d-status').textContent.includes('SDK 未配置') && document.getElementById('live2d-status').textContent.includes('模型未配置') && document.getElementById('live2d-canvas').hidden");
       if (!live2dPending || media.publish().live2d.ready) throw Error('Missing Live2D resources were not honestly pending');
