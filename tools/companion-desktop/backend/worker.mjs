@@ -4,8 +4,10 @@ import { LocalPersistenceError } from './dialogue-pipeline.mjs';
 import { TurnCancelledError } from './turn-cancellation.mjs';
 import { validRequestId } from '../desktop/turn-contract.mjs';
 import { WorkerVoice } from './voice-worker.mjs';
+import { githubIssueSource } from './github-issue-source.mjs';
+import { harnessCandidateSource } from './harness-candidate-source.mjs';
 
-export function createWorkerHandler({ post, createVoice, createSession = data => new BackendSession({ directory: data.directory, provider: data.preview ? previewProvider() : deepSeekProvider(data.key), mode: data.preview ? 'preview' : 'real' }) }) {
+export function createWorkerHandler({ post, createVoice, createSession = data => new BackendSession({ directory: data.directory, provider: data.preview ? previewProvider() : deepSeekProvider(data.key), mode: data.preview ? 'preview' : 'real', issueSource: githubIssueSource(), candidateSources: [harnessCandidateSource({url:data.workbenchUrl || process.env.YUKI_HARNESS_URL})].filter(Boolean) }) }) {
   let session, generation, voice, configRevision, preview;
   return async data => {
     if (data?.type === 'start') {
@@ -17,6 +19,7 @@ export function createWorkerHandler({ post, createVoice, createSession = data =>
     }
     if (data?.type === 'close') { voice?.close(); session?.close(); session = undefined; post({ type: 'closed' }); return; }
     if (!session || data?.generation !== generation) { data?.wav?.fill(0); return; }
+    if (data.type === 'candidate-source-configure') { session.setCandidateSource?.(harnessCandidateSource({url:data.workbenchUrl || process.env.YUKI_HARNESS_URL})); return; }
     if (data.type === 'voice-configure') {
       if (!Number.isSafeInteger(data.configRevision) || data.configRevision <= configRevision) return;
       voice?.close();
@@ -42,12 +45,15 @@ export function createWorkerHandler({ post, createVoice, createSession = data =>
       else if (data.action === 'forget') entry = session.forgetMemory(data.targetId);
       else if (data.action !== 'list') throw Error('陪伴记忆操作无效。');
       post({ type: 'memory', id: data.id, action: data.action, entry, entries: session.listMemories() });
+    } else if (data?.type === 'engineering-card' && session) {
+      const result = await session.cardCommand(data);
+      if (session === owner) post({ type: 'engineering-card', id: data.id, action: data.action, ...result });
     }
   } catch (error) {
     if (session !== owner || error instanceof TurnCancelledError) return;
     // No command bodies or credentials in diagnostics or UI.
     const known = error instanceof LocalPersistenceError || error instanceof Error && /^(请输入|DeepSeek|文字服务|上一条|角色卡|记忆输入|对话输入|陪伴记忆|请选择|这条)/.test(error.message);
-    post({ type: data?.type === 'memory' ? 'memory-error' : 'error', ...identity, status: owner.status(), message: known ? error.message : data?.type === 'memory' ? '陪伴记忆未能保存，请稍后重试。' : '这次文字交流没有完成，请检查网络或稍后重试。' });
+    post({ type: data?.type === 'memory' ? 'memory-error' : data?.type === 'engineering-card' ? 'engineering-card-error' : 'error', ...identity, status: owner.status(), message: data?.type === 'engineering-card' ? '工程卡片操作未完成，请检查输入或稍后重试。' : known ? error.message : data?.type === 'memory' ? '陪伴记忆未能保存，请稍后重试。' : '这次文字交流没有完成，请检查网络或稍后重试。' });
   }
   };
 }

@@ -36,6 +36,12 @@ export class VoiceTurnCoordinator {
     } else return false;
     delete this.current.text; return true;
   }
+  acceptCard(value) {
+    if (!this.matches(value.voiceScope) || value.generation !== this.current.scope.connectionGeneration || this.state !== 'awaiting-submit' || value.action !== 'create' || !validRequestId(value.id) || value.original !== this.current.text) return false;
+    delete this.current.text;
+    this.state = 'idle';
+    return true;
+  }
   completeMemory(message, generation) {
     if (this.state !== 'memory-pending' || generation !== this.current.scope.connectionGeneration || message.id !== this.current.memoryId) return null;
     if (message.type !== 'memory-error' && !(message.type === 'memory' && message.action === 'remember')) return null;

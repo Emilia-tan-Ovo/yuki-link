@@ -2,6 +2,8 @@
 // 2752349bcc7f7137b8b9e4ff9cccf34026d77aad. See THIRD_PARTY_NOTICES.md.
 import { DialoguePipeline } from './dialogue-pipeline.mjs';
 import { SqliteMemoryStore } from './sqlite-memory.mjs';
+import { EngineeringCardStore } from './engineering-card-store.mjs';
+import { EngineeringCards, modelCandidate } from './engineering-cards.mjs';
 import { DEFAULT_ROLE_CARD } from './prompt-composer.mjs';
 import { randomUUID } from 'node:crypto';
 import { TurnCancelledError } from './turn-cancellation.mjs';
@@ -13,9 +15,11 @@ const IDENTITY = 'Emilia';
 const COMPLETED_TURN_LIMIT = 32;
 
 export class BackendSession {
-  constructor({ directory, provider, mode = 'real' }) {
+  constructor({ directory, provider, mode = 'real', issueSource, workflowSource, candidateSources }) {
     this.memory = new SqliteMemoryStore(directory);
+    this.cardStore = new EngineeringCardStore(directory);
     this.provider = provider;
+    this.cards = new EngineeringCards({ store: this.cardStore, extract: text => modelCandidate(mode === 'real' ? provider : null,text), issueSource, workflowSource, candidateSources });
     this.pipeline = provider ? new DialoguePipeline({ memory: this.memory, dialogue: provider }) : null;
     this.mode = mode;
     this.busy = false;
@@ -30,7 +34,7 @@ export class BackendSession {
   }
   runtimeCapabilities() {
     const mediaReadiness = this.mediaReadiness ?? initialMediaReadiness();
-    return { text: { implemented: true, mode: this.mode, service: this.statusService() }, memoryManagement: true, voice: this.mode === 'real' && this.statusService() === 'verified' && mediaReadiness.voice.ready === true, live2d: false, engineeringCards: false, mediaReadiness };
+    return { text: { implemented: true, mode: this.mode, service: this.statusService() }, memoryManagement: true, voice: this.mode === 'real' && this.statusService() === 'verified' && mediaReadiness.voice.ready === true, live2d: false, engineeringCards: { implemented: true, ticketSource: this.cards.issueSource ? 'configured-public-read-only' : 'unavailable', workflowSource: this.cards.workflowSource ? 'configured-read-only' : 'unavailable', dispatched: false }, mediaReadiness };
   }
   statusService() { return this.mode === 'preview' ? 'offline-preview' : this.provider ? this.requestState : 'unconfigured'; }
   history() {
@@ -38,6 +42,16 @@ export class BackendSession {
   }
   displayHistory() { return this.memory.displayHistory(); }
   listMemories() { return this.memory.listMemories(); }
+  setCandidateSource(source) { this.cards.candidateSources = source ? [source] : []; }
+  async cardCommand(data) {
+    if (data.action === 'list') return { cards: this.cardStore.list() };
+    if (data.action === 'create') return { card: await this.cards.create(data.original, data.focus) };
+    if (data.action === 'edit') { const result = await this.cards.edit(data.cardId,data.expectedRevision,data.fields); return result?.conflict ? result : { card: result }; }
+    if (data.action === 'confirm') return this.cards.confirm(data.cardId,data.expectedRevision,'desktop-user-action');
+    if (data.action === 'revoke') return this.cards.revoke(data.cardId,data.expectedRevision);
+    if (data.action === 'refresh') return { card: await this.cards.refresh(data.cardId) };
+    throw Error('工程卡片操作无效。');
+  }
   memoryMutation(fn) { if (this.busy) throw Error('上一条消息尚未完成，请稍后再管理记忆。'); return fn(); }
   remember(value) { return this.memoryMutation(() => this.memory.remember(value)); }
   correctMemory(id, text) { return this.memoryMutation(() => this.memory.correct(id, text)); }
@@ -102,5 +116,6 @@ export class BackendSession {
     this.closed = true;
     this.turns.clear();
     this.memory.close();
+    this.cardStore.close();
   }
 }

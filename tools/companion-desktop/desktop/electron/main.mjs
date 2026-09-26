@@ -68,7 +68,7 @@ async function start() {
     // Reconfiguration can replace the queue while either credential read is pending.
     if (epoch !== media.configurationEpoch || media.pendingConfigurations) continue;
     media.configure(!!voiceKey);
-    connection.start({ directory: dataDir(), key: textKey, preview, voiceConfig: settings.snapshot().voice, voiceKey, configRevision: readiness.revision });
+    connection.start({ directory: dataDir(), key: textKey, preview, workbenchUrl: settings.snapshot().workbenchUrl, voiceConfig: settings.snapshot().voice, voiceKey, configRevision: readiness.revision });
     deliver({ type: 'connection', state: 'connecting', generation: connection.generation, workbenchUrl: settings.snapshot().workbenchUrl });
     return;
   }
@@ -177,6 +177,17 @@ ipcMain.on('yuki:memory', (event, value) => {
   if (value.action === 'correct' || value.action === 'forget') { if (typeof value.targetId !== 'string') { invalid(); return; } command.targetId = value.targetId; }
   if (!connection.send(command, value.generation)) fail('文字服务尚未连接，记忆操作未完成。');
 });
+ipcMain.on('yuki:engineering-card', (event, value) => {
+  if (!trusted(event) || !value || value.generation !== connection.generation || !validRequestId(value.id) || !['list','create','edit','confirm','revoke','refresh'].includes(value.action)) return;
+  if (value.action === 'create' && (typeof value.original !== 'string' || !value.original.trim() || value.original.length > 20000)) return;
+  if (value.voiceScope) { if (!voice.acceptCard(value)) return; deliver({ type: 'voice-state', generation: connection.generation, scope: value.voiceScope, state: voice.state, outcome: 'card-opened' }); }
+  const command = { type: 'engineering-card', id: value.id, action: value.action };
+  if (value.action === 'create') { command.original = value.original; command.focus = value.focus; }
+  if (['edit','confirm','revoke','refresh'].includes(value.action)) { if (typeof value.cardId !== 'string' || value.cardId.length > 100) return; command.cardId = value.cardId; }
+  if (['edit','confirm','revoke'].includes(value.action)) { if (!Number.isSafeInteger(value.expectedRevision) || value.expectedRevision < 1) return; command.expectedRevision = value.expectedRevision; }
+  if (value.action === 'edit') { if (!value.fields || typeof value.fields !== 'object') return; command.fields = value.fields; }
+  if (!connection.send(command,value.generation)) deliver({ type: 'engineering-card-error', id: value.id, generation: value.generation, message: '工程卡片后端尚未连接。' });
+});
 ipcMain.on('yuki:credential', event => {
   if (!trusted(event) || preview) return;
   void (async () => {
@@ -195,7 +206,7 @@ ipcMain.on('yuki:workbench-save', (event, value) => {
   if (!trusted(event) || typeof value !== 'string') return;
   const url = workbenchUrl(value);
   if (!url) { deliver({ type: 'workbench', configured: false, reachable: false, error: '请输入本机工作台地址，例如 http://127.0.0.1:端口/' }); return; }
-  void settings.saveWorkbenchUrl(url).then(async () => deliver({ type: 'workbench', ...await checkWorkbench(), url })).catch(() => deliver({ type: 'workbench', configured: false, reachable: false, error: '工作台地址未能保存。' }));
+  void settings.saveWorkbenchUrl(url).then(async () => { connection.send({ type: 'candidate-source-configure', workbenchUrl: url }, connection.generation); deliver({ type: 'workbench', ...await checkWorkbench(), url }); }).catch(() => deliver({ type: 'workbench', configured: false, reachable: false, error: '工作台地址未能保存。' }));
 });
 ipcMain.on('yuki:workbench-check', event => { if (trusted(event)) void checkWorkbench().then(value => deliver({ type: 'workbench', ...value, url: settings.snapshot().workbenchUrl })); });
 ipcMain.on('yuki:workbench-open', event => {
