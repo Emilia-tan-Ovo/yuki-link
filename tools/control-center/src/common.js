@@ -79,13 +79,14 @@ export function run(executable, args, { cwd, env = process.env, timeout = 5000, 
 export async function get(url, { token, method = 'GET', confirm = false, timeout = 2000 } = {}) {
   const u = new URL(url);
   if (u.protocol !== 'http:' || u.hostname !== '127.0.0.1' || u.username || u.password) throw fail('NON_LOOPBACK_URL');
+  const signal = AbortSignal.timeout(timeout);
   try {
-    const response = await fetch(u, { method, redirect: 'error', signal: AbortSignal.timeout(timeout), headers: {
+    const response = await fetch(u, { method, redirect: 'error', signal, headers: {
       ...(token ? { authorization: `Bearer ${token}` } : {}), ...(confirm ? { 'x-confirm-impact': 'yes' } : {}),
     } });
     let body = ''; let length = 0;
     for await (const chunk of response.body) { length += chunk.length; if (length > 256 * 1024) throw fail('OUTPUT_LIMIT'); body += Buffer.from(chunk).toString('utf8'); }
     let json; try { json = JSON.parse(body); } catch { /* text health */ }
     return { status: response.status, body, json };
-  } catch (e) { throw fail(e.code === 'OUTPUT_LIMIT' ? e.code : 'LOCAL_PROBE_FAILED'); }
+  } catch (e) { throw fail(e.code === 'OUTPUT_LIMIT' ? e.code : signal.aborted ? 'LOCAL_PROBE_TIMEOUT' : 'LOCAL_PROBE_FAILED'); }
 }

@@ -124,7 +124,7 @@ pwsh.exe -NoProfile -File tools/control-center/scripts/Startup.ps1 -Action Previ
 
 任务名 `YukiLink-ControlCenter-V0`。当前用户 Interactive/Limited，前台 wrapper 等待 Node 退出并传递退出码；已有经核验的手动面板则跟踪其生命周期。IgnoreNew、失败一分钟后重试、最多三次、无限运行时限、电池允许、不要求外网、不唤醒系统。同名其他配置拒绝覆盖。禁用/卸载只改变后续登录启动，不杀现有服务；卸载前在本地状态目录导出 XML。
 
-**登录冷启动协调与进程存续期间的服务自动恢复是两种行为。** 计划任务只负责拉起 Control Center/Supervisor；Supervisor 每次冷启动至多实现一次持久化的 YCA `desired=running`：仅在 `observeOnly=false`、可靠观察为 stopped、ownership/冲突检查允许时启动 YCA，且不启动 tunnel、不修改 `desired` 或 `autoRecovery`。之后的故障重试才由 `autoRecovery` 控制；`autoRecovery=false` 时不会持续重试 YCA，也不会恢复 tunnel。该冷协调代码已实现，但 Harness 的真实 Windows 注销/登录链路仍未完成 outer Acceptance，不能表述为已在真实登录或日常场景验收通过。
+**登录冷启动协调与进程存续期间的服务自动恢复是两种行为。** 计划任务只负责拉起 Control Center/Supervisor；Supervisor 冷启动时按 `desired=running` 顺序协调 YCA、再协调 tunnel，只有可靠观察为 stopped 且无 ownership/冲突时才启动。v1 状态首次升级到 v2 时启用 `autoRecovery`；此后用户显式关闭的选择持续保存。自动恢复仅在 `observeOnly=false` 且开关启用时运行；YCA 本地健康异常须连续观测、确认无活动任务后才进入退避重启，持续失败最多尝试 5 次，健康稳定 10 分钟才重置预算。YCA 未就绪时 tunnel 等待依赖；存活 tunnel 的远端网络轮询由原生运行时自行重试。`retries`、`nextAt`、`blocked`、`failureReason` 与本地探针状态保留诊断。该恢复链已由确定性测试覆盖，但新策略的真实 Windows 注销/登录、休眠/唤醒及 ChatGPT 端到端验收仍需实际部署后验证。
 
 回滚：先关闭自动恢复并停止全部（必要时确认任务影响）；如安装过计划任务，Disable 或 Uninstall；退出控制中心后台；用保留的 `.local/start-yca.ps1` 和原官方 runtime 入口恢复旧部署。profile 备份在控制中心状态目录，若需恢复只恢复对应 alias 的 profile，不能覆盖其他 alias 的全局状态。保留 Bridge runtime 与所有会话；不要删除 `.local` 或 tunnel 状态目录来“重置”。更换面板端口时，先确认旧 Supervisor 已退出，再备份其 `binding.json`。
 

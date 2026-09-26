@@ -111,7 +111,7 @@ test('cold startup realizes only a reliably stopped persisted YCA intent', async
   await restarted.reconcileStartup();
   assert.deepEqual(options, { recovery: true, commit });
   assert.equal(restarted.state.units.yca.desired, 'running');
-  assert.equal(restarted.state.autoRecovery, false);
+  assert.equal(restarted.state.autoRecovery, true);
   assert.equal(units.tunnel.starts, beforeTunnel);
 
   units.yca.running = false; units.yca.healthy = false; options = undefined;
@@ -260,6 +260,95 @@ test('automatic recovery explicitly requests the previous deployment, never the 
   await f.manager.setRecovery(true); f.units.yca.running = false; f.units.yca.healthy = false;
   await f.manager.tick(); f.advance(2000); await f.manager.tick();
   assert.equal(options.recovery, true);
+});
+
+test('a transient YCA health failure recovers and then starts the waiting tunnel', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  await m.action('yca', 'start');
+  m.state.units.tunnel.desired = 'running'; m.persist();
+  u.yca.healthy = false; u.yca.code = 'HEALTH_FAILED';
+  for (let i = 0; i < 3; i++) { f.advance(5000); await m.tick(); }
+  assert.equal(m.snapshot().units.yca.retries, 0);
+  assert.ok(m.snapshot().units.yca.nextAt);
+  assert.equal(m.snapshot().units.tunnel.blocked, 'YCA_NOT_READY');
+  assert.equal(u.tunnel.starts, 0);
+  f.advance(2000); await m.tick();
+  assert.equal(u.yca.stops, 1);
+  assert.equal(m.snapshot().units.yca.retries, 1);
+  await m.tick();
+  assert.equal(u.tunnel.starts, 1);
+  assert.equal(m.snapshot().units.tunnel.blocked, null);
+});
+
+test('a direct YCA_NOT_READY start request waits and resumes without a second request', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  await assert.rejects(m.action('tunnel', 'start'), { code: 'YCA_NOT_READY' });
+  assert.equal(m.snapshot().units.tunnel.blocked, 'YCA_NOT_READY');
+  assert.equal(m.snapshot().units.tunnel.retries, 0);
+  await m.action('yca', 'start');
+  await m.tick();
+  assert.equal(u.tunnel.starts, 1);
+  assert.equal(m.snapshot().units.tunnel.blocked, null);
+});
+
+test('a live tunnel waits for YCA without a stale retry timer or duplicate launch', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  await m.action('all', 'start');
+  u.yca.healthy = false; u.yca.code = 'HEALTH_FAILED';
+  await m.tick();
+  assert.equal(m.snapshot().units.tunnel.blocked, 'YCA_NOT_READY');
+  u.yca.healthy = true; u.yca.code = null;
+  await m.tick();
+  assert.equal(m.snapshot().units.tunnel.blocked, null);
+  assert.equal(m.snapshot().units.tunnel.nextAt, null);
+  assert.equal(u.tunnel.starts, 1);
+});
+
+test('persistent YCA health failure exhausts a durable budget without restart storm', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  await m.action('yca', 'start');
+  u.yca.code = 'HEALTH_FAILED';
+  u.yca.observe = async function() { return { running: this.running, owned: true, authenticated: true,
+    healthy: false, code: 'HEALTH_FAILED', activity: { codex: 0, computer: 0, requests: 0 } }; };
+  for (let i = 0; i < 20; i++) { f.advance(30_000); await m.tick(); }
+  assert.equal(m.snapshot().units.yca.retries, 5);
+  assert.equal(m.snapshot().units.yca.blocked, 'RECOVERY_BUDGET_EXHAUSTED');
+  assert.equal(m.snapshot().units.yca.nextAt, null);
+  const starts = u.yca.starts;
+  f.advance(3_600_000); await m.tick();
+  assert.equal(u.yca.starts, starts);
+  assert.equal(new Supervisor(f.options).snapshot().units.yca.blocked, 'RECOVERY_BUDGET_EXHAUSTED');
+});
+
+test('cold reconciliation restores desired YCA and tunnel in dependency order', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  await m.action('all', 'start');
+  u.yca.running = false; u.yca.healthy = false;
+  u.tunnel.running = false; u.tunnel.healthy = false;
+  const restarted = new Supervisor(f.options);
+  await restarted.reconcileStartup();
+  assert.equal(u.yca.starts, 2);
+  assert.equal(u.tunnel.starts, 2);
+  assert.equal(restarted.snapshot().units.tunnel.healthy, true);
+});
+
+test('repeated long check gaps still advance bounded recovery', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  await m.action('yca', 'start');
+  u.yca.running = false; u.yca.healthy = false;
+  for (let i = 0; i < 5; i++) { f.advance(60_000); await m.tick(); }
+  assert.equal(u.yca.starts, 2);
+  assert.equal(m.snapshot().units.yca.retries, 1);
+});
+
+test('duplicate recovery ticks never start a second owned instance', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  await m.action('yca', 'start');
+  u.yca.running = false; u.yca.healthy = false;
+  await Promise.all([m.tick(), m.tick()]);
+  f.advance(2000);
+  await Promise.all([m.tick(), m.tick()]);
+  assert.equal(u.yca.starts, 2);
 });
 
 test('activity protection runs before dependent stops; unknown is not idle', async t => {
@@ -428,14 +517,43 @@ test('network/auth degradation never restarts a live tunnel or healthy YCA', asy
   assert.equal(f.units.tunnel.starts, 1); assert.equal(f.units.tunnel.stops, 0); assert.equal(f.units.yca.starts, 1);
 });
 
-test('long check gap expires evidence, resets health strikes and gives recovery grace', async t => {
+test('long check gap expires evidence and then advances recovery', async t => {
   const f = setup(t); await f.manager.action('all', 'start'); await f.manager.setRecovery(true);
   f.units.yca.running = false; f.units.yca.healthy = false;
   f.advance(120_000); assert.equal(f.manager.snapshot().units.yca.status, '未知');
   await f.manager.tick(); assert.equal(f.manager.state.units.yca.attempts.length, 0);
-  for (let i = 0; i < 5; i++) { f.advance(5000); await f.manager.tick(); }
-  assert.equal(f.units.yca.starts, 1);
-  f.advance(5000); await f.manager.tick(); f.advance(5000); await f.manager.tick(); assert.equal(f.units.yca.starts, 2);
+  assert.ok(f.manager.state.units.yca.nextAt);
+  f.advance(5000); await f.manager.tick();
+  assert.equal(f.units.yca.starts, 2);
+});
+
+test('v1 recovery policy migrates once and a later explicit disable remains durable', async t => {
+  const f = setup(t);
+  f.manager.state.version = 1; f.manager.state.autoRecovery = false; f.manager.persist();
+  const migrated = new Supervisor(f.options);
+  assert.equal(migrated.state.version, 2);
+  assert.equal(migrated.state.autoRecovery, true);
+  await migrated.setRecovery(false);
+  assert.equal(new Supervisor(f.options).state.autoRecovery, false);
+});
+
+test('a verified self-recovery clears exhausted YCA budget and releases the tunnel', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  const commit = 'a'.repeat(40), tools = { count: 1, sha256: 'b'.repeat(64) };
+  Object.assign(m.state.units.yca, { desired: 'running', blocked: 'RECOVERY_BUDGET_EXHAUSTED',
+    attempts: [1, 2, 3, 4, 5], lastFailure: 'HEALTH_FAILED' });
+  Object.assign(m.state.units.yca.ownership, { instance: 'same-instance', process: { pid: 42, created: 'same-process' },
+    deployment: { commit, tools } });
+  m.state.units.tunnel.desired = 'running'; m.state.units.tunnel.blocked = 'YCA_RECOVERY_FAILED'; m.persist();
+  u.yca.observe = async () => ({ running: true, owned: true, authenticated: true, healthy: true, code: null,
+    instance: 'same-instance', pid: 42, created: 'same-process', activity: { codex: 0, computer: 0, requests: 0 },
+    deployment: { state: 'verified', running: { commit, dirty: false } }, tools });
+  await m.tick();
+  assert.equal(m.snapshot().units.yca.blocked, null);
+  assert.equal(m.snapshot().units.tunnel.blocked, null);
+  assert.equal(m.snapshot().units.tunnel.nextAt !== null, true);
+  f.advance(2000); await m.tick();
+  assert.equal(u.tunnel.starts, 1);
 });
 
 test('continuous local health failure requires authenticated idle activity', async t => {
@@ -729,6 +847,21 @@ test('candidate observation gap recovers within the existing startup window', as
   assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested', 'succeeded']);
 });
 
+test('update-and-restart cannot succeed when candidate health fails its confirmation probe', async t => {
+  const x = switchFixture(t), { m, u } = x;
+  const observe = u.observe.bind(u); let candidateChecks = 0;
+  u.observe = async function() {
+    const o = await observe();
+    if (this.commit === x.next && ++candidateChecks >= 3) return { ...o, healthy: false, code: 'HEALTH_FAILED' };
+    return o;
+  };
+  const operation = { operationId: 'a1111111-1111-4111-8111-111111111111', action: 'update-and-restart', target: 'yca' };
+  await assert.rejects(m.updateDeployment(x.prepare, { restart: true, operation }), { code: 'DEPLOYMENT_SWITCH_UNVERIFIED' });
+  assert.equal(u.commit, x.old);
+  assert.equal(u.stops, 2);
+  assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested', 'failed']);
+});
+
 test('candidate verified during rollback recheck stays running and succeeds', async t => {
   const x = switchFixture(t), { m, u } = x;
   m.startupMs = 0;
@@ -742,6 +875,25 @@ test('candidate verified during rollback recheck stays running and succeeds', as
   await m.updateDeployment(x.prepare, { restart: true, operation });
   assert.equal(u.stops, 1); assert.equal(u.commit, x.next);
   assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested', 'succeeded']);
+});
+
+test('rollback recheck cannot turn a single healthy candidate sample into success', async t => {
+  const x = switchFixture(t), { m, u } = x;
+  m.startupMs = 0;
+  const observe = u.observe.bind(u); let checks = 0;
+  u.observe = async function() {
+    const o = await observe();
+    if (this.commit !== x.next) return o;
+    checks++;
+    if (checks <= 2) return { ...o, healthy: false, code: 'HEALTH_FAILED' };
+    if (checks === 4) return { ...o, healthy: false, code: 'HEALTH_FAILED' };
+    return o;
+  };
+  const operation = { operationId: 'b1111111-1111-4111-8111-111111111111', action: 'update-and-restart', target: 'yca' };
+  await assert.rejects(m.updateDeployment(x.prepare, { restart: true, operation }), { code: 'STARTUP_TIMEOUT' });
+  assert.equal(u.commit, x.old);
+  assert.equal(u.stops, 2);
+  assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested', 'failed']);
 });
 
 test('unknown candidate evidence leaves requested-only and never stops it', async t => {
