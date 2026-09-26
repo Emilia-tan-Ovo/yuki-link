@@ -1,0 +1,80 @@
+const DEFAULT_PROJECTS = Object.freeze([{ key: 'yuki-link', aliases: ['yuki-link', 'Yuki Link'], repository: 'Emilia-tan-Ovo/yuki-link' }]);
+const observedAt = () => new Date().toISOString();
+const short = value => typeof value === 'string' && /^0?\d{3}$/u.test(value.trim());
+const number = value => { const match = typeof value === 'string' && value.trim().match(/^#(\d+)$/u); return match ? Number(match[1]) : null; };
+const projectFor = (value, projects) => projects.find(item => item.key.toLowerCase() === value?.toLowerCase() || item.aliases?.some(alias => alias.toLowerCase() === value?.toLowerCase()));
+const validIssue = (entry, repository) => entry && entry.repository === repository && Number.isSafeInteger(entry.number) && entry.number > 0 && typeof entry.title === 'string' && entry.title.trim() && entry.url === `https://github.com/${repository}/issues/${entry.number}`;
+const result = (status, reason, rest = {}) => ({ ticket: null, candidates: [], ...rest, resolution: { status, reason, observedAt: observedAt(), source: status === 'verified_existing' ? 'github' : status === 'explicit_new_requirement' ? 'owner-explicit' : null } });
+
+export async function resolveTarget(candidate, { projects = DEFAULT_PROJECTS, issueSource, focus, recentCards = [], candidateSources = [] } = {}) {
+  const project = projectFor(candidate.project || focus?.projectKey, projects);
+  if (candidate.noTicket === true) return project ? result('explicit_new_requirement','Owner 明确表示尚无 Ticket。',{ projectKey: project.key, repository: project.repository }) : result('ambiguous','请明确新需求所属项目。');
+  const token = candidate.ticket?.trim();
+  if (!token) return result('ambiguous','请明确 Ticket 或说明这是尚无 Ticket 的新需求。',{ projectKey: project?.key ?? null, repository: project?.repository ?? null });
+  if (number(token) !== null) {
+    if (!project) return result('ambiguous','请明确 Ticket 所属项目。');
+    if (!issueSource?.lookup) return result('source_unavailable','GitHub Issue 只读来源未配置。',{ projectKey: project.key, repository: project.repository });
+    try {
+      const entry = await issueSource.lookup(project.repository,number(token));
+      if (!entry || !validIssue(entry,project.repository)) return result('verification_failed','GitHub Issue 不存在或 canonical 引用不匹配。',{ projectKey: project.key, repository: project.repository });
+      return result('verified_existing','已读取 GitHub Issue。',{ projectKey: project.key, repository: project.repository, ticket: entry });
+    } catch { return result('source_unavailable','GitHub Issue 当前不可读取。',{ projectKey: project.key, repository: project.repository }); }
+  }
+  if (!short(token)) return result('ambiguous','Ticket 标识不完整，请填写 #编号或明确路线。',{ projectKey: project?.key ?? null, repository: project?.repository ?? null });
+  if (!issueSource?.search) return result('source_unavailable','简称候选的 GitHub 搜索来源未配置，无法核对唯一性。',{ projectKey: project?.key ?? null, repository: project?.repository ?? null });
+  const scoped = project ? [project] : projects;
+  const matches = [];
+  for (const item of scoped) {
+    for (const card of recentCards) if (card.content?.repository === item.repository && (card.content?.ticket?.title?.includes(token) || String(card.content?.ticket?.number).padStart(3,'0') === token)) matches.push({ ...card.content.ticket, reason: '近期卡片' });
+    for (const source of candidateSources) {
+      try { for (const entry of await source.search?.(item.repository,token) ?? []) matches.push({ ...entry, reason: source.reason ?? '只读关联' }); } catch { /* A failed candidate source cannot certify uniqueness. */ return result('source_unavailable','候选来源当前不可读取。'); }
+    }
+    if (issueSource?.search) {
+      try { for (const entry of await issueSource.search(item.repository,token) ?? []) matches.push({ ...entry, reason: 'GitHub 候选' }); }
+      catch { return result('source_unavailable','GitHub 候选当前不可读取。'); }
+    }
+  }
+  const candidates = [...new Map(matches.filter(entry => scoped.some(item => validIssue(entry,item.repository))).map(entry => [entry.url,entry])).values()];
+  if (candidates.length !== 1) return result('ambiguous',candidates.length ? '存在多个合理候选，请明确项目和 Ticket。' : '未找到唯一候选，请填写完整 Ticket。',{ candidates });
+  const selected = candidates[0];
+  if (!issueSource?.lookup) return result('source_unavailable','唯一候选尚未经过 GitHub 核验。',{ candidates, projectKey: project?.key ?? null });
+  try {
+    const verified = await issueSource.lookup(selected.repository,selected.number);
+    if (!validIssue(verified,selected.repository) || verified.url !== selected.url) return result('verification_failed','候选与 GitHub Issue 不匹配。',{ candidates });
+    const chosenProject = projectFor(scoped.find(item => item.repository === verified.repository)?.key,projects);
+    return result('verified_existing','简称已由 GitHub Issue 核验。',{ projectKey: chosenProject.key, repository: verified.repository, ticket: verified, candidates });
+  } catch { return result('source_unavailable','唯一候选的 GitHub Issue 当前不可读取。',{ candidates }); }
+}
+
+export function localCandidate(text) {
+  const project = /yuki.link/iu.test(text) ? 'yuki-link' : null;
+  const explicit = text.match(/(?:#|issues\/)(\d{1,7})/iu);
+  const shorthand = text.match(/(?:继续|处理|完成|做|票|ticket)\s*([a-z]+-)?(\d{3})\b/iu);
+  const noTicket = /(?:新需求|还没\s*Ticket|没有\s*Ticket|尚无\s*Ticket)/iu.test(text);
+  return { project, ticket: explicit ? `#${explicit[1]}` : shorthand ? shorthand[2] : null, noTicket, summary: text.slice(0,240), desiredPhase: /设计|design/iu.test(text) ? 'ticket-design' : 'implementation', endpoint: /(?:到\s*PR|做到\s*PR|给我\s*PR)/iu.test(text) ? 'to-pr' : /(?:只做设计|仅设计|design.only)/iu.test(text) ? 'design-only' : null };
+}
+
+export async function modelCandidate(provider, text) {
+  if (!provider) return localCandidate(text);
+  try {
+    const response = await provider({ messages: [{ role: 'system', content: '从用户工程要求中只抽取候选，输出单个 JSON 对象：project,ticket,noTicket,summary,desiredPhase,endpoint。ticket 仅提取原话中的 #编号或三位简称；endpoint 仅 design-only/to-pr/null。不要判定事实或添加原话未提及的授权。' }, { role: 'user', content: text }], thinking: { enabled: false } });
+    const value = JSON.parse(response.content.replace(/^```(?:json)?\s*|\s*```$/gu,''));
+    const lexical = localCandidate(text);
+    const proposedProject = typeof value.project === 'string' ? value.project : null;
+    const proposedTicket = typeof value.ticket === 'string' ? value.ticket : null;
+    return { project: proposedProject && text.toLowerCase().includes(proposedProject.toLowerCase()) ? proposedProject : lexical.project, ticket: proposedTicket && (text.includes(proposedTicket) || lexical.ticket === proposedTicket) ? proposedTicket : lexical.ticket, noTicket: lexical.noTicket, summary: typeof value.summary === 'string' ? value.summary.slice(0,500) : text.slice(0,240), desiredPhase: ['ticket-design','implementation','review','acceptance'].includes(value.desiredPhase) ? value.desiredPhase : lexical.desiredPhase, endpoint: lexical.endpoint };
+  } catch { return localCandidate(text); }
+}
+
+export class EngineeringCards {
+  constructor({ store, projects = DEFAULT_PROJECTS, extract = localCandidate, issueSource, workflowSource, candidateSources = [] }) { Object.assign(this,{ store, projects, extract, issueSource, workflowSource, candidateSources }); }
+  async content(original, candidate, focus) {
+    const target = await resolveTarget(candidate,{ projects: this.projects, issueSource: this.issueSource, focus, recentCards: this.store.list(), candidateSources: this.candidateSources });
+    return { original, summary: candidate.summary || original.slice(0,240), projectKey: target.projectKey ?? null, repository: target.repository ?? null, ticket: target.ticket, candidates: target.candidates, resolution: target.resolution, desiredPhase: candidate.desiredPhase ?? null, endpoint: candidate.endpoint ?? null, extraAuthorization: { merge: false, deploy: false } };
+  }
+  async create(original, focus) { const candidate = await this.extract(original); const content = await this.content(original,candidate,focus); const card = this.store.create(content); return this.refresh(card.cardId); }
+  async edit(cardId, expectedRevision, fields) { const current = this.store.get(cardId); if (!current) throw Error('工程卡片不存在。'); if (current.revision !== expectedRevision || current.state === 'revoked') return { conflict: true, card: current }; if (!fields || typeof fields.summary !== 'string' || fields.summary.length > 500 || typeof fields.project !== 'string' || fields.project.length > 100 || typeof fields.ticket !== 'string' || fields.ticket.length > 100 || !['','ticket-design','implementation','review','acceptance'].includes(fields.desiredPhase) || !['','design-only','to-pr'].includes(fields.endpoint)) throw Error('工程卡片输入无效。'); const candidate = { project: fields.project, ticket: fields.ticket, noTicket: fields.noTicket === true, summary: fields.summary, desiredPhase: fields.desiredPhase, endpoint: fields.endpoint }; const content = await this.content(fields.original || current.content.original,candidate); return this.store.edit(cardId,expectedRevision,content); }
+  confirm(cardId, expectedRevision, source) { return this.store.confirm(cardId,expectedRevision,source); }
+  revoke(cardId, expectedRevision) { return this.store.revoke(cardId,expectedRevision); }
+  async refresh(cardId) { const card = this.store.get(cardId); if (!card) throw Error('工程卡片不存在。'); let workflow = null; if (card.content.resolution.status === 'verified_existing' && this.workflowSource?.observe) { try { workflow = await this.workflowSource.observe(card.content.ticket); } catch { workflow = { phase: null, revision: null, assessment: 'unknown', observedAt: observedAt() }; } } return this.store.observe(cardId,workflow); }
+}

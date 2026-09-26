@@ -9,6 +9,7 @@ let voiceScope = null, voiceState = 'idle', voiceFinal = null, voiceFinalConsume
 let personaPending = null;
 let memoryPending = null, memorySource = null;
 let memoryRefreshId = null;
+let cardCurrent = null, cardEntries = [], cardPending = null;
 let thinkingCommitted = null, thinkingPending = null, thinkingDesired = null;
 let thinkingDraftVersion = 0;
 let thinkingSyncedVersion = 0, thinkingHasSaved = false;
@@ -117,6 +118,34 @@ function renderMemories(entries) {
   for (const entry of entries) { const option = document.createElement('option'); option.value = entry.id; option.textContent = `${entry.text} · ${entry.sourceKind === 'selected_user_message' ? '用户消息' : '显式操作'} · ${entry.updatedAt || ''}`; target.append(option); }
   target.value = entries.some(entry => entry.id === selected) ? selected : '';
 }
+function cardCommand(action, details = {}) { if (cardPending) return; const id = crypto.randomUUID(); cardPending = id; $('card-status').textContent = '正在保存工程卡片…'; host.send('engineering-card', { generation, id, action, ...details }); }
+function renderCard(card) {
+  cardCurrent = card;
+  $('card-editor').hidden = !card;
+  if (!card) return;
+  const content = card.content;
+  $('card-select').value = card.cardId;
+  $('card-original').value = content.original;
+  $('card-summary').value = content.summary;
+  $('card-project').value = content.projectKey || '';
+  $('card-ticket').value = content.ticket ? '#' + content.ticket.number : '';
+  $('card-no-ticket').checked = content.resolution.status === 'explicit_new_requirement';
+  $('card-phase').value = content.desiredPhase || '';
+  $('card-endpoint').value = content.endpoint || '';
+  $('card-identity').textContent = `卡片 ${card.cardId} · revision ${card.revision}`;
+  $('card-target').textContent = `目标：${content.repository || '项目待明确'} · ${content.ticket ? content.ticket.title + ' (' + content.ticket.url + ')' : '尚无已核验 Ticket'} · ${content.resolution.status}：${content.resolution.reason} · 来源 ${content.resolution.source || '暂无'} · 观察于 ${content.resolution.observedAt || '未知'}${content.candidates?.length ? ' · 候选：' + content.candidates.map(item => item.title + ' (' + item.url + ')').join('；') : ''}`;
+  const workflow = card.observedWorkflow;
+  $('card-workflow').textContent = workflow ? `Workflow 观察：${workflow.phase || '未知'} · revision ${workflow.revision ?? '未知'} · ${workflow.assessment || 'unknown'} · ${workflow.observedAt || '时间未知'}` : 'Workflow 观察：暂无；这不影响 Ticket 目标核验状态。';
+  $('card-state').textContent = card.state === 'confirmed' ? `已确认 revision ${card.confirmation.revision}，尚未派发。merge/deploy 均未授权。` : card.state === 'revoked' ? '已撤销；重新安排请新建卡片。' : '待确认，尚未派发。merge/deploy 均未授权。';
+  $('card-confirm').disabled = card.state !== 'pending' || !['verified_existing','explicit_new_requirement'].includes(content.resolution.status) || !content.desiredPhase || !content.endpoint;
+  $('card-edit').disabled = card.state === 'revoked'; $('card-revoke').disabled = card.state === 'revoked';
+}
+function renderCardList(entries) {
+  cardEntries = entries; const selected = cardCurrent?.cardId; const select = $('card-select'); select.replaceChildren();
+  const blank = document.createElement('option'); blank.value = ''; blank.textContent = '选择卡片'; select.append(blank);
+  for (const card of entries) { const option = document.createElement('option'); option.value = card.cardId; option.textContent = `${card.content.summary || card.content.original} · ${card.state}`; select.append(option); }
+  renderCard(entries.find(card => card.cardId === selected) || entries[0] || null);
+}
 host.subscribe(message => {
   if (message.generation !== undefined && message.generation < generation) { if (message.wav instanceof Uint8Array) message.wav.fill(0); return; }
   if (message.type === 'connection') generation = message.generation;
@@ -134,7 +163,7 @@ host.subscribe(message => {
     try { voiceFinal ??= { scope: message.scope, text: normalizeUserText(message.text) }; $('voice-transcript').value = voiceFinal.text; $('voice-transcript').hidden = true; notice('已识别：' + voiceFinal.text); maybeDispatchVoiceFinal(); }
     catch (error) { notice(error.message); }
   }
-  if (message.type === 'ready') { if (pendingRequest && pendingGeneration === message.generation) return; const interrupted = busy && pendingGeneration !== message.generation; if (generation !== message.generation) { voiceScope = null; voiceFinal = null; } generation = message.generation; messages = message.history; render(); if (interrupted) releaseRequest(); state(message.status.service); notice(interrupted ? '连接已更新，上一条结果请以已保存历史为准；草稿仍保留。' : ''); if ($('memory-target').disabled) { memoryRefreshId = crypto.randomUUID(); host.send('memory', { generation, id: memoryRefreshId, action: 'list' }); } maybeDispatchVoiceFinal(); }
+  if (message.type === 'ready') { if (pendingRequest && pendingGeneration === message.generation) return; const interrupted = busy && pendingGeneration !== message.generation; if (generation !== message.generation) { voiceScope = null; voiceFinal = null; } generation = message.generation; messages = message.history; render(); if (interrupted) releaseRequest(); state(message.status.service); notice(interrupted ? '连接已更新，上一条结果请以已保存历史为准；草稿仍保留。' : ''); if ($('memory-target').disabled) { memoryRefreshId = crypto.randomUUID(); host.send('memory', { generation, id: memoryRefreshId, action: 'list' }); } cardPending = null; if ($('engineering-card-panel').open) host.send('engineering-card', { generation, id: crypto.randomUUID(), action: 'list' }); maybeDispatchVoiceFinal(); }
   if (message.type === 'reply') {
     if (message.committed === true) appendCommitted(message.messages);
     if (!matchesRequest(message) || pendingRequest.cancelling) return;
@@ -156,6 +185,14 @@ host.subscribe(message => {
   }
   if (message.type === 'disconnected') { const uncertain = !!pendingRequest; voiceScope = null; voiceFinal = null; releaseRequest(); state('disconnected'); notice(uncertain ? '连接已断开，本轮提交或取消结果未知，请重新打开应用核对历史。' : '文字服务已断开，请重新打开应用。'); }
   if (message.type === 'notice') notice(message.text);
+  if (message.type === 'engineering-card' || message.type === 'engineering-card-error') {
+    if (message.action === 'list' && message.type === 'engineering-card') renderCardList(message.cards);
+    else if (message.id === cardPending) {
+      cardPending = null;
+      if (message.type === 'engineering-card-error') $('card-status').textContent = message.message;
+      else { if (message.card) { renderCard(message.card); const index = cardEntries.findIndex(card => card.cardId === message.card.cardId); if (index < 0) cardEntries.unshift(message.card); else cardEntries[index] = message.card; renderCardList(cardEntries); } $('card-status').textContent = message.conflict ? '卡片已变化，请核对最新 revision 后重试。' : message.invalid ? '项目、Ticket、期望阶段或授权终点尚未明确，不能确认。' : '工程卡片已保存；尚未派发。'; }
+    }
+  }
   if (message.type === 'memory' || message.type === 'memory-error') {
     if (message.action === 'list' && message.type === 'memory') { if (!$('memory-target').disabled || message.id === memoryRefreshId) { renderMemories(message.entries); $('memory-target').disabled = false; memoryRefreshId = null; if (!memoryPending) $('memory-status').textContent = message.entries.length ? '当前有效记忆已读取。' : '暂无有效陪伴记忆。'; } }
     else if (memoryPending && message.id === memoryPending.id && message.generation === memoryPending.generation && (message.type === 'memory-error' || message.action === memoryPending.action)) {
@@ -238,6 +275,12 @@ function dispatchUserText(value, origin = 'typed', voiceScope) {
   state(service); notice('正在等待 Emilia 回复…'); host.send('submit', { generation, id: requestId, requestId, text, origin, voiceScope }); return true;
 }
 $('form').addEventListener('submit', event => { event.preventDefault(); void mediaUI.dispose(); dispatchUserText($('text').value); });
+$('engineering-card-panel').addEventListener('toggle', () => { if ($('engineering-card-panel').open) host.send('engineering-card', { generation, id: crypto.randomUUID(), action: 'list' }); });
+$('card-create').onclick = () => { if ($('card-original').value.trim()) cardCommand('create',{ original: $('card-original').value }); else $('card-status').textContent = '请先填写工作要求。'; };
+$('card-select').onchange = () => renderCard(cardEntries.find(card => card.cardId === $('card-select').value) || null);
+$('card-edit').onclick = () => { if (!cardCurrent) return; cardCommand('edit',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision, fields: { original: $('card-original').value, summary: $('card-summary').value, project: $('card-project').value, ticket: $('card-ticket').value, noTicket: $('card-no-ticket').checked, desiredPhase: $('card-phase').value, endpoint: $('card-endpoint').value } }); };
+$('card-confirm').onclick = () => { if (cardCurrent) cardCommand('confirm',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision }); };
+$('card-revoke').onclick = () => { if (cardCurrent) cardCommand('revoke',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision }); };
 $('cancel-reply').onclick = () => {
   if (!pendingRequest || pendingRequest.cancelling) return;
   if (pendingRequest.origin === 'voice-final') void mediaUI.dispose();

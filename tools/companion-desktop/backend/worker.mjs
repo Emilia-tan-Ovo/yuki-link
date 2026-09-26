@@ -42,12 +42,15 @@ export function createWorkerHandler({ post, createVoice, createSession = data =>
       else if (data.action === 'forget') entry = session.forgetMemory(data.targetId);
       else if (data.action !== 'list') throw Error('陪伴记忆操作无效。');
       post({ type: 'memory', id: data.id, action: data.action, entry, entries: session.listMemories() });
+    } else if (data?.type === 'engineering-card' && session) {
+      const result = await session.cardCommand(data);
+      if (session === owner) post({ type: 'engineering-card', id: data.id, action: data.action, ...result });
     }
   } catch (error) {
     if (session !== owner || error instanceof TurnCancelledError) return;
     // No command bodies or credentials in diagnostics or UI.
     const known = error instanceof LocalPersistenceError || error instanceof Error && /^(请输入|DeepSeek|文字服务|上一条|角色卡|记忆输入|对话输入|陪伴记忆|请选择|这条)/.test(error.message);
-    post({ type: data?.type === 'memory' ? 'memory-error' : 'error', ...identity, status: owner.status(), message: known ? error.message : data?.type === 'memory' ? '陪伴记忆未能保存，请稍后重试。' : '这次文字交流没有完成，请检查网络或稍后重试。' });
+    post({ type: data?.type === 'memory' ? 'memory-error' : data?.type === 'engineering-card' ? 'engineering-card-error' : 'error', ...identity, status: owner.status(), message: data?.type === 'engineering-card' ? '工程卡片操作未完成，请检查输入或稍后重试。' : known ? error.message : data?.type === 'memory' ? '陪伴记忆未能保存，请稍后重试。' : '这次文字交流没有完成，请检查网络或稍后重试。' });
   }
   };
 }

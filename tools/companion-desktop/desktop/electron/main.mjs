@@ -177,6 +177,15 @@ ipcMain.on('yuki:memory', (event, value) => {
   if (value.action === 'correct' || value.action === 'forget') { if (typeof value.targetId !== 'string') { invalid(); return; } command.targetId = value.targetId; }
   if (!connection.send(command, value.generation)) fail('文字服务尚未连接，记忆操作未完成。');
 });
+ipcMain.on('yuki:engineering-card', (event, value) => {
+  if (!trusted(event) || !value || value.generation !== connection.generation || !validRequestId(value.id) || !['list','create','edit','confirm','revoke','refresh'].includes(value.action)) return;
+  const command = { type: 'engineering-card', id: value.id, action: value.action };
+  if (value.action === 'create') { if (typeof value.original !== 'string' || !value.original.trim() || value.original.length > 20000) return; command.original = value.original; command.focus = value.focus; }
+  if (['edit','confirm','revoke','refresh'].includes(value.action)) { if (typeof value.cardId !== 'string' || value.cardId.length > 100) return; command.cardId = value.cardId; }
+  if (['edit','confirm','revoke'].includes(value.action)) { if (!Number.isSafeInteger(value.expectedRevision) || value.expectedRevision < 1) return; command.expectedRevision = value.expectedRevision; }
+  if (value.action === 'edit') { if (!value.fields || typeof value.fields !== 'object') return; command.fields = value.fields; }
+  if (!connection.send(command,value.generation)) deliver({ type: 'engineering-card-error', id: value.id, generation: value.generation, message: '工程卡片后端尚未连接。' });
+});
 ipcMain.on('yuki:credential', event => {
   if (!trusted(event) || preview) return;
   void (async () => {

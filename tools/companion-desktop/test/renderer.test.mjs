@@ -26,6 +26,23 @@ test('missing Live2D resources remain pending in the same window without blockin
   assert.equal(h.element('live2d-status').dataset.ready, 'false');
 });
 
+test('engineering card UI confirms saved revision only and shows not dispatched', () => {
+  const h = harness();
+  h.deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
+  h.element('engineering-card-panel').open = true; h.element('engineering-card-panel').toggle();
+  assert.equal(h.sent.at(-1)[0], 'engineering-card'); assert.equal(h.sent.at(-1)[1].action, 'list');
+  h.element('card-original').value = '给 yuki-link 的 #129 只做设计'; h.element('card-create').onclick();
+  const request = h.sent.at(-1)[1]; assert.equal(request.action, 'create');
+  const card = { cardId: 'card-1', revision: 1, state: 'pending', content: { original: h.element('card-original').value, summary: '处理 #129', projectKey: 'yuki-link', repository: 'Emilia-tan-Ovo/yuki-link', ticket: { number: 129, title: 'COMPANION-004', url: 'https://github.com/Emilia-tan-Ovo/yuki-link/issues/129' }, resolution: { status: 'verified_existing', reason: 'GitHub' }, desiredPhase: 'ticket-design', endpoint: 'design-only' } };
+  h.deliver({ type: 'engineering-card', generation: 1, id: request.id, action: 'create', card });
+  h.element('card-confirm').onclick(); const confirmation = h.sent.at(-1)[1];
+  assert.deepEqual(Object.keys(confirmation).sort(), ['action','cardId','expectedRevision','generation','id']);
+  assert.equal(confirmation.expectedRevision, 1);
+  h.deliver({ type: 'engineering-card', generation: 1, id: confirmation.id, action: 'confirm', card: { ...card, state: 'confirmed', confirmation: { revision: 1 } } });
+  assert.match(h.element('card-state').textContent, /尚未派发/);
+  assert.equal(h.sent.some(([name]) => /dispatch|task-stop|codex/.test(name)), false);
+});
+
 test('voice settings/control wiring never acquires devices on load or calls engineering', async () => {
   const h = harness(), readiness = new VoiceReadiness(); readiness.reset(true);
   h.deliver({ type: 'ready', generation: 1, history: [], status: { service: 'configured' } });
