@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EngineeringCardStore } from '../backend/engineering-card-store.mjs';
+import { EngineeringCoordinator } from '../backend/engineering-coordinator.mjs';
 import { EngineeringCards, resolveTarget, modelCandidate, localCandidate } from '../backend/engineering-cards.mjs';
 import { BackendSession } from '../backend/session.mjs';
 import { createWorkerHandler } from '../backend/worker.mjs';
@@ -14,6 +15,25 @@ import { DatabaseSync } from 'node:sqlite';
 const projects = [{ key: 'yuki-link', aliases: ['Yuki', 'yuki-link'], repository: 'Emilia-tan-Ovo/yuki-link' }, { key: 'other', aliases: ['other'], repository: 'example/other' }];
 const issue = (repository, number, title = 'COMPANION-004') => ({ repository, number, title, url: `https://github.com/${repository}/issues/${number}`, state: 'closed' });
 async function fixture(t) { const dir = await mkdtemp(join(tmpdir(), 'yuki-cards-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
+
+test('known preparation path conflict yields a typed blocked receipt', async () => {
+  const receipt = {preparation_for_ticket_design:{state:'blocked',blockers:[],source_refs:['git-worktree']},
+    next_action_readiness:{state:'blocked',blockers:[],source_refs:['preparation-for-ticket-design']},
+    unknown_side_effects:[]};
+  const coordinator = new EngineeringCoordinator({config:{ycaUrl:'fixture'},store:{storeId:'store'},
+    prepareRequirement:async () => {throw Error('PREPARATION_PATH_OCCUPIED');},
+    preparationReceipt:async () => receipt});
+  const result = await coordinator.prepare({preparationStatus:'authorized',cardId:'card',revision:1});
+  assert.equal(result.preparation.preparation_for_ticket_design.state,'blocked');
+  assert.deepEqual(result.preparation.preparation_for_ticket_design.blockers,['PREPARATION_PATH_OCCUPIED']);
+  assert.ok(result.preparation.preparation_for_ticket_design.source_refs.includes('git-worktree'));
+  assert.deepEqual(result.preparation.unknown_side_effects,[]);
+  const unresolved = new EngineeringCoordinator({config:{ycaUrl:'fixture'},store:{storeId:'store'},
+    prepareRequirement:async () => {throw Error('PREPARATION_PATH_OCCUPIED');},
+    preparationReceipt:async () => ({...receipt,unknown_side_effects:['github-issue-create']})});
+  assert.equal((await unresolved.prepare({preparationStatus:'authorized',cardId:'card',revision:1}))
+    .preparation.preparation_for_ticket_design.state,'unknown');
+});
 
 test('content revisions are immutable; confirmation, edit and revoke check revision and state atomically across reopen', async t => {
   const dir = await fixture(t); let store = new EngineeringCardStore(dir);

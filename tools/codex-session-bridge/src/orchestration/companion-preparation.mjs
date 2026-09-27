@@ -153,6 +153,13 @@ export class GitPreparationWorktree {
       const at = line.indexOf(' '); return at < 0 ? [line,true] : [line.slice(0,at),line.slice(at+1)];
     }))).filter(entry => entry.worktree);
   }
+  matchesFrozenWorktree(frozen) {
+    try {
+      const top = realpathSync(this.git(frozen.path,'rev-parse','--show-toplevel'));
+      const common = realpathSync(this.git(frozen.path,'rev-parse','--path-format=absolute','--git-common-dir'));
+      return samePath(top,realpathSync(frozen.path)) && samePath(common,frozen.repositoryCommon);
+    } catch { return false; }
+  }
   inspect(frozen) {
     try {
       const current = this.repositoryIdentity();
@@ -163,6 +170,7 @@ export class GitPreparationWorktree {
         || !samePath(frozen.path,path.join(this.config.worktreeRoot,`prep-${frozen.preparationId}`))) return null;
       const entry = this.registry(current.root).find(value => samePath(value.worktree,frozen.path));
       if (!entry || entry.branch !== `refs/heads/${frozen.branch}` || entry.HEAD !== frozen.oid
+        || !this.matchesFrozenWorktree(frozen)
         || !existsSync(frozen.path) || this.git(frozen.path,'rev-parse','HEAD') !== frozen.oid
         || this.git(frozen.path,'rev-parse','--abbrev-ref','HEAD') !== frozen.branch) return null;
       return {path:realpathSync(frozen.path),head:frozen.oid};
@@ -179,12 +187,13 @@ export class GitPreparationWorktree {
     const entries = this.registry(current.root);
     const occupied = entries.find(entry => entry.branch === `refs/heads/${frozen.branch}`);
     if (occupied && !samePath(occupied.worktree,frozen.path)) throw Error('PREPARATION_BRANCH_OCCUPIED');
+    const registered = entries.find(entry => samePath(entry.worktree,frozen.path));
+    if (registered && !this.matchesFrozenWorktree(frozen)) throw Error('PREPARATION_WORKTREE_CONFLICT');
     let branchOid = null;
     try { branchOid = this.git(current.root,'rev-parse','--verify',`refs/heads/${frozen.branch}^{commit}`); }
     catch { /* A branch can be absent after the freeze record was written. */ }
     if (branchOid && branchOid !== frozen.oid) throw Error('PREPARATION_BRANCH_CONFLICT');
     if (!branchOid) this.git(current.root,'branch',frozen.branch,frozen.oid);
-    const registered = entries.find(entry => samePath(entry.worktree,frozen.path));
     if (!registered) {
       if (existsSync(frozen.path)) throw Error('PREPARATION_PATH_OCCUPIED');
       mkdirSync(path.dirname(frozen.path),{recursive:true});
@@ -195,6 +204,7 @@ export class GitPreparationWorktree {
       throw Error('PREPARATION_WORKTREE_CONFLICT');
     const verified = this.registry(current.root).find(entry => samePath(entry.worktree,frozen.path));
     if (!verified || verified.branch !== `refs/heads/${frozen.branch}` || verified.HEAD !== frozen.oid
+      || !this.matchesFrozenWorktree(frozen)
       || this.git(frozen.path,'rev-parse','HEAD') !== frozen.oid
       || this.git(frozen.path,'rev-parse','--abbrev-ref','HEAD') !== frozen.branch)
       throw Error('PREPARATION_WORKTREE_CONFLICT');

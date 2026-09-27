@@ -3,6 +3,25 @@ import { join } from 'node:path';
 import { runCompanionTurn, validateDshConfig } from './dsh/runner.mjs';
 import { getEngineeringReceipt, prepareNewRequirement, getPreparationReceipt } from './yca-engineering-client.mjs';
 
+const preparationConflictSources = new Map([
+  ['PREPARATION_PATH_OCCUPIED','git-worktree'],
+  ['PREPARATION_BRANCH_OCCUPIED','git-worktree'],
+  ['PREPARATION_BRANCH_CONFLICT','git-worktree'],
+  ['PREPARATION_WORKTREE_CONFLICT','git-worktree'],
+  ['PREPARATION_GIT_IDENTITY_CONFLICT','git-worktree'],
+  ['PREPARATION_REPOSITORY_CONFLICT','git-worktree'],
+  ['PREPARATION_WORKTREE_ROOT_CONFLICT','git-worktree'],
+  ['PREPARATION_BASELINE_CONFLICT','harness-registration'],
+  ['PREPARATION_HARNESS_CONFLICT','harness-registration'],
+  ['PREPARATION_WORKFLOW_CONFLICT','harness-workflow'],
+  ['PREPARATION_CHECKPOINT_CONFLICT','local-checkpoint'],
+]);
+
+const preparationConflict = error => {
+  const value = typeof error?.code === 'string' ? error.code : error?.message;
+  return preparationConflictSources.has(value) ? value : null;
+};
+
 export function loadEngineeringConfig(directory) {
   const file = join(directory,'engineering-runtime.json');
   if (!existsSync(file)) return { configured:false, reason:'engineering-runtime.json 尚未配置' };
@@ -11,8 +30,10 @@ export function loadEngineeringConfig(directory) {
 }
 
 export class EngineeringCoordinator {
-  constructor({ store, config, runTurn = runCompanionTurn, receipt = getEngineeringReceipt }) {
+  constructor({ store, config, runTurn = runCompanionTurn, receipt = getEngineeringReceipt,
+    prepareRequirement = prepareNewRequirement, preparationReceipt = getPreparationReceipt }) {
     this.store = store; this.config = config; this.runTurn = runTurn; this.receipt = receipt;
+    this.prepareRequirement = prepareRequirement; this.preparationReceipt = preparationReceipt;
   }
   input(card) {
     const envelope = this.store.envelope(card.cardId,card.revision);
@@ -24,14 +45,30 @@ export class EngineeringCoordinator {
     card_id:card.cardId,revision:card.revision }; }
   async prepare(card) {
     if (card.preparationStatus !== 'authorized') return this.status(card);
-    try { const receipt = await prepareNewRequirement(this.config.ycaUrl,this.preparationInput(card));
+    try { const receipt = await this.prepareRequirement(this.config.ycaUrl,this.preparationInput(card));
       return { preparation:receipt }; }
-    catch { return { preparation:{ preparation_for_ticket_design:{state:'unknown',
-      blockers:['PREPARATION_OUTCOME_UNKNOWN']},unknown_side_effects:['preparation-transport'] } }; }
+    catch (error) {
+      const blocker = preparationConflict(error);
+      if (blocker) {
+        try {
+          const receipt = await this.preparationReceipt(this.config.ycaUrl,this.preparationInput(card));
+          if (receipt?.unknown_side_effects?.length === 0) {
+            const source = preparationConflictSources.get(blocker);
+            const blocked = section => ({...section,state:'blocked',
+              blockers:[blocker,...(section?.blockers ?? []).filter(value => value !== blocker)],
+              source_refs:[...new Set([...(section?.source_refs ?? []),source])]});
+            return {preparation:{...receipt,preparation_for_ticket_design:blocked(receipt.preparation_for_ticket_design),
+              next_action_readiness:blocked(receipt.next_action_readiness)}};
+          }
+        } catch { /* Receipt cannot establish whether side effects are known. */ }
+      }
+      return { preparation:{ preparation_for_ticket_design:{state:'unknown',
+        blockers:['PREPARATION_OUTCOME_UNKNOWN']},unknown_side_effects:['preparation-transport'] } };
+    }
   }
   async status(card) {
     if (card.content.resolution?.status === 'explicit_new_requirement') {
-      try { return { preparation:await getPreparationReceipt(this.config.ycaUrl,this.preparationInput(card)) }; }
+      try { return { preparation:await this.preparationReceipt(this.config.ycaUrl,this.preparationInput(card)) }; }
       catch { return { preparation:{ preparation_for_ticket_design:{state:'unknown',
         blockers:['PREPARATION_RECEIPT_UNAVAILABLE']},unknown_side_effects:[] } }; }
     }

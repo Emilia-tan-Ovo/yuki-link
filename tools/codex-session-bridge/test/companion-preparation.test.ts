@@ -52,6 +52,25 @@ test('worktree recovery keeps the frozen base OID after base branch advances', t
   assert.equal(worktrees.ensure(frozen).head,frozen.oid);
 });
 
+test('worktree recovery rejects a replacement repository with the same branch and commit', t => {
+  const root = mkdtempSync(path.join(tmpdir(),'companion-prep-replaced-'));
+  t.after(() => rmSync(root,{recursive:true,force:true}));
+  const repo = path.join(root,'repo'); mkdirSync(repo);
+  const git = (...args: string[]) => execFileSync('git',args,{cwd:repo,encoding:'utf8',windowsHide:true}).trim();
+  git('init','-b','main'); git('config','user.name','Fixture'); git('config','user.email','fixture@example.invalid');
+  git('remote','add','origin','https://github.com/Emilia-tan-Ovo/yuki-link.git');
+  writeFileSync(path.join(repo,'readme.md'),'one\n'); git('add','readme.md'); git('commit','-m','one');
+  const worktrees = new GitPreparationWorktree({projectKey:'yuki-link',repository:'Emilia-tan-Ovo/yuki-link',
+    repositoryRoot:repo,baseRef:'refs/heads/main',worktreeRoot:path.join(repo,'.local','worktrees')});
+  const frozen = worktrees.freeze('11111111-1111-4111-8111-111111111111');
+  worktrees.ensure(frozen);
+  rmSync(frozen.path,{recursive:true,force:true});
+  git('clone','--shared','--branch',frozen.branch,repo,frozen.path);
+  assert.equal(worktrees.inspect(frozen),null);
+  assert.throws(() => worktrees.ensure(frozen),/PREPARATION_WORKTREE_CONFLICT/);
+  assert.equal(execFileSync('git',['rev-parse','HEAD'],{cwd:frozen.path,encoding:'utf8'}).trim(),frozen.oid);
+});
+
 test('preparation entry reports missing authorization without creating an Issue', async t => {
   const root = mkdtempSync(path.join(tmpdir(),'companion-prep-card-'));
   t.after(() => rmSync(root,{recursive:true,force:true}));

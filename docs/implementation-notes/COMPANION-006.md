@@ -79,3 +79,11 @@ Canonical implementation-design artifact: this file. GitHub #131 remains the can
 - 本地 `docs/implementation-notes/<ticket>.md` 经回读和 digest 核验后才镜像到 GitHub；镜像回执未知、内容漂移、Workflow 漂移、设计 run 未完成或其他未知副作用均使 typed readiness 失去 ready。`design-only` 的下一动作标为 unsupported，不产生 implementation authority。
 - 定向验证：bridge `node --test test/companion-preparation.test.ts test/orchestration-companion-mcp.test.ts` 为 6/6；desktop `node --test test/engineering-cards.test.mjs test/renderer.test.mjs` 为 59/59；修改入口的 `node --check` 通过。包含真实 Harness register/Workflow record/WorkflowAgentLauncher/ExecutionOperations 的 fixture 仅替换 GitHub transport 与模型 spawn。
 - 未在本 implementation session 运行 full suite、完整 typecheck、package/smoke 或真实无 Ticket 外部副作用 E2E；这些由 Emilia 后置验证。未执行 PR、push、merge、deploy 或 production restart。本地 commit 的精确 SHA 以提交后 handoff 为准。
+
+### Primary Review finding-fix handoff
+
+- 来源：`primary-review-findings.md`（Review run `c4fa6eac-eb81-4ee9-8198-0faabda584c6`）；修复基线 `e5466542883aa1f02687d7e9ac901277ccbc0852`，branch `codex/companion-006-preparation`，当前 worktree 见上文。本节随 finding-fix commit 保存，精确 SHA 以该 commit 的 Git 记录和交接回复为准。
+- `STD-001`：`inspect/ensure` 在采用已登记路径前核对该路径真实 Git top-level 和 common-dir 与冻结绑定一致；不一致保留现场并拒绝采用。回归用相同 branch/commit 的替换仓库验证。
+- `SPEC-001`：Desktop 对已知 preparation 冲突读回 durable receipt；仅当 `unknown_side_effects` 为空时返回带具体 blocker 和来源的 blocked receipt。回执不可核实或存在未知副作用仍为 unknown。既有 verified-ticket dispatch 未改。
+- 定向验证：bridge `node --test --test-name-pattern='worktree recovery rejects|worktree recovery keeps' test/companion-preparation.test.ts`（2/2）；desktop `node --test --test-name-pattern='known preparation path conflict' test/engineering-cards.test.mjs`（1/1）；修改入口 `node --check` 通过；`git diff --check` 通过。两条新回归均先红后绿。
+- Review policy：由 Emilia 接手 fresh focused re-review；本 fix session 不执行 Review。`STD-001`、`SPEC-001` 标记 fixed，尚未由 reviewer verified。full suite、完整 typecheck、真实外部 E2E 留给 Emilia 后置 validation；本次未执行 push、PR、merge、deploy 或 restart。
