@@ -14,6 +14,16 @@ import { WorkflowAgentLauncher, startWorkflowAgentInputSchema } from './orchestr
 import { EngineeringMemoryStore, RuleAuthorityVerifier, memoryDraft, memoryQuery } from './orchestration/engineering-memory.ts';
 import { companionDispatchInputSchema } from './orchestration/companion-contract.mjs';
 
+// Only deterministic preparation conflicts with a known local outcome cross the Companion boundary.
+const publicPreparationConflicts = new Set([
+  'PREPARATION_PATH_OCCUPIED', 'PREPARATION_BRANCH_OCCUPIED',
+  'PREPARATION_BRANCH_CONFLICT', 'PREPARATION_WORKTREE_CONFLICT',
+  'PREPARATION_GIT_IDENTITY_CONFLICT', 'PREPARATION_REPOSITORY_CONFLICT',
+  'PREPARATION_WORKTREE_ROOT_CONFLICT', 'PREPARATION_BASELINE_CONFLICT',
+  'PREPARATION_HARNESS_CONFLICT', 'PREPARATION_WORKFLOW_CONFLICT',
+  'PREPARATION_CHECKPOINT_CONFLICT',
+]);
+
 export function createMcpServer(manager, computer) {
   const server = new McpServer({ name: 'yuki-computer-agent', version: '0.2.0' });
   // HTTP creates one MCP server per request; the runtime owner must share one projection/writer.
@@ -167,6 +177,18 @@ export function createMcpServer(manager, computer) {
       if (!manager.companionDispatch) throw new HarnessError('COMPANION_DISPATCH_UNAVAILABLE');
       return manager.companionDispatch.get(input);
     }, true);
+  const preparationInput = z.object({card_store_id:z.string().uuid(),card_id:z.string().uuid(),
+    revision:z.number().int().positive()}).strict();
+  register('manage-existing', 'prepare_companion_new_requirement', 'Prepare a confirmed no-ticket card within its explicit Issue/worktree authorization, reconcile prior side effects, then launch ticket-design through Harness.',
+    preparationInput, input => {
+      if (!manager.companionPreparation) throw new HarnessError('COMPANION_PREPARATION_UNAVAILABLE');
+      return manager.companionPreparation.prepare(input);
+    });
+  register('observe', 'get_companion_preparation_receipt', 'Read typed preparation and next-action readiness without replaying side effects.',
+    preparationInput, input => {
+      if (!manager.companionPreparation) throw new HarnessError('COMPANION_PREPARATION_UNAVAILABLE');
+      return manager.companionPreparation.get(input);
+    }, true);
   register('manage-existing', 'start_ticket_implementation', 'Compatibility wrapper for start_workflow_agent implementation; delegated Review and Ticket Main destination remain fixed.',
     startTicketImplementationInputSchema, input => {
       return workflowAgent().start({ ...input, action: 'implementation' });
@@ -244,22 +266,34 @@ export function createMcpServer(manager, computer) {
 // Dedicated DSH surface: discovery cannot expose YCA's administrator tools.
 export function createCompanionMcpServer(manager) {
   const server = new McpServer({ name: 'yuki-companion-engineering', version: '1.0.0' });
-  const register = (name, readOnly, action) => server.registerTool(name, {
-    inputSchema: companionDispatchInputSchema,
-    description: readOnly ? 'Read the original engineering receipt for this dispatch.'
-      : 'Dispatch one confirmed, prepared Desktop engineering card revision.',
+  const preparationInput = z.object({card_store_id:z.string().uuid(),card_id:z.string().uuid(),
+    revision:z.number().int().positive()}).strict();
+  const register = (name, readOnly, action, schema = companionDispatchInputSchema, preparation = false) => server.registerTool(name, {
+    inputSchema: schema,
+    description: preparation ? readOnly ? 'Read the typed preparation receipt.'
+      : 'Prepare one confirmed no-ticket card within its explicit authorization.'
+      : readOnly ? 'Read the original engineering receipt for this dispatch.'
+        : 'Dispatch one confirmed, prepared Desktop engineering card revision.',
     annotations: { readOnlyHint: readOnly, idempotentHint: true, destructiveHint: false },
   }, async input => {
     try {
-      if (!manager.companionDispatch) throw new HarnessError('COMPANION_DISPATCH_UNAVAILABLE');
+      if (preparation ? !manager.companionPreparation : !manager.companionDispatch)
+        throw new HarnessError(preparation ? 'COMPANION_PREPARATION_UNAVAILABLE' : 'COMPANION_DISPATCH_UNAVAILABLE');
       const result = await action(input);
       return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
     } catch (error) {
-      const result = { error: error instanceof HarnessError ? { code: error.code, message: error.message, details: error.details } : publicError(error) };
+      const safeCode = preparation && error instanceof Error && publicPreparationConflicts.has(error.message)
+        ? error.message : null;
+      const result = { error: preparation
+        ? safeCode ? { code: safeCode, message: safeCode }
+          : { code: 'INTERNAL_ERROR', message: 'Preparation failed' }
+        : error instanceof HarnessError ? { code: error.code, message: error.message, details: error.details } : publicError(error) };
       return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
     }
   });
   register('dispatch_confirmed_engineering_card', false, input => manager.companionDispatch.dispatch(input));
   register('get_companion_engineering_receipt', true, input => manager.companionDispatch.get(input));
+  register('prepare_companion_new_requirement', false, input => manager.companionPreparation.prepare(input),preparationInput,true);
+  register('get_companion_preparation_receipt', true, input => manager.companionPreparation.get(input),preparationInput,true);
   return server;
 }

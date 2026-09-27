@@ -127,6 +127,19 @@ function renderEngineeringStatus(card) {
   const target = $('card-engineering-status'); target.replaceChildren();
   if (!card) return;
   const status = engineeringViews.get(`${card.cardId}:${card.revision}`);
+  if (card.content.resolution.status === 'explicit_new_requirement') {
+    const receipt = status?.preparation;
+    const readiness = receipt?.preparation_for_ticket_design;
+    const design = receipt?.ticket_design_artifact;
+    for (const line of [
+      `Ticket-design 准备：${readiness?.state ?? '未观察到'} · ${(readiness?.blockers ?? []).join('、') || '无阻碍'}`,
+      `Issue：${receipt?.bindings?.issue?.url ?? '尚无已核验引用'}`,
+      `设计产物：${design?.state ?? '未观察到'} · ${(design?.blockers ?? []).join('、') || '无阻碍'}`,
+      `下一动作：${receipt?.next_action_readiness?.action ?? '未知'} · ${receipt?.next_action_readiness?.state ?? '未知'}`,
+      `未知副作用：${(receipt?.unknown_side_effects ?? []).join('、') || '无'}`,
+    ]) { const p = document.createElement('p'); p.textContent = line; target.append(p); }
+    return;
+  }
   const finalResponse = status?.run?.final_response;
   const result = typeof finalResponse === 'string' && finalResponse.trim()
     ? finalResponse.trim().slice(0, 240) : '暂无';
@@ -141,8 +154,8 @@ function renderEngineeringStatus(card) {
   ];
   for (const line of lines) { const p = document.createElement('p'); p.textContent = line; target.append(p); }
 }
-function cardFields() { return { original: $('card-original').value, summary: $('card-summary').value, project: $('card-project').value, ticket: $('card-ticket').value, noTicket: $('card-no-ticket').checked, desiredPhase: $('card-phase').value, endpoint: $('card-endpoint').value, mergeRequested: $('card-merge').checked, mergeTarget: $('card-merge-target').value, deployRequested: $('card-deploy').checked, deployTarget: $('card-deploy-target').value }; }
-function cardDirty() { return !!cardCurrent && JSON.stringify(cardFields()) !== JSON.stringify({ original: cardCurrent.content.original, summary: cardCurrent.content.summary, project: cardCurrent.content.projectKey || '', ticket: cardCurrent.content.ticket ? '#' + cardCurrent.content.ticket.number : '', noTicket: cardCurrent.content.resolution.status === 'explicit_new_requirement', desiredPhase: cardCurrent.content.desiredPhase || '', endpoint: cardCurrent.content.endpoint || '', mergeRequested: !!cardCurrent.content.extraAuthorization?.merge?.requested, mergeTarget: cardCurrent.content.extraAuthorization?.merge?.target || '', deployRequested: !!cardCurrent.content.extraAuthorization?.deploy?.requested, deployTarget: cardCurrent.content.extraAuthorization?.deploy?.target || '' }); }
+function cardFields() { return { original: $('card-original').value, summary: $('card-summary').value, project: $('card-project').value, ticket: $('card-ticket').value, noTicket: $('card-no-ticket').checked, issueAuthorized: $('card-issue-authorized').checked, worktreeAuthorized: $('card-worktree-authorized').checked, desiredPhase: $('card-phase').value, endpoint: $('card-endpoint').value, mergeRequested: $('card-merge').checked, mergeTarget: $('card-merge-target').value, deployRequested: $('card-deploy').checked, deployTarget: $('card-deploy-target').value }; }
+function cardDirty() { return !!cardCurrent && JSON.stringify(cardFields()) !== JSON.stringify({ original: cardCurrent.content.original, summary: cardCurrent.content.summary, project: cardCurrent.content.projectKey || '', ticket: cardCurrent.content.ticket ? '#' + cardCurrent.content.ticket.number : '', noTicket: cardCurrent.content.resolution.status === 'explicit_new_requirement', issueAuthorized: cardCurrent.content.preparationAuthorization?.issue === true, worktreeAuthorized: cardCurrent.content.preparationAuthorization?.worktree === true, desiredPhase: cardCurrent.content.desiredPhase || '', endpoint: cardCurrent.content.endpoint || '', mergeRequested: !!cardCurrent.content.extraAuthorization?.merge?.requested, mergeTarget: cardCurrent.content.extraAuthorization?.merge?.target || '', deployRequested: !!cardCurrent.content.extraAuthorization?.deploy?.requested, deployTarget: cardCurrent.content.extraAuthorization?.deploy?.target || '' }); }
 function updateCardConfirm() { if (!cardCurrent) return; const content = cardCurrent.content, merge = content.extraAuthorization?.merge, deploy = content.extraAuthorization?.deploy; const mergeTarget = merge?.target?.trim() || '', deployTarget = deploy?.target?.trim() || '', prefix = `https://github.com/${content.repository}/pull/`; const supported = !content.ticket?.scope?.digest || content.endpoint === 'design-only' && content.desiredPhase === 'ticket-design' || content.endpoint === 'to-pr' && ['ticket-design','implementation','review'].includes(content.desiredPhase); $('card-confirm').disabled = Boolean(cardPending || cardDirty() || cardCurrent.state !== 'pending' || !['verified_existing','explicit_new_requirement'].includes(content.resolution.status) || !content.desiredPhase || !content.endpoint || !supported || merge?.requested && !(/^PR\s*#[1-9]\d*$/iu.test(mergeTarget) || mergeTarget.startsWith(prefix) && /^[1-9]\d*$/u.test(mergeTarget.slice(prefix.length))) || deploy?.requested && !/^[\w.-]{2,100}$/u.test(deployTarget)); }
 function renderCard(card) {
   cardCurrent = card;
@@ -155,6 +168,8 @@ function renderCard(card) {
   $('card-project').value = content.projectKey || '';
   $('card-ticket').value = content.ticket ? '#' + content.ticket.number : '';
   $('card-no-ticket').checked = content.resolution.status === 'explicit_new_requirement';
+  $('card-issue-authorized').checked = content.preparationAuthorization?.issue === true;
+  $('card-worktree-authorized').checked = content.preparationAuthorization?.worktree === true;
   $('card-phase').value = content.desiredPhase || '';
   $('card-endpoint').value = content.endpoint || '';
   $('card-merge').checked = !!content.extraAuthorization?.merge?.requested;
@@ -170,11 +185,12 @@ function renderCard(card) {
   const workflow = card.observedWorkflow;
   $('card-workflow').textContent = workflow ? `Workflow 观察：${workflow.phase || '未知'} · revision ${workflow.revision ?? '未知'} · ${workflow.assessment || 'unknown'} · ${workflow.observedAt || '时间未知'}` : 'Workflow 观察：暂无；这不影响 Ticket 目标核验状态。';
   const authorization = ['merge','deploy'].map(kind => `${kind}：${content.extraAuthorization?.[kind]?.requested ? content.extraAuthorization[kind].target ? '显式请求 ' + content.extraAuthorization[kind].target : '已请求，对象待澄清' : '未请求'}`).join('；');
-  $('card-state').textContent = `${card.state === 'confirmed' ? `已确认 revision ${card.confirmation.revision}` : card.state === 'revoked' ? '已撤销' : '待确认'}；交接 ${card.dispatchStatus || (card.dispatchId ? '未知' : '尚未派发')}。${authorization}。to-PR 后续连续推进尚未接入；合并与部署需独立授权。`;
+  const preparation = content.resolution.status === 'explicit_new_requirement' ? `准备授权：Issue ${content.preparationAuthorization?.issue ? '允许' : '未允许'}；worktree ${content.preparationAuthorization?.worktree ? '允许' : '未允许'}；${card.preparationStatus === 'authorized' ? '已确认，可按准备回执推进' : '缺少具体准备授权或确认'}。仅设计禁止实施、PR、合并和部署。` : '';
+  $('card-state').textContent = `${card.state === 'confirmed' ? `已确认 revision ${card.confirmation.revision}` : card.state === 'revoked' ? '已撤销' : '待确认'}；交接 ${card.dispatchStatus || (card.dispatchId ? '未知' : '尚未派发')}。${preparation}${authorization}。to-PR 后续连续推进尚未接入；合并与部署需独立授权。`;
   renderEngineeringStatus(card);
   updateCardConfirm();
-  $('card-edit').disabled = card.state === 'revoked' || card.dispatchStatus === 'engineering-received';
-  $('card-revoke').disabled = card.state === 'revoked' || card.dispatchStatus === 'engineering-received';
+  $('card-edit').disabled = card.state === 'revoked' || card.dispatchStatus === 'engineering-received' || !!card.preparationId;
+  $('card-revoke').disabled = card.state === 'revoked' || card.dispatchStatus === 'engineering-received' || !!card.preparationId;
 }
 function renderCardList(entries) {
   cardEntries = entries; const selected = cardCurrent?.cardId; const select = $('card-select'); select.replaceChildren();
@@ -332,7 +348,7 @@ $('card-select').onchange = () => { renderCard(cardEntries.find(card => card.car
 $('card-choose').onclick = () => { if (!cardCurrent || cardPending || cardCurrent.content.resolution.status !== 'ambiguous') return; const selected = cardCurrent.content.candidates?.find(item => item.url === $('card-candidate').value); if (!selected) return; const fields = cardFields(); fields.project = cardCurrent.content.projectKey || 'yuki-link'; fields.ticket = `#${selected.number}`; fields.noTicket = false; cardCommand('edit', { cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision, fields }); updateCardConfirm(); };
 $('card-edit').onclick = () => { if (!cardCurrent) return; cardCommand('edit',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision, fields: cardFields() }); updateCardConfirm(); };
 $('card-confirm').onclick = () => { if (cardCurrent && !cardPending && !cardDirty() && !$('card-confirm').disabled) cardCommand('confirm',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision }); };
-for (const id of ['card-original','card-summary','card-project','card-ticket','card-no-ticket','card-phase','card-endpoint','card-merge','card-merge-target','card-deploy','card-deploy-target']) { $(id).addEventListener('input', updateCardConfirm); $(id).addEventListener('change', updateCardConfirm); }
+for (const id of ['card-original','card-summary','card-project','card-ticket','card-no-ticket','card-issue-authorized','card-worktree-authorized','card-phase','card-endpoint','card-merge','card-merge-target','card-deploy','card-deploy-target']) { $(id).addEventListener('input', updateCardConfirm); $(id).addEventListener('change', updateCardConfirm); }
 $('card-revoke').onclick = () => { if (cardCurrent) cardCommand('revoke',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision }); };
 $('card-refresh').onclick = () => { if (cardCurrent) cardCommand('refresh',{ cardId:cardCurrent.cardId }); };
 $('card-workbench').onclick = () => host.send('workbench-open');

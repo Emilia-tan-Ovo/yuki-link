@@ -58,6 +58,14 @@ export function createWorkerHandler({ post, createVoice, createSession = data =>
         }).catch(() => { if (session === owner) post({ type:'engineering-status', cardId:result.card.cardId,
           revision:result.card.revision, state:'turn-unknown' }); });
       }
+      if (data.action === 'confirm' && result.card?.preparationStatus === 'authorized'
+        && owner.engineering && !result.conflict && !result.invalid) {
+        void owner.engineering.prepare(result.card).then(status => {
+          if (session === owner) post({type:'engineering-status',cardId:result.card.cardId,
+            revision:result.card.revision,status});
+        }).catch(() => { if (session === owner) post({type:'engineering-status',cardId:result.card.cardId,
+          revision:result.card.revision,state:'preparation-unknown'}); });
+      }
     }
   } catch (error) {
     if (session !== owner || error instanceof TurnCancelledError) return;
