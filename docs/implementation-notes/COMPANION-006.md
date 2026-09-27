@@ -87,3 +87,10 @@ Canonical implementation-design artifact: this file. GitHub #131 remains the can
 - `SPEC-001`：Desktop 对已知 preparation 冲突读回 durable receipt；仅当 `unknown_side_effects` 为空时返回带具体 blocker 和来源的 blocked receipt。回执不可核实或存在未知副作用仍为 unknown。既有 verified-ticket dispatch 未改。
 - 定向验证：bridge `node --test --test-name-pattern='worktree recovery rejects|worktree recovery keeps' test/companion-preparation.test.ts`（2/2）；desktop `node --test --test-name-pattern='known preparation path conflict' test/engineering-cards.test.mjs`（1/1）；修改入口 `node --check` 通过；`git diff --check` 通过。两条新回归均先红后绿。
 - Review policy：由 Emilia 接手 fresh focused re-review；本 fix session 不执行 Review。`STD-001`、`SPEC-001` 标记 fixed，尚未由 reviewer verified。full suite、完整 typecheck、真实外部 E2E 留给 Emilia 后置 validation；本次未执行 push、PR、merge、deploy 或 restart。
+
+### SPEC-001 second fresh finding-fix handoff
+
+- 修复基线 `628c22ee56ae5ea332cf8ee4c0248baba18a59c7`；仅处理 focused re-review #1 尚未验证的 `SPEC-001`，已 VERIFIED 的 `STD-001` 未改。
+- Companion MCP 对明确列出的确定性 preparation conflict 序列化安全 `error.code`；其余 preparation 异常统一为不含内部细节的 `INTERNAL_ERROR`。Desktop client 仅解码同一组允许 code 为带 `.code` 的异常，coordinator 沿用既有 blocker/source 映射及 unknown-side-effect fail-closed 判定。Desktop 的 code/source 表由 client 与 coordinator 共用；MCP 和 Desktop 因独立打包保留最小显式双端列表。
+- 跨边界回归经真实 `/companion-mcp` HTTP transport，验证 server `structuredContent.error.code` 与 Desktop client 解码；未知 code 仍通用化。此测试先红（实际 `INTERNAL_ERROR`）后绿。bridge MCP 测试 2/2、原 Desktop known conflict 测试 1/1、bridge `npm run typecheck`、修改入口 `node --check`、`git diff --check` 均通过。
+- 本轮 commit SHA 以 Git 记录与交接回复为准。后续由 Emilia 执行 fresh focused re-review（仅 `SPEC-001`）与 full validation；未运行 full suite、真实外部 E2E，未 push、PR、merge、deploy 或 restart。

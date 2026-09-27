@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createHttpServer } from '../src/http.js';
+import { prepareNewRequirement } from '../../companion-desktop/backend/yca-engineering-client.mjs';
 
 test('companion endpoint exposes typed dispatch and no-ticket preparation actions', async t => {
   const calls: string[] = [];
@@ -34,4 +35,34 @@ test('companion endpoint exposes typed dispatch and no-ticket preparation action
     card_store_id:input.card_store_id,card_id:input.card_id,revision:input.revision}});
   assert.equal((prepared.structuredContent as {preparation_id?: string})?.preparation_id,'new');
   assert.deepEqual(calls,['get','prepare']);
+});
+
+test('preparation conflict code survives Companion MCP and Desktop client decoding', async t => {
+  let failure = 'PREPARATION_PATH_OCCUPIED';
+  const manager: any = {closing:false,companionPreparation:{
+    prepare:async()=>{throw Error(failure);}, get:async()=>({schema_version:1}),
+  }};
+  const server = createHttpServer(manager,null);
+  server.listen(0,'127.0.0.1'); await once(server,'listening');
+  t.after(()=>server.close());
+  const address = server.address();
+  if (!address || typeof address === 'string') throw Error('listener unavailable');
+  const url = `http://127.0.0.1:${address.port}/companion-mcp`;
+  const input = {card_store_id:'00000000-0000-4000-8000-000000000001',
+    card_id:'00000000-0000-4000-8000-000000000002',revision:1};
+  const client = new Client({name:'companion-error-test',version:'1'});
+  await client.connect(new StreamableHTTPClientTransport(new URL(url)));
+  t.after(()=>client.close());
+  const result = await client.callTool({name:'prepare_companion_new_requirement',arguments:input});
+  assert.equal(result.isError,true);
+  assert.equal((result.structuredContent as {error?: {code?: string}})?.error?.code,
+    'PREPARATION_PATH_OCCUPIED');
+  await assert.rejects(prepareNewRequirement(url,input),{code:'PREPARATION_PATH_OCCUPIED'});
+  failure = 'PREPARATION_SECRET_INTERNAL';
+  await assert.rejects(prepareNewRequirement(url,input),error => {
+    assert.ok(error instanceof Error);
+    assert.equal(error.message,'YCA typed preparation receipt unavailable');
+    assert.equal((error as Error & {code?: string}).code,undefined);
+    return true;
+  });
 });

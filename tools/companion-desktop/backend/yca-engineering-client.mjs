@@ -1,6 +1,21 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
+// Packaged Desktop keeps this explicit wire contract beside its decoder.
+export const preparationConflictSources = new Map([
+  ['PREPARATION_PATH_OCCUPIED','git-worktree'],
+  ['PREPARATION_BRANCH_OCCUPIED','git-worktree'],
+  ['PREPARATION_BRANCH_CONFLICT','git-worktree'],
+  ['PREPARATION_WORKTREE_CONFLICT','git-worktree'],
+  ['PREPARATION_GIT_IDENTITY_CONFLICT','git-worktree'],
+  ['PREPARATION_REPOSITORY_CONFLICT','git-worktree'],
+  ['PREPARATION_WORKTREE_ROOT_CONFLICT','git-worktree'],
+  ['PREPARATION_BASELINE_CONFLICT','harness-registration'],
+  ['PREPARATION_HARNESS_CONFLICT','harness-registration'],
+  ['PREPARATION_WORKFLOW_CONFLICT','harness-workflow'],
+  ['PREPARATION_CHECKPOINT_CONFLICT','local-checkpoint'],
+]);
+
 export async function getEngineeringReceipt(url,input) {
   const client = new Client({ name:'yuki-link-desktop-companion',version:'1.0.0' });
   try {
@@ -17,7 +32,16 @@ async function preparationCall(url,name,input) {
   try {
     await client.connect(new StreamableHTTPClientTransport(new URL(url)));
     const result = await client.callTool({name,arguments:input});
-    if (result.isError || result.structuredContent?.schema_version !== 1)
+    if (result.isError) {
+      const code = result.structuredContent?.error?.code;
+      if (typeof code === 'string' && preparationConflictSources.has(code)) {
+        const error = Error(code);
+        error.code = code;
+        throw error;
+      }
+      throw Error('YCA typed preparation receipt unavailable');
+    }
+    if (result.structuredContent?.schema_version !== 1)
       throw Error('YCA typed preparation receipt unavailable');
     return result.structuredContent;
   } finally { await client.close().catch(()=>{}); }

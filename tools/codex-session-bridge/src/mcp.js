@@ -14,6 +14,16 @@ import { WorkflowAgentLauncher, startWorkflowAgentInputSchema } from './orchestr
 import { EngineeringMemoryStore, RuleAuthorityVerifier, memoryDraft, memoryQuery } from './orchestration/engineering-memory.ts';
 import { companionDispatchInputSchema } from './orchestration/companion-contract.mjs';
 
+// Only deterministic preparation conflicts with a known local outcome cross the Companion boundary.
+const publicPreparationConflicts = new Set([
+  'PREPARATION_PATH_OCCUPIED', 'PREPARATION_BRANCH_OCCUPIED',
+  'PREPARATION_BRANCH_CONFLICT', 'PREPARATION_WORKTREE_CONFLICT',
+  'PREPARATION_GIT_IDENTITY_CONFLICT', 'PREPARATION_REPOSITORY_CONFLICT',
+  'PREPARATION_WORKTREE_ROOT_CONFLICT', 'PREPARATION_BASELINE_CONFLICT',
+  'PREPARATION_HARNESS_CONFLICT', 'PREPARATION_WORKFLOW_CONFLICT',
+  'PREPARATION_CHECKPOINT_CONFLICT',
+]);
+
 export function createMcpServer(manager, computer) {
   const server = new McpServer({ name: 'yuki-computer-agent', version: '0.2.0' });
   // HTTP creates one MCP server per request; the runtime owner must share one projection/writer.
@@ -272,7 +282,12 @@ export function createCompanionMcpServer(manager) {
       const result = await action(input);
       return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
     } catch (error) {
-      const result = { error: error instanceof HarnessError ? { code: error.code, message: error.message, details: error.details } : publicError(error) };
+      const safeCode = preparation && error instanceof Error && publicPreparationConflicts.has(error.message)
+        ? error.message : null;
+      const result = { error: preparation
+        ? safeCode ? { code: safeCode, message: safeCode }
+          : { code: 'INTERNAL_ERROR', message: 'Preparation failed' }
+        : error instanceof HarnessError ? { code: error.code, message: error.message, details: error.details } : publicError(error) };
       return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
     }
   });

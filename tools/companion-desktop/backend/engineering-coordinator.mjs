@@ -1,21 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runCompanionTurn, validateDshConfig } from './dsh/runner.mjs';
-import { getEngineeringReceipt, prepareNewRequirement, getPreparationReceipt } from './yca-engineering-client.mjs';
-
-const preparationConflictSources = new Map([
-  ['PREPARATION_PATH_OCCUPIED','git-worktree'],
-  ['PREPARATION_BRANCH_OCCUPIED','git-worktree'],
-  ['PREPARATION_BRANCH_CONFLICT','git-worktree'],
-  ['PREPARATION_WORKTREE_CONFLICT','git-worktree'],
-  ['PREPARATION_GIT_IDENTITY_CONFLICT','git-worktree'],
-  ['PREPARATION_REPOSITORY_CONFLICT','git-worktree'],
-  ['PREPARATION_WORKTREE_ROOT_CONFLICT','git-worktree'],
-  ['PREPARATION_BASELINE_CONFLICT','harness-registration'],
-  ['PREPARATION_HARNESS_CONFLICT','harness-registration'],
-  ['PREPARATION_WORKFLOW_CONFLICT','harness-workflow'],
-  ['PREPARATION_CHECKPOINT_CONFLICT','local-checkpoint'],
-]);
+import { getEngineeringReceipt, prepareNewRequirement, getPreparationReceipt,
+  preparationConflictSources } from './yca-engineering-client.mjs';
 
 const preparationConflict = error => {
   const value = typeof error?.code === 'string' ? error.code : error?.message;
