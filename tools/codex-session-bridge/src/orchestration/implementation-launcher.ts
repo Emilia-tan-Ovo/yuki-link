@@ -27,6 +27,7 @@ export const startTicketImplementationInputSchema = z.object({
     notes: z.object({ path: text, sha256: hash }).strict(),
   }).strict(),
   current_delta: z.array(z.object({ ref: text, value: z.string().max(2048).nullable() }).strict()).max(32),
+  confirmed_request: z.string().min(1).max(20000).optional(),
 }).strict();
 
 const stable = (value: unknown): string => Array.isArray(value) ? '[' + value.map(stable).join(',') + ']'
@@ -223,8 +224,9 @@ export class ImplementationLauncher {
   }
 
   private callerFingerprint(input: z.infer<typeof startTicketImplementationInputSchema>) {
-    return sha256(stable({ schema_version: input.schema_version, ticket_id: input.ticket_id,
-      authorization_ref: input.authorization_ref, expected: input.expected, current_delta: input.current_delta }));
+    const payload = { schema_version: input.schema_version, ticket_id: input.ticket_id,
+      authorization_ref: input.authorization_ref, expected: input.expected, current_delta: input.current_delta };
+    return sha256(stable(input.confirmed_request ? { ...payload, confirmed_request: input.confirmed_request } : payload));
   }
 
   private current(input: z.infer<typeof startTicketImplementationInputSchema>, frozen?: any) {
@@ -310,6 +312,7 @@ export class ImplementationLauncher {
   private prompt(snapshot: ReturnType<ImplementationLauncher['current']>, input: z.infer<typeof startTicketImplementationInputSchema>) {
     return [
       '执行 Ticket implementation。仅从以下持久化引用恢复上下文：',
+      ...(input.confirmed_request ? ['Owner 已确认工程要求（必须遵守；若与 Ticket/Notes 冲突则停止并报告）：' + input.confirmed_request] : []),
       ...snapshot.references.map(value => `- ${value}`),
       `- fixed_point: ${snapshot.ticket.comparison_baseline.commit_oid}`,
       `环境事实：${JSON.stringify(snapshot.environment.capabilities ?? null)}`,
@@ -342,6 +345,7 @@ export class ImplementationLauncher {
       authority_source: snapshot.authority.source,
       ...(snapshot.authority.companion ? { companion_dispatch: snapshot.authority.companion } : {}),
       prompt_context: { references: snapshot.references, current_delta: input.current_delta,
+        ...(input.confirmed_request ? { confirmed_request: input.confirmed_request } : {}),
         cost: { prompt_utf8_bytes: Buffer.byteLength(prompt, 'utf8'), reference_count: snapshot.references.length,
           duplicate_reference_count: snapshot.duplicateReferences } },
       preflight: { workflow_revision: snapshot.workflow.workflow_revision, subject_ref: input.expected.subject_ref,

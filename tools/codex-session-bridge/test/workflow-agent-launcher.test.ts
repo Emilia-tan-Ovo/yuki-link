@@ -138,7 +138,8 @@ test('public MCP exposes the typed Workflow Agent launcher', async t => {
 
 test('ticket-design uses fresh Main reservation, native Full Access and durable request dedupe', async t => {
   const f = fixture(t, 'ticket-design');
-  const receipt = await f.makeLauncher().start(f.input());
+  const confirmedInput = { ...f.input(), confirmed_request: '只完成设计，不修改实现代码' };
+  const receipt = await f.makeLauncher().start(confirmedInput);
   assert.equal(receipt.state, 'bound');
   assert.equal(receipt.action, 'ticket-design');
   assert.equal(receipt.destination.kind, 'main');
@@ -146,8 +147,10 @@ test('ticket-design uses fresh Main reservation, native Full Access and durable 
   assert.equal(receipt.actual_permissions.sandbox_mode, 'danger-full-access');
   assert.equal(receipt.actual_permissions.approval_policy, 'on-request');
   assert.match(f.lastPrompt, /不要修改实现代码/);
+  assert.match(f.lastPrompt, /Owner 已确认工程要求/);
+  assert.match(f.lastPrompt, /只完成设计，不修改实现代码/);
   assert.equal(f.starts, 1);
-  const retry = await f.makeLauncher().start(f.input());
+  const retry = await f.makeLauncher().start(confirmedInput);
   assert.equal(retry.deduplicated, true);
   assert.equal(retry.operation_id, receipt.operation_id);
   assert.equal(f.starts, 1);
@@ -158,7 +161,7 @@ test('ticket-design uses fresh Main reservation, native Full Access and durable 
     (error: any) => error.code === 'REQUEST_CONFLICT');
   f.harness.close();
   f.harness = new Harness(f.runtime, f.source);
-  const afterRestart = await f.makeLauncher().start(f.input());
+  const afterRestart = await f.makeLauncher().start(confirmedInput);
   assert.equal(afterRestart.operation_id, receipt.operation_id);
   assert.equal(afterRestart.deduplicated, true);
   assert.equal(f.starts, 1);

@@ -107,6 +107,7 @@ export const implementationExecutionProtectionSchema = z.object({
   authority_source: implementationAuthoritySourceIdentitySchema.optional(),
   companion_dispatch: companionDispatchProtectionSchema.optional(),
   prompt_context: z.object({ references: z.array(text).min(1).max(64), current_delta: z.array(deltaSchema).max(32),
+    confirmed_request: z.string().min(1).max(20000).optional(),
     cost: z.object({ prompt_utf8_bytes: z.number().int().nonnegative(), reference_count: z.number().int().nonnegative(),
       duplicate_reference_count: z.number().int().nonnegative() }).strict().optional() }).strict(),
   preflight: z.object({
@@ -140,7 +141,8 @@ export const reviewExecutionProtectionSchema = z.object({
   authority_source: implementationAuthoritySourceIdentitySchema,
   companion_dispatch: companionDispatchProtectionSchema.optional(),
   prompt_context: z.object({ references: z.array(text).min(1).max(64),
-    current_delta: z.array(deltaSchema).max(32) }).strict(),
+    current_delta: z.array(deltaSchema).max(32),
+    confirmed_request: z.string().min(1).max(20000).optional() }).strict(),
   preflight: z.object({ workflow_revision: z.number().int().positive(),
     subject_ref: text, subject_identity: hash }).strict(),
 }).strict();
@@ -172,7 +174,8 @@ export const workflowAgentExecutionProtectionSchema = z.object({
   authority_source: implementationAuthoritySourceIdentitySchema,
   companion_dispatch: companionDispatchProtectionSchema.optional(),
   prompt_context: z.object({ references: z.array(text).min(1).max(64),
-    current_delta: z.array(deltaSchema).max(32) }).strict(),
+    current_delta: z.array(deltaSchema).max(32),
+    confirmed_request: z.string().min(1).max(20000).optional() }).strict(),
   preflight: z.object({ workflow_revision: z.number().int().positive(), subject_ref: text,
     subject_identity: hash.nullable(), environment: implementationEnvironmentSnapshotSchema }).strict(),
 }).strict();

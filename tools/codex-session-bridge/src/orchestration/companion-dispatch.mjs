@@ -228,7 +228,7 @@ export class CompanionDispatchService {
       ...(action !== 'implementation' ? { subject_identity: action === 'review' ? authorization.subject_identity : null } : {}), content_identity: contentIdentity,
       policy: policyId(policy), ...(action === 'implementation' ? { notes: authorization.notes } : {}) };
     const launcherInput = { schema_version: 1, action, ticket_id: ticket.id, request_id: requestId,
-      authorization_ref: authorizationRef, expected,
+      authorization_ref: authorizationRef, expected, confirmed_request: content.original,
       ...(action === 'review' ? { review_id: reviewId, references: [ticket.reference], current_delta: [] }
         : action === 'ticket-design' ? { references: [ticket.reference], current_delta: [] } : { current_delta: [] }) };
     return { card_id: input.card_id, revision: input.revision, dispatch_id: input.dispatch_id,

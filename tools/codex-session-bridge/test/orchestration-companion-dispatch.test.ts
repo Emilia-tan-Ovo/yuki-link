@@ -117,6 +117,7 @@ test('design-only derives only ticket-design from a prepared current phase', asy
   const proposed = await service.preflight(request,envelope);
   assert.equal(proposed.action,'ticket-design');
   assert.equal(proposed.launcher_input.action,'ticket-design');
+  assert.equal(proposed.launcher_input.confirmed_request,design.content.original);
   assert.equal(JSON.stringify(proposed.authorization).includes('merge'),false);
   workflow.snapshot.phase='implementation';
   await assert.rejects(()=>service.preflight(request,envelope));

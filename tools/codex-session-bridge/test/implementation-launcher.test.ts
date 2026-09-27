@@ -135,7 +135,7 @@ function fixture(t: test.TestContext) {
 test('launches one fresh delegated implementation into Ticket Main and freezes actual permissions', async t => {
   const f = fixture(t);
   f.requireExecutable('node');
-  const result = await f.launcher.start(f.input());
+  const result = await f.launcher.start(f.input({ confirmed_request: '只新增 acceptance 文件' }));
   assert.equal(result.state, 'bound');
   assert.equal(result.contract.kind, 'ticket-implementation');
   assert.equal(result.contract.review_policy, 'delegated');
@@ -151,9 +151,13 @@ test('launches one fresh delegated implementation into Ticket Main and freezes a
   assert.equal(f.starts, 1);
   assert.ok(f.lastPrompt.includes('fixed_point:'));
   assert.ok(f.lastPrompt.includes('环境事实：'));
+  assert.ok(f.lastPrompt.includes('Owner 已确认工程要求'));
+  assert.ok(f.lastPrompt.includes('只新增 acceptance 文件'));
   assert.ok(Buffer.byteLength(f.lastPrompt) < 4096, 'fresh prompt stays bounded to references and facts');
   assert.equal(result.prompt_cost.prompt_utf8_bytes, Buffer.byteLength(f.lastPrompt));
   assert.equal(result.prompt_cost.duplicate_reference_count, 2, 'duplicate artifact references are counted');
+  await assert.rejects(f.launcher.start(f.input({ confirmed_request: '不同 Owner 要求' })),
+    (error: any) => error.code === 'REQUEST_CONFLICT');
 });
 
 test('required dependency is checked before reservation and again before dispatch', async t => {
