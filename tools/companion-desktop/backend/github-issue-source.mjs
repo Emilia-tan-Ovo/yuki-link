@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 const REPOSITORY = 'Emilia-tan-Ovo/yuki-link';
 const API = 'https://api.github.com';
+export const GITHUB_ISSUE_TIMEOUT_MS = 15_000;
 const canonical = (repository, item) => item && !item.pull_request && Number.isSafeInteger(item.number) && item.number > 0 && typeof item.title === 'string' && item.title.trim() && item.html_url === `https://github.com/${repository}/issues/${item.number}`
   ? { repository, number: item.number, id: Number.isSafeInteger(item.id) ? item.id : null, title: item.title, url: item.html_url,
     state: item.state ?? null, marker: item.title.match(/\b[A-Z][A-Z0-9]+-\d{3}\b/u)?.[0] ?? null,
     scope: typeof item.body === 'string' && Number.isSafeInteger(item.id) ? { digest: createHash('sha256').update(JSON.stringify({ repository, id: item.id, number: item.number, title: item.title, body: item.body })).digest('hex'), observedAt: new Date().toISOString() } : null } : null;
 
-export function githubIssueSource({ fetchImpl = fetch, timeoutMs = 5000 } = {}) {
+export function githubIssueSource({ fetchImpl = fetch, timeoutMs = GITHUB_ISSUE_TIMEOUT_MS } = {}) {
   async function read(url) {
     const response = await fetchImpl(url, { headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' }, signal: AbortSignal.timeout(timeoutMs), redirect: 'error' });
     if (response.status === 404) return null;

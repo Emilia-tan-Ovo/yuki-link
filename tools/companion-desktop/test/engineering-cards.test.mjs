@@ -7,7 +7,7 @@ import { EngineeringCardStore } from '../backend/engineering-card-store.mjs';
 import { EngineeringCards, resolveTarget, modelCandidate, localCandidate } from '../backend/engineering-cards.mjs';
 import { BackendSession } from '../backend/session.mjs';
 import { createWorkerHandler } from '../backend/worker.mjs';
-import { githubIssueSource } from '../backend/github-issue-source.mjs';
+import { GITHUB_ISSUE_TIMEOUT_MS, githubIssueSource } from '../backend/github-issue-source.mjs';
 import { harnessCandidateSource } from '../backend/harness-candidate-source.mjs';
 
 const projects = [{ key: 'yuki-link', aliases: ['Yuki', 'yuki-link'], repository: 'Emilia-tan-Ovo/yuki-link' }, { key: 'other', aliases: ['other'], repository: 'example/other' }];
@@ -101,6 +101,8 @@ test('target changes invalidate old workflow and late observation cannot attach 
   assert.equal(store.observe(first.cardId,{phase:'review'},content.ticket.url).observedWorkflow,null);
   store.close();
 });
+
+test('public GitHub adapter uses a bounded dispatch-safe timeout budget', () => { assert.equal(GITHUB_ISSUE_TIMEOUT_MS,15_000); });
 
 test('public GitHub adapter validates canonical issue and treats unavailable search as unavailable', async () => {
   const requests = [];

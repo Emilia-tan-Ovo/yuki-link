@@ -68,5 +68,6 @@
         transport: streamable-http
         url: !!js process.env.YUKI_COMPANION_MCP_URL
         failOnStartupError: true
+        toolCallTimeoutMs: 120000
         reconnect:
           enabled: false

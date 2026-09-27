@@ -25,7 +25,7 @@ export function validateComposition(output, packageDirectory) {
     if (!row || typeof row.id !== 'string' || typeof row.name !== 'string' || seen.has(row.id)) throw Error('DSH composition ambiguous');
     seen.add(row.id);
     if (row.id === 'yuki-companion-mcp') {
-      if (row.name !== '@deepseek-ai/dsh-mcp-client' || row.disabled) throw Error('DSH companion tool unavailable');
+      if (row.name !== '@deepseek-ai/dsh-mcp-client' || row.disabled || row.config?.toolCallTimeoutMs !== 120_000) throw Error('DSH companion tool unavailable');
       mcp++; continue;
     }
     if (known.get(row.id) !== row.name) throw Error('DSH profile contains an unapproved plugin');
