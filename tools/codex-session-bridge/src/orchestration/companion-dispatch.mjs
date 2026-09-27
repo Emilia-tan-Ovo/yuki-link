@@ -115,6 +115,12 @@ export class CompanionDispatchService {
       const received = service.store.received(claim.card_id,claim.revision,claim.dispatch_id);
       if (!received || sha(received) !== sha(claim) || service.store.get(claim.card_id)?.state !== 'confirmed')
         fail('COMPANION_CLAIM_CONFLICT');
+      const card = service.store.get(claim.card_id);
+      if (card.revision !== claim.revision || card.confirmation?.revision !== claim.revision
+        || card.confirmation?.actionSource !== 'desktop-user-action'
+        || sha(card.content) !== claim.provenance.content_digest
+        || card.content.original !== claim.confirmed_request)
+        fail('COMPANION_CLAIM_CONFLICT');
       if (ticketKey !== claim.ticket_key || (maybeRef ?? actionOrRef) !== claim.authorization_ref)
         fail('COMPANION_AUTHORITY_CONFLICT');
       if (claim.action === 'ticket-design' && actionOrRef !== 'ticket-design') fail('COMPANION_AUTHORITY_CONFLICT');
@@ -137,7 +143,7 @@ export class CompanionDispatchService {
       return { policy: claim.policy, authorization: claim.authorization,
         source: { schema_version: 1, kind: 'adapter', reference: claim.authorization_ref,
           canonical_path: null, sha256: sha({ claim: claim.claim_digest, policy: claim.policy, authorization: claim.authorization }) },
-        companion: claim.provenance };
+        companion: claim.provenance, confirmed_request: card.content.original };
     } };
   }
   policy(action,ticketKey,reviewId) {
@@ -228,15 +234,16 @@ export class CompanionDispatchService {
       ...(action !== 'implementation' ? { subject_identity: action === 'review' ? authorization.subject_identity : null } : {}), content_identity: contentIdentity,
       policy: policyId(policy), ...(action === 'implementation' ? { notes: authorization.notes } : {}) };
     const launcherInput = { schema_version: 1, action, ticket_id: ticket.id, request_id: requestId,
-      authorization_ref: authorizationRef, expected, confirmed_request: content.original,
+      authorization_ref: authorizationRef, expected,
       ...(action === 'review' ? { review_id: reviewId, references: [ticket.reference], current_delta: [] }
         : action === 'ticket-design' ? { references: [ticket.reference], current_delta: [] } : { current_delta: [] }) };
     return { card_id: input.card_id, revision: input.revision, dispatch_id: input.dispatch_id,
       request_id: requestId, ticket_id: ticket.id, ticket_key: ticket.key, ticket_ref: ticket.reference,
       main_conversation_id: ticket.main_conversation_id, review_id: reviewId,
       action, authorization_ref: authorizationRef, authorization, policy, provenance,
+      confirmed_request: content.original,
       github_observed_at: githubObservedAt, launcher_input: launcherInput,
-      claim_digest: sha({ launcherInput, authorization, policy, provenance }) };
+      claim_digest: sha({ launcherInput, authorization, policy, provenance, confirmed_request: content.original }) };
   }
   async dispatch(raw) {
     const input = companionDispatchInputSchema.parse(raw), envelope = this.known(input);

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { companionRequest, companionRequestPrompt } from './companion-request.ts';
 import { z } from 'zod';
 import { HarnessError } from '../harness/model.ts';
 import { companionDispatchProtectionSchema, executionContentIdentitySchema, implementationAuthoritySourceIdentitySchema,
@@ -21,7 +22,6 @@ export const startTicketReviewInputSchema = z.object({
   }).strict(),
   references: z.array(text).max(32),
   current_delta: z.array(z.object({ ref: text, value: z.string().max(2048).nullable() }).strict()).max(32),
-  confirmed_request: z.string().min(1).max(20000).optional(),
 }).strict();
 
 const stable = (value: unknown): string => Array.isArray(value) ? '[' + value.map(stable).join(',') + ']'
@@ -45,6 +45,7 @@ export interface ReviewLaunchAuthoritySource {
     authorization: z.infer<typeof reviewAuthorizationSchema> | null;
     source: z.infer<typeof implementationAuthoritySourceIdentitySchema>;
     companion?: z.infer<typeof companionDispatchProtectionSchema>;
+    confirmed_request?: string;
   };
 }
 
@@ -167,7 +168,7 @@ export class ReviewLauncher {
     const references = [...new Set([snapshot.ticket.reference, ...input.references])];
     return { references, text: [
       '执行 Ticket fresh Review，顺序检查 Standards 与 Spec 两轴。仅从以下持久化引用恢复上下文：',
-      ...(input.confirmed_request ? ['Owner 已确认工程要求（作为 Review scope；若与 Ticket/Notes 冲突则报告）：' + input.confirmed_request] : []),
+      ...(companionRequest(snapshot.authority) ? [companionRequestPrompt(companionRequest(snapshot.authority)!)] : []),
       ...references.map(value => `- ${value}`),
       '当前 delta：', ...input.current_delta.map(value => `- ${value.ref}: ${value.value ?? 'null'}`),
       `Review ID：${input.review_id}；subject：${input.expected.subject_ref}；session=fresh；destination=Review child。`,
@@ -204,7 +205,7 @@ export class ReviewLauncher {
         authorization: snapshot.authorization, authority_source: snapshot.authority.source,
         ...(snapshot.authority.companion ? { companion_dispatch: snapshot.authority.companion } : {}),
         prompt_context: { references: prompt.references, current_delta: input.current_delta,
-          ...(input.confirmed_request ? { confirmed_request: input.confirmed_request } : {}) },
+          ...(companionRequest(snapshot.authority) ? { confirmed_request: companionRequest(snapshot.authority) } : {}) },
         preflight: { workflow_revision: input.expected.workflow_revision,
           subject_ref: input.expected.subject_ref, subject_identity: input.expected.subject_identity } },
     });

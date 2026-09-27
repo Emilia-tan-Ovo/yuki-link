@@ -11,7 +11,7 @@ const make = (t: any) => {
   const directory = mkdtempSync(join(tmpdir(),'yuki-companion-yca-'));
   t.after(() => rmSync(directory,{recursive:true,force:true}));
   const cards = new EngineeringCardStore(directory);
-  const card = cards.create({ original:'实现 #130',projectKey:'yuki-link',repository:repo,
+  const card = cards.create({ original:'实现 #130，完成后 merge PR 并 deploy 线上',projectKey:'yuki-link',repository:repo,
     ticket:{id:1300,repository:repo,number:130,title:'COMPANION-005',marker:'COMPANION-005',
       url:`https://github.com/${repo}/issues/130`,scope:{digest:'a'.repeat(64)}},
     resolution:{status:'verified_existing'},desiredPhase:'implementation',endpoint:'to-pr',
@@ -75,14 +75,18 @@ test('authorization adapter rechecks claimed card and active policy at the launc
   const manager: any = {harness:{workflowHistory:{current:new Map([['ticket-1',{workflow_revision:1,assessment:{state:'verified'}}]])}},
     implementationLaunchAuthority:{snapshot:()=>({policy:{policy_id:'p',revision:1,digest:'a'.repeat(64)}})}};
   const service = new CompanionDispatchService({manager,directory});
+  const card = service.store.get(input.card_id)!;
   const claim = {card_id:input.card_id,revision:1,dispatch_id:input.dispatch_id,
     ticket_id:'ticket-1',ticket_key:'COMPANION-005',action:'ticket-design',authorization_ref:'companion:one',
     github_observed_at:new Date().toISOString(),policy:{policy_id:'p',revision:1,digest:'a'.repeat(64)},
-    authorization:{authorization_ref:'companion:one'},provenance:{schema_version:1},claim_digest:'a'.repeat(64),
+    authorization:{authorization_ref:'companion:one'},
+    provenance:{schema_version:1,content_digest:service.store.envelope(input.card_id,1).content_digest},
+    confirmed_request:card.content.original,claim_digest:'a'.repeat(64),
     launcher_input:{expected:{workflow_revision:1}}};
   manager.workflowAgentAuthority={snapshot:()=>({policy:{policy_id:'p',revision:1,digest:'a'.repeat(64)}})};
   assert.equal(service.store.claim(input.card_id,1,input.dispatch_id,claim).deduplicated,false);
   assert.equal(service.authority(claim).snapshot('COMPANION-005','ticket-design','companion:one').policy.revision,1);
+  assert.equal(service.authority(claim).snapshot('COMPANION-005','ticket-design','companion:one').confirmed_request,card.content.original);
   manager.workflowAgentAuthority.snapshot=()=>({policy:{policy_id:'p',revision:2,digest:'b'.repeat(64)}});
   assert.throws(()=>service.authority(claim).snapshot('COMPANION-005','ticket-design','companion:one'));
   service.close();
@@ -117,7 +121,8 @@ test('design-only derives only ticket-design from a prepared current phase', asy
   const proposed = await service.preflight(request,envelope);
   assert.equal(proposed.action,'ticket-design');
   assert.equal(proposed.launcher_input.action,'ticket-design');
-  assert.equal(proposed.launcher_input.confirmed_request,design.content.original);
+  assert.equal(proposed.confirmed_request,design.content.original);
+  assert.equal('confirmed_request' in proposed.launcher_input,false);
   assert.equal(JSON.stringify(proposed.authorization).includes('merge'),false);
   workflow.snapshot.phase='implementation';
   await assert.rejects(()=>service.preflight(request,envelope));

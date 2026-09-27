@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { companionRequest, companionRequestPrompt } from './companion-request.ts';
 import { z } from 'zod';
 import { HarnessError } from '../harness/model.ts';
 import { executionContentIdentitySchema, workflowAgentActionSchema,
@@ -38,7 +39,6 @@ const genericInput = z.object({ schema_version: z.literal(1), action: workflowAg
     policy: z.object({ policy_id: text, revision: z.number().int().positive(), digest: hash }).strict() }).strict(),
   references: z.array(text).max(32),
   current_delta: z.array(z.object({ ref: text, value: z.string().max(2048).nullable() }).strict()).max(32),
-  confirmed_request: z.string().min(1).max(20000).optional(),
 }).strict();
 const findingInput = genericInput.omit({ references: true, current_delta: true }).extend({
   finding: z.object({ origin_review_id: text, finding_id: text, report_ref: text,
@@ -258,7 +258,7 @@ export class WorkflowAgentLauncher {
     const criterion = input.action === 'acceptance-agent'
       ? [`验收项 ${input.criteria_ref}：${snapshot.authorization.agent_criterion!.requirement}`] : [];
     const prompt = [`执行 ${input.action}。仅从持久化引用恢复上下文：`,
-      ...(input.confirmed_request ? ['Owner 已确认工程要求（必须遵守对应阶段边界；冲突则停止并报告）：' + input.confirmed_request] : []),
+      ...(companionRequest(snapshot.authority) ? [companionRequestPrompt(companionRequest(snapshot.authority)!)] : []),
       ...references.map(value => `- ${value}`), ...finding,
       ...criterion, '当前 delta：', ...currentDelta.map(value => `- ${value.ref}: ${value.value ?? 'null'}`),
       `结构化 contract：session=fresh；destination=${phase.destination}；Owner native permissions。`, instruction].join('\n');
@@ -273,7 +273,7 @@ export class WorkflowAgentLauncher {
       policy: snapshot.policy, authorization: snapshot.authorization, authority_source: snapshot.authority.source,
       ...(snapshot.authority.companion ? { companion_dispatch: snapshot.authority.companion } : {}),
       prompt_context: { references, current_delta: currentDelta,
-        ...(input.confirmed_request ? { confirmed_request: input.confirmed_request } : {}) },
+        ...(companionRequest(snapshot.authority) ? { confirmed_request: companionRequest(snapshot.authority) } : {}) },
       preflight: { workflow_revision: input.expected.workflow_revision, subject_ref: input.expected.subject_ref,
         subject_identity: input.expected.subject_identity, environment: snapshot.environment } };
     const reserved = harness.executionOperations.reserve({ ticket_id: input.ticket_id, request_id: input.request_id,
