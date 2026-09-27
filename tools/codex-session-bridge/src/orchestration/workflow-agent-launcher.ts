@@ -240,6 +240,7 @@ export class WorkflowAgentLauncher {
     const snapshot = this.current(input);
     const { phase } = snapshot;
     const narrow = input.action === 'finding-fix' || input.action === 'focused-review';
+    const confirmedRequest = narrow ? undefined : companionRequest(snapshot.authority);
     const references = [...new Set([snapshot.ticket.reference,
       ...(narrow ? [input.finding.report_ref, ...(snapshot.authorization.finding_context_refs ?? [])]
         : [...input.references, ...snapshot.packet.retrieval.references.map((value: any) => value.location)])]
@@ -258,7 +259,7 @@ export class WorkflowAgentLauncher {
     const criterion = input.action === 'acceptance-agent'
       ? [`验收项 ${input.criteria_ref}：${snapshot.authorization.agent_criterion!.requirement}`] : [];
     const prompt = [`执行 ${input.action}。仅从持久化引用恢复上下文：`,
-      ...(companionRequest(snapshot.authority) ? [companionRequestPrompt(companionRequest(snapshot.authority)!)] : []),
+      ...(confirmedRequest ? [companionRequestPrompt(confirmedRequest)] : []),
       ...references.map(value => `- ${value}`), ...finding,
       ...criterion, '当前 delta：', ...currentDelta.map(value => `- ${value.ref}: ${value.value ?? 'null'}`),
       `结构化 contract：session=fresh；destination=${phase.destination}；Owner native permissions。`, instruction].join('\n');
@@ -273,7 +274,7 @@ export class WorkflowAgentLauncher {
       policy: snapshot.policy, authorization: snapshot.authorization, authority_source: snapshot.authority.source,
       ...(snapshot.authority.companion ? { companion_dispatch: snapshot.authority.companion } : {}),
       prompt_context: { references, current_delta: currentDelta,
-        ...(companionRequest(snapshot.authority) ? { confirmed_request: companionRequest(snapshot.authority) } : {}) },
+        ...(confirmedRequest ? { confirmed_request: confirmedRequest } : {}) },
       preflight: { workflow_revision: input.expected.workflow_revision, subject_ref: input.expected.subject_ref,
         subject_identity: input.expected.subject_identity, environment: snapshot.environment } };
     const reserved = harness.executionOperations.reserve({ ticket_id: input.ticket_id, request_id: input.request_id,
