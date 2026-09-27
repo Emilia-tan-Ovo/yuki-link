@@ -1,3 +1,4 @@
+import { digestCardContent } from './engineering-card-store.mjs';
 const DEFAULT_PROJECTS = Object.freeze([{ key: 'yuki-link', aliases: ['yuki-link', 'Yuki Link'], repository: 'Emilia-tan-Ovo/yuki-link' }]);
 const observedAt = () => new Date().toISOString();
 const short = value => typeof value === 'string' && /^0?\d{3}$/u.test(value.trim());
@@ -92,7 +93,21 @@ export class EngineeringCards {
   }
   async create(original, focus) { const candidate = await this.extract(original); const content = await this.content(original,candidate,focus ?? null); const card = this.store.create(content); return this.refresh(card.cardId); }
   async edit(cardId, expectedRevision, fields) { const current = this.store.get(cardId); if (!current) throw Error('工程卡片不存在。'); if (current.revision !== expectedRevision || current.state === 'revoked') return { conflict: true, card: current }; if (!fields || typeof fields.summary !== 'string' || fields.summary.length > 500 || typeof fields.project !== 'string' || fields.project.length > 100 || typeof fields.ticket !== 'string' || fields.ticket.length > 100 || !['','ticket-design','implementation','review','acceptance'].includes(fields.desiredPhase) || !['','design-only','to-pr'].includes(fields.endpoint) || typeof fields.mergeRequested !== 'boolean' && fields.mergeRequested !== undefined || typeof fields.deployRequested !== 'boolean' && fields.deployRequested !== undefined || typeof fields.mergeTarget !== 'string' && fields.mergeTarget !== undefined || typeof fields.deployTarget !== 'string' && fields.deployTarget !== undefined) throw Error('工程卡片输入无效。'); const original = fields.original || current.content.original; const inherited = current.content.extraAuthorization ?? explicitAuthorization(original); const extraAuthorization = Object.fromEntries(['merge','deploy'].map(kind => { const requested = fields[`${kind}Requested`] ?? Boolean(inherited[kind]?.requested); const target = (fields[`${kind}Target`] ?? inherited[kind]?.target ?? '').trim().slice(0,200); return [kind, requested ? { requested: true, target, status: target ? 'explicit' : 'needs_clarification' } : false]; })); const candidate = { project: fields.project, ticket: fields.ticket, noTicket: fields.noTicket === true, summary: fields.summary, desiredPhase: fields.desiredPhase, endpoint: fields.endpoint, extraAuthorization }; const content = await this.content(original,candidate); const edited = this.store.edit(cardId,expectedRevision,content); return edited.conflict ? edited : this.refresh(cardId); }
-  confirm(cardId, expectedRevision, source) { return this.store.confirm(cardId,expectedRevision,source); }
+  confirm(cardId, expectedRevision, source) {
+    const current = this.store.get(cardId);
+    if (!current || current.revision !== expectedRevision) return this.store.confirm(cardId,expectedRevision,source);
+    // Existing v1 confirmations remain readable, but do not acquire dispatch authority.
+    if (!current.content.ticket?.scope?.digest) return this.store.confirm(cardId,expectedRevision,source);
+    return (async () => {
+      if (!this.issueSource?.lookup) return { invalid: true, card: current };
+      const verified = await this.issueSource.lookup(current.content.repository,current.content.ticket.number);
+      if (!verified || verified.id !== current.content.ticket.id || verified.url !== current.content.ticket.url
+        || verified.marker !== current.content.ticket.marker || verified.scope?.digest !== current.content.ticket.scope.digest)
+        return { conflict: true, card: this.store.get(cardId) };
+      const contentDigest = digestCardContent(current.content);
+      return this.store.confirm(cardId,expectedRevision,source,contentDigest);
+    })();
+  }
   revoke(cardId, expectedRevision) { return this.store.revoke(cardId,expectedRevision); }
   async refresh(cardId) { const card = this.store.get(cardId); if (!card) throw Error('工程卡片不存在。'); let workflow = card.content.resolution.status === 'verified_existing' ? { phase: null, revision: null, assessment: 'source_unavailable', observedAt: observedAt() } : null; if (card.content.resolution.status === 'verified_existing' && this.workflowSource?.observe) { try { workflow = await this.workflowSource.observe(card.content.ticket); } catch { workflow = { phase: null, revision: null, assessment: 'source_unavailable', observedAt: observedAt() }; } } return this.store.observe(cardId,workflow,card.content.ticket?.url ?? (card.content.resolution.status === 'explicit_new_requirement' ? `${card.content.repository}/new-requirement` : null)); }
 }

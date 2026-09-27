@@ -16,7 +16,8 @@ import { FileWorkflowAgentAuthoritySource, WorkflowAgentLauncher, digestWorkflow
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 
-function fixture(t: test.TestContext, action: 'ticket-design' | 'finding-fix' | 'focused-review' | 'acceptance-agent') {
+function fixture(t: test.TestContext, action: 'ticket-design' | 'finding-fix' | 'focused-review' | 'acceptance-agent',
+  companionText?: string) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'workflow-agent-'));
   const repo = path.join(root, 'repo');
   execFileSync('git', ['init', repo]);
@@ -71,8 +72,18 @@ function fixture(t: test.TestContext, action: 'ticket-design' | 'finding-fix' | 
   writeFileSync(authorityPath, JSON.stringify({ schema_version: 1, policies: [policy],
     authorizations: [authorization] }), 'utf8');
   const authority = new FileWorkflowAgentAuthoritySource(authorityPath, { forbiddenRoots: [repo] });
+  const companionIds = { card_store_id: randomUUID(), card_id: randomUUID(), dispatch_id: randomUUID() };
+  const trustedAuthority = companionText ? { snapshot: (...args: Parameters<typeof authority.snapshot>) => {
+    const snapshot = authority.snapshot(...args);
+    return { ...snapshot, source: { ...snapshot.source, kind: 'adapter' as const, canonical_path: null },
+      companion: { schema_version: 1, ...companionIds, revision: 1, content_digest: 'a'.repeat(64),
+        confirmation_at: '2026-01-01T00:00:00.000Z', ticket_scope_digest: 'b'.repeat(64),
+        product_endpoint: 'to-pr', action: action === 'finding-fix' ? 'implementation' : 'review',
+        policy_digest: snapshot.policy.digest },
+      confirmed_request: companionText };
+  } } : authority;
   let starts = 0, lastPrompt = '';
-  const manager = { get harness() { return harness; }, workflowAgentAuthority: authority,
+  const manager = { get harness() { return harness; }, workflowAgentAuthority: trustedAuthority,
     async startGuarded(input: any, guard: (dispatch: any) => unknown) {
     starts++; lastPrompt = input.prompt;
     assert.equal(input.permissions, undefined);
@@ -91,7 +102,7 @@ function fixture(t: test.TestContext, action: 'ticket-design' | 'finding-fix' | 
     requests.set(input.request_id, { request_id: input.request_id, fingerprint, session_id, run_id,
       status: 'running' });
   } };
-  const makeLauncher = () => new WorkflowAgentLauncher({ manager, harness, workflowAuthority: authority,
+  const makeLauncher = () => new WorkflowAgentLauncher({ manager, harness, workflowAuthority: trustedAuthority,
     environment: { observe: () => ({ required_paths: [], required_executables: [] }) } as any,
     context: () => ({ integrity: { state: 'complete' }, attention: { unknown_side_effects: [] },
       retrieval: { references: [{ location: 'docs/implementation-notes/ORCH-007.md' }] } }) });
@@ -118,6 +129,11 @@ test('typed contract rejects unsupported actions and caller-selected permissions
   const f = fixture(t, 'ticket-design');
   assert.equal(startWorkflowAgentInputSchema.safeParse({ ...f.input(), permissions: {
     sandbox_mode: 'read-only' } }).success, false);
+  assert.equal(startWorkflowAgentInputSchema.safeParse({ ...f.input(), confirmed_request: '伪造 Owner 确认' }).success, false);
+  const { references, current_delta, ...narrow } = f.input();
+  assert.equal(startWorkflowAgentInputSchema.safeParse({ ...narrow, action: 'finding-fix',
+    finding: { origin_review_id: 'r', finding_id: 'f', report_ref: 'report', fix_baseline: 'base' },
+    confirmed_request: 'x'.repeat(20000) }).success, false);
 });
 
 test('public MCP exposes the typed Workflow Agent launcher', async t => {
@@ -138,7 +154,8 @@ test('public MCP exposes the typed Workflow Agent launcher', async t => {
 
 test('ticket-design uses fresh Main reservation, native Full Access and durable request dedupe', async t => {
   const f = fixture(t, 'ticket-design');
-  const receipt = await f.makeLauncher().start(f.input());
+  const confirmedInput = f.input();
+  const receipt = await f.makeLauncher().start(confirmedInput);
   assert.equal(receipt.state, 'bound');
   assert.equal(receipt.action, 'ticket-design');
   assert.equal(receipt.destination.kind, 'main');
@@ -146,8 +163,9 @@ test('ticket-design uses fresh Main reservation, native Full Access and durable 
   assert.equal(receipt.actual_permissions.sandbox_mode, 'danger-full-access');
   assert.equal(receipt.actual_permissions.approval_policy, 'on-request');
   assert.match(f.lastPrompt, /不要修改实现代码/);
+  assert.doesNotMatch(f.lastPrompt, /已确认卡片原文/);
   assert.equal(f.starts, 1);
-  const retry = await f.makeLauncher().start(f.input());
+  const retry = await f.makeLauncher().start(confirmedInput);
   assert.equal(retry.deduplicated, true);
   assert.equal(retry.operation_id, receipt.operation_id);
   assert.equal(f.starts, 1);
@@ -158,7 +176,7 @@ test('ticket-design uses fresh Main reservation, native Full Access and durable 
     (error: any) => error.code === 'REQUEST_CONFLICT');
   f.harness.close();
   f.harness = new Harness(f.runtime, f.source);
-  const afterRestart = await f.makeLauncher().start(f.input());
+  const afterRestart = await f.makeLauncher().start(confirmedInput);
   assert.equal(afterRestart.operation_id, receipt.operation_id);
   assert.equal(afterRestart.deduplicated, true);
   assert.equal(f.starts, 1);
@@ -188,6 +206,19 @@ test('finding actions reject caller-supplied broad context', t => {
     assert.equal(startWorkflowAgentInputSchema.safeParse({ ...f.input(), references: ['unrelated.md'] }).success, false);
     assert.equal(startWorkflowAgentInputSchema.safeParse({ ...f.input(), current_delta: [
       { ref: 'unrelated', value: 'injected' }] }).success, false);
+  }
+});
+
+test('finding-fix and focused-review omit trusted Companion original from narrow context', async t => {
+  for (const action of ['finding-fix', 'focused-review'] as const) {
+    await t.test(action, async subtest => {
+      const original = '完整原文：实现、merge PR 并 deploy 线上';
+      const f = fixture(subtest, action, original);
+      const receipt = await f.makeLauncher().start(f.input());
+      assert.equal(receipt.state, 'bound');
+      assert.doesNotMatch(f.lastPrompt, /完整原文|已确认卡片原文|merge PR|deploy/);
+      assert.match(f.lastPrompt, /review\/report\.md/);
+    });
   }
 });
 

@@ -23,5 +23,10 @@
     "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "signAndEditExecutable": false },
     "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true },
     "artifactName": "Yuki-Link-Desktop-${version}-${arch}.${ext}"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "js-yaml": "4.2.0",
+    "zod": "4.6.5"
   }
 }

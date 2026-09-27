@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { companionRequest, companionRequestPrompt } from './companion-request.ts';
 import { inspectDependency, inspectHostCapabilities } from './preflight.ts';
 import { z } from 'zod';
 import { HarnessError } from '../harness/model.ts';
-import { executionContentIdentitySchema, implementationAuthorizationSchema, implementationAuthoritySourceIdentitySchema,
+import { companionDispatchProtectionSchema, executionContentIdentitySchema, implementationAuthorizationSchema, implementationAuthoritySourceIdentitySchema,
   implementationExecutableIdentitySchema, implementationLaunchContractSchema,
   implementationPolicySnapshotSchema } from '../harness/execution-model.ts';
 
@@ -48,6 +49,8 @@ export interface ImplementationLaunchAuthoritySource {
     policy: z.infer<typeof implementationPolicySnapshotSchema>;
     authorization: z.infer<typeof implementationAuthorizationSchema> | null;
     source: z.infer<typeof implementationAuthoritySourceIdentitySchema>;
+    companion?: z.infer<typeof companionDispatchProtectionSchema>;
+    confirmed_request?: string;
   };
 }
 
@@ -222,8 +225,9 @@ export class ImplementationLauncher {
   }
 
   private callerFingerprint(input: z.infer<typeof startTicketImplementationInputSchema>) {
-    return sha256(stable({ schema_version: input.schema_version, ticket_id: input.ticket_id,
-      authorization_ref: input.authorization_ref, expected: input.expected, current_delta: input.current_delta }));
+    const payload = { schema_version: input.schema_version, ticket_id: input.ticket_id,
+      authorization_ref: input.authorization_ref, expected: input.expected, current_delta: input.current_delta };
+    return sha256(stable(payload));
   }
 
   private current(input: z.infer<typeof startTicketImplementationInputSchema>, frozen?: any) {
@@ -309,6 +313,7 @@ export class ImplementationLauncher {
   private prompt(snapshot: ReturnType<ImplementationLauncher['current']>, input: z.infer<typeof startTicketImplementationInputSchema>) {
     return [
       '执行 Ticket implementation。仅从以下持久化引用恢复上下文：',
+      ...(companionRequest(snapshot.authority) ? [companionRequestPrompt(companionRequest(snapshot.authority)!)] : []),
       ...snapshot.references.map(value => `- ${value}`),
       `- fixed_point: ${snapshot.ticket.comparison_baseline.commit_oid}`,
       `环境事实：${JSON.stringify(snapshot.environment.capabilities ?? null)}`,
@@ -339,7 +344,9 @@ export class ImplementationLauncher {
     const protection = {
       caller_fingerprint: callerFingerprint, contract, policy: snapshot.policy, authorization: snapshot.authorization,
       authority_source: snapshot.authority.source,
+      ...(snapshot.authority.companion ? { companion_dispatch: snapshot.authority.companion } : {}),
       prompt_context: { references: snapshot.references, current_delta: input.current_delta,
+        ...(companionRequest(snapshot.authority) ? { confirmed_request: companionRequest(snapshot.authority) } : {}),
         cost: { prompt_utf8_bytes: Buffer.byteLength(prompt, 'utf8'), reference_count: snapshot.references.length,
           duplicate_reference_count: snapshot.duplicateReferences } },
       preflight: { workflow_revision: snapshot.workflow.workflow_revision, subject_ref: input.expected.subject_ref,

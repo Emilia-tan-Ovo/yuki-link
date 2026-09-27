@@ -122,9 +122,28 @@ function renderMemories(entries) {
   target.value = entries.some(entry => entry.id === selected) ? selected : '';
 }
 function cardCommand(action, details = {}) { if (cardPending) return; const id = crypto.randomUUID(); cardPending = id; $('card-status').textContent = '正在保存工程卡片…'; host.send('engineering-card', { generation, id, action, ...details }); }
+const engineeringViews = new Map();
+function renderEngineeringStatus(card) {
+  const target = $('card-engineering-status'); target.replaceChildren();
+  if (!card) return;
+  const status = engineeringViews.get(`${card.cardId}:${card.revision}`);
+  const finalResponse = status?.run?.final_response;
+  const result = typeof finalResponse === 'string' && finalResponse.trim()
+    ? finalResponse.trim().slice(0, 240) : '暂无';
+  const lines = [
+    `卡片交接：${status?.card_dispatch ?? card.dispatchStatus ?? (card.dispatchId ? '未知' : '尚未派发')}`,
+    `DSH 编排回合：${status?.dsh_turn ?? '未观察到'} · exit ${status?.dsh_receipt?.exit_code ?? '未知'}`,
+    `YCA operation：${status?.engineering_operation?.id ?? '暂无'} · ${status?.engineering_operation?.state ?? '未知'}`,
+    `Sylvia run：${status?.receipt?.run_id ?? '暂无'} · ${status?.run?.status ?? '未知'}`,
+    `Sylvia 实际回复：${result}`,
+    `Workflow / Acceptance：${status?.workflow?.current?.phase ?? '未知'} / ${status?.acceptance?.status ?? '未知'}`,
+    `PR 交付：${status?.pr_delivery?.state ?? '未知'}${status?.pr_delivery?.reference ? ' · ' + status.pr_delivery.reference : ''}`,
+  ];
+  for (const line of lines) { const p = document.createElement('p'); p.textContent = line; target.append(p); }
+}
 function cardFields() { return { original: $('card-original').value, summary: $('card-summary').value, project: $('card-project').value, ticket: $('card-ticket').value, noTicket: $('card-no-ticket').checked, desiredPhase: $('card-phase').value, endpoint: $('card-endpoint').value, mergeRequested: $('card-merge').checked, mergeTarget: $('card-merge-target').value, deployRequested: $('card-deploy').checked, deployTarget: $('card-deploy-target').value }; }
 function cardDirty() { return !!cardCurrent && JSON.stringify(cardFields()) !== JSON.stringify({ original: cardCurrent.content.original, summary: cardCurrent.content.summary, project: cardCurrent.content.projectKey || '', ticket: cardCurrent.content.ticket ? '#' + cardCurrent.content.ticket.number : '', noTicket: cardCurrent.content.resolution.status === 'explicit_new_requirement', desiredPhase: cardCurrent.content.desiredPhase || '', endpoint: cardCurrent.content.endpoint || '', mergeRequested: !!cardCurrent.content.extraAuthorization?.merge?.requested, mergeTarget: cardCurrent.content.extraAuthorization?.merge?.target || '', deployRequested: !!cardCurrent.content.extraAuthorization?.deploy?.requested, deployTarget: cardCurrent.content.extraAuthorization?.deploy?.target || '' }); }
-function updateCardConfirm() { if (!cardCurrent) return; const content = cardCurrent.content, merge = content.extraAuthorization?.merge, deploy = content.extraAuthorization?.deploy; const mergeTarget = merge?.target?.trim() || '', deployTarget = deploy?.target?.trim() || '', prefix = `https://github.com/${content.repository}/pull/`; $('card-confirm').disabled = Boolean(cardPending || cardDirty() || cardCurrent.state !== 'pending' || !['verified_existing','explicit_new_requirement'].includes(content.resolution.status) || !content.desiredPhase || !content.endpoint || merge?.requested && !(/^PR\s*#[1-9]\d*$/iu.test(mergeTarget) || mergeTarget.startsWith(prefix) && /^[1-9]\d*$/u.test(mergeTarget.slice(prefix.length))) || deploy?.requested && !/^[\w.-]{2,100}$/u.test(deployTarget)); }
+function updateCardConfirm() { if (!cardCurrent) return; const content = cardCurrent.content, merge = content.extraAuthorization?.merge, deploy = content.extraAuthorization?.deploy; const mergeTarget = merge?.target?.trim() || '', deployTarget = deploy?.target?.trim() || '', prefix = `https://github.com/${content.repository}/pull/`; const supported = !content.ticket?.scope?.digest || content.endpoint === 'design-only' && content.desiredPhase === 'ticket-design' || content.endpoint === 'to-pr' && ['ticket-design','implementation','review'].includes(content.desiredPhase); $('card-confirm').disabled = Boolean(cardPending || cardDirty() || cardCurrent.state !== 'pending' || !['verified_existing','explicit_new_requirement'].includes(content.resolution.status) || !content.desiredPhase || !content.endpoint || !supported || merge?.requested && !(/^PR\s*#[1-9]\d*$/iu.test(mergeTarget) || mergeTarget.startsWith(prefix) && /^[1-9]\d*$/u.test(mergeTarget.slice(prefix.length))) || deploy?.requested && !/^[\w.-]{2,100}$/u.test(deployTarget)); }
 function renderCard(card) {
   cardCurrent = card;
   $('card-editor').hidden = !card;
@@ -151,9 +170,11 @@ function renderCard(card) {
   const workflow = card.observedWorkflow;
   $('card-workflow').textContent = workflow ? `Workflow 观察：${workflow.phase || '未知'} · revision ${workflow.revision ?? '未知'} · ${workflow.assessment || 'unknown'} · ${workflow.observedAt || '时间未知'}` : 'Workflow 观察：暂无；这不影响 Ticket 目标核验状态。';
   const authorization = ['merge','deploy'].map(kind => `${kind}：${content.extraAuthorization?.[kind]?.requested ? content.extraAuthorization[kind].target ? '显式请求 ' + content.extraAuthorization[kind].target : '已请求，对象待澄清' : '未请求'}`).join('；');
-  $('card-state').textContent = `${card.state === 'confirmed' ? `已确认 revision ${card.confirmation.revision}` : card.state === 'revoked' ? '已撤销' : '待确认'}，尚未派发。${authorization}。`;
+  $('card-state').textContent = `${card.state === 'confirmed' ? `已确认 revision ${card.confirmation.revision}` : card.state === 'revoked' ? '已撤销' : '待确认'}；交接 ${card.dispatchStatus || (card.dispatchId ? '未知' : '尚未派发')}。${authorization}。to-PR 后续连续推进尚未接入；合并与部署需独立授权。`;
+  renderEngineeringStatus(card);
   updateCardConfirm();
-  $('card-edit').disabled = card.state === 'revoked'; $('card-revoke').disabled = card.state === 'revoked';
+  $('card-edit').disabled = card.state === 'revoked' || card.dispatchStatus === 'engineering-received';
+  $('card-revoke').disabled = card.state === 'revoked' || card.dispatchStatus === 'engineering-received';
 }
 function renderCardList(entries) {
   cardEntries = entries; const selected = cardCurrent?.cardId; const select = $('card-select'); select.replaceChildren();
@@ -201,12 +222,18 @@ host.subscribe(message => {
   if (message.type === 'disconnected') { const uncertain = !!pendingRequest; voiceScope = null; voiceFinal = null; releaseRequest(); state('disconnected'); notice(uncertain ? '连接已断开，本轮提交或取消结果未知，请重新打开应用核对历史。' : '文字服务已断开，请重新打开应用。'); }
   if (message.type === 'notice') notice(message.text);
   if (message.type === 'engineering-card' || message.type === 'engineering-card-error') {
-    if (message.action === 'list' && message.type === 'engineering-card') renderCardList(message.cards);
-    else if (message.id === cardPending) {
-      cardPending = null;
-      if (message.type === 'engineering-card-error') $('card-status').textContent = message.message;
-      else { if (message.card) { cardFocusExplicit = !!verifiedFocus(message.card); renderCard(message.card); const index = cardEntries.findIndex(card => card.cardId === message.card.cardId); if (index < 0) cardEntries.unshift(message.card); else cardEntries[index] = message.card; renderCardList(cardEntries); } $('card-status').textContent = message.conflict ? '卡片已变化，请核对最新 revision 后重试。' : message.invalid ? '项目、Ticket、期望阶段或授权终点尚未明确，不能确认。' : '工程卡片已保存；尚未派发。'; }
-    }
+      if (message.action === 'list' && message.type === 'engineering-card') { renderCardList(message.cards); if (cardCurrent?.dispatchId) host.send('engineering-card', { generation, id: crypto.randomUUID(), action:'refresh', cardId:cardCurrent.cardId }); }
+      else if (message.id === cardPending) {
+        cardPending = null;
+        if (message.type === 'engineering-card-error') $('card-status').textContent = message.message;
+        else { if (message.card) { cardFocusExplicit = !!verifiedFocus(message.card); renderCard(message.card); const index = cardEntries.findIndex(card => card.cardId === message.card.cardId); if (index < 0) cardEntries.unshift(message.card); else cardEntries[index] = message.card; renderCardList(cardEntries); } if (message.engineeringStatus && message.card) { engineeringViews.set(`${message.card.cardId}:${message.card.revision}`,message.engineeringStatus); renderEngineeringStatus(message.card); } $('card-status').textContent = message.conflict ? '卡片已变化或工程已接收，请核对后刷新回执。' : message.invalid ? message.reason === 'engineering-unavailable' ? '工程运行配置未就绪，尚未确认。' : '项目、Ticket、期望阶段或授权终点尚未明确，不能确认。' : message.action === 'confirm' && message.card?.dispatchId ? '已确认，正在交给 DSH；请以 YCA 回执核对工程结果。' : '工程卡片已保存。'; }
+      }
+      else if (message.action === 'refresh' && message.card) { if (message.engineeringStatus) engineeringViews.set(`${message.card.cardId}:${message.card.revision}`,message.engineeringStatus); const index = cardEntries.findIndex(card => card.cardId === message.card.cardId); if (index >= 0) cardEntries[index] = message.card; if (cardCurrent?.cardId === message.card.cardId) renderCard(message.card); }
+  }
+  if (message.type === 'engineering-status' && cardCurrent?.cardId === message.cardId && cardCurrent?.revision === message.revision) {
+      if (message.status) engineeringViews.set(`${message.cardId}:${message.revision}`,message.status);
+      else engineeringViews.set(`${message.cardId}:${message.revision}`,{card_dispatch:'unknown',dsh_turn:message.state});
+      renderEngineeringStatus(cardCurrent);
   }
   if (message.type === 'memory' || message.type === 'memory-error') {
     if (message.action === 'list' && message.type === 'memory') { if (!$('memory-target').disabled || message.id === memoryRefreshId) { renderMemories(message.entries); $('memory-target').disabled = false; memoryRefreshId = null; if (!memoryPending) $('memory-status').textContent = message.entries.length ? '当前有效记忆已读取。' : '暂无有效陪伴记忆。'; } }
@@ -307,6 +334,8 @@ $('card-edit').onclick = () => { if (!cardCurrent) return; cardCommand('edit',{ 
 $('card-confirm').onclick = () => { if (cardCurrent && !cardPending && !cardDirty() && !$('card-confirm').disabled) cardCommand('confirm',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision }); };
 for (const id of ['card-original','card-summary','card-project','card-ticket','card-no-ticket','card-phase','card-endpoint','card-merge','card-merge-target','card-deploy','card-deploy-target']) { $(id).addEventListener('input', updateCardConfirm); $(id).addEventListener('change', updateCardConfirm); }
 $('card-revoke').onclick = () => { if (cardCurrent) cardCommand('revoke',{ cardId: cardCurrent.cardId, expectedRevision: cardCurrent.revision }); };
+$('card-refresh').onclick = () => { if (cardCurrent) cardCommand('refresh',{ cardId:cardCurrent.cardId }); };
+$('card-workbench').onclick = () => host.send('workbench-open');
 $('cancel-reply').onclick = () => {
   if (!pendingRequest || pendingRequest.cancelling) return;
   if (pendingRequest.origin === 'voice-final') void mediaUI.dispose();

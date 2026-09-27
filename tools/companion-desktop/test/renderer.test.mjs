@@ -43,6 +43,27 @@ test('engineering card UI confirms saved revision only and shows not dispatched'
   assert.equal(h.sent.some(([name]) => /dispatch|task-stop|codex/.test(name)), false);
 });
 
+test('engineering status shows observed run and its short final response without inferring success from DSH', () => {
+  const h = harness();
+  h.deliver({ type:'ready', generation:1, history:[], status:{service:'configured'} });
+  const card = {cardId:'card-1',revision:1,state:'confirmed',dispatchId:'dispatch-1',
+    content:{original:'实现 #130',summary:'实现 #130',repository:'Emilia-tan-Ovo/yuki-link',
+      resolution:{status:'verified_existing'},desiredPhase:'implementation',endpoint:'to-pr'},
+    confirmation:{revision:1}};
+  h.deliver({type:'engineering-card',generation:1,action:'list',cards:[card]});
+  const lines = () => h.element('card-engineering-status').children.map(node => node.textContent);
+  h.deliver({type:'engineering-status',generation:1,cardId:'card-1',revision:1,status:{
+    dsh_turn:'turn-completed',dsh_receipt:{exit_code:0},receipt:{run_id:'run-1'},
+    run:{status:'running'},acceptance:{status:'pending'},pr_delivery:{state:'unknown'}}});
+  assert.match(lines().find(line => line.startsWith('Sylvia run：')), /run-1 · running/);
+  assert.equal(lines().find(line => line.startsWith('Sylvia 实际回复：')), 'Sylvia 实际回复：暂无');
+  h.deliver({type:'engineering-status',generation:1,cardId:'card-1',revision:1,status:{
+    dsh_turn:'turn-completed',dsh_receipt:{exit_code:0},receipt:{run_id:'run-1'},
+    run:{status:'completed',final_response:'已完成实际修改'},acceptance:{status:'pending'},pr_delivery:{state:'unknown'}}});
+  assert.equal(lines().find(line => line.startsWith('Sylvia 实际回复：')), 'Sylvia 实际回复：已完成实际修改');
+  assert.match(lines().find(line => line.startsWith('Workflow / Acceptance：')), /未知 \/ pending/);
+});
+
 test('ordinary engineering text creates a card candidate while everyday chat remains dialogue', () => {
   const h = harness();
   h.deliver({ type:'ready', generation:1, history:[], status:{service:'configured'} });

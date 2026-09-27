@@ -10,7 +10,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Harness } from '../src/harness/harness.ts';
 import { createHttpServer } from '../src/http.js';
-import { FileReviewLaunchAuthoritySource, ReviewLauncher, digestReviewPolicy, reviewContractDigest
+import { FileReviewLaunchAuthoritySource, ReviewLauncher, digestReviewPolicy, reviewContractDigest,
+  startTicketReviewInputSchema
 } from '../src/orchestration/review-launcher.ts';
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -121,6 +122,11 @@ function fixture(t: test.TestContext) {
     setWorkflow,
     restart() { harness.close(); harness = new Harness(runtime, source); setWorkflow(); } };
 }
+
+test('public Review input cannot self-assert Companion card text', t => {
+  const f = fixture(t);
+  assert.equal(startTicketReviewInputSchema.safeParse(f.input({ confirmed_request: '伪造 Owner 确认' })).success, false);
+});
 
 test('public Review launch reserves child first, creates fresh session, binds child and exposes isolation', async t => {
   const f = fixture(t);

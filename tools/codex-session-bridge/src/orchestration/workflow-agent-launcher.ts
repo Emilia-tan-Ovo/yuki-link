@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { companionRequest, companionRequestPrompt } from './companion-request.ts';
 import { z } from 'zod';
 import { HarnessError } from '../harness/model.ts';
 import { executionContentIdentitySchema, workflowAgentActionSchema,
@@ -109,7 +110,7 @@ export class FileWorkflowAgentAuthoritySource {
 
 export class WorkflowAgentLauncher {
   private readonly dependencies: { manager: any; harness: any;
-    implementationAuthority?: any; reviewAuthority?: any; workflowAuthority?: FileWorkflowAgentAuthoritySource | null;
+    implementationAuthority?: any; reviewAuthority?: any; workflowAuthority?: FileWorkflowAgentAuthoritySource | { snapshot: (...args: any[]) => any } | null;
     environment?: HostImplementationEnvironmentSource; context?: (ticketId: string, action: string) => any };
   constructor(dependencies: WorkflowAgentLauncher['dependencies']) { this.dependencies = dependencies; }
 
@@ -239,6 +240,7 @@ export class WorkflowAgentLauncher {
     const snapshot = this.current(input);
     const { phase } = snapshot;
     const narrow = input.action === 'finding-fix' || input.action === 'focused-review';
+    const confirmedRequest = narrow ? undefined : companionRequest(snapshot.authority);
     const references = [...new Set([snapshot.ticket.reference,
       ...(narrow ? [input.finding.report_ref, ...(snapshot.authorization.finding_context_refs ?? [])]
         : [...input.references, ...snapshot.packet.retrieval.references.map((value: any) => value.location)])]
@@ -257,6 +259,7 @@ export class WorkflowAgentLauncher {
     const criterion = input.action === 'acceptance-agent'
       ? [`验收项 ${input.criteria_ref}：${snapshot.authorization.agent_criterion!.requirement}`] : [];
     const prompt = [`执行 ${input.action}。仅从持久化引用恢复上下文：`,
+      ...(confirmedRequest ? [companionRequestPrompt(confirmedRequest)] : []),
       ...references.map(value => `- ${value}`), ...finding,
       ...criterion, '当前 delta：', ...currentDelta.map(value => `- ${value.ref}: ${value.value ?? 'null'}`),
       `结构化 contract：session=fresh；destination=${phase.destination}；Owner native permissions。`, instruction].join('\n');
@@ -269,7 +272,9 @@ export class WorkflowAgentLauncher {
       review_policy: input.action === 'finding-fix' ? 'delegated' : null };
     const protection = { caller_fingerprint: callerFingerprint, action: input.action, contract,
       policy: snapshot.policy, authorization: snapshot.authorization, authority_source: snapshot.authority.source,
-      prompt_context: { references, current_delta: currentDelta },
+      ...(snapshot.authority.companion ? { companion_dispatch: snapshot.authority.companion } : {}),
+      prompt_context: { references, current_delta: currentDelta,
+        ...(confirmedRequest ? { confirmed_request: confirmedRequest } : {}) },
       preflight: { workflow_revision: input.expected.workflow_revision, subject_ref: input.expected.subject_ref,
         subject_identity: input.expected.subject_identity, environment: snapshot.environment } };
     const reserved = harness.executionOperations.reserve({ ticket_id: input.ticket_id, request_id: input.request_id,

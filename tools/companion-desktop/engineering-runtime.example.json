@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "node": "C:\\Program Files\\nodejs\\node.exe",
+  "packageDirectory": "C:\\path\\to\\installed\\node_modules\\@deepseek-ai\\dsh",
+  "home": "C:\\path\\to\\existing\\DSH_HOME",
+  "provider": "deepseek-official",
+  "model": "deepseek-v4-flash",
+  "ycaUrl": "http://127.0.0.1:7391/companion-mcp"
+}

@@ -58,6 +58,8 @@ function fixture(t: test.TestContext) {
     authority_refs: ['service-config:test'],
   };
   let sourceRevision = 1;
+  let companionText: string | undefined;
+  const companionIds = { card_store_id: randomUUID(), card_id: randomUUID(), dispatch_id: randomUUID() };
   // Launcher identities use SHA-256 bytes, not Git object IDs.
   const notesSha256 = createHash('sha256').update(notes).digest('hex');
   let available = true;
@@ -72,7 +74,12 @@ function fixture(t: test.TestContext) {
         authority_refs: ['github:#94'] };
       const sha = createHash('sha256').update(JSON.stringify({ policy, authorization, sourceRevision })).digest('hex');
       return { policy, authorization, source: { schema_version: 1 as const, kind: 'adapter' as const,
-        reference: 'fixture-authority', canonical_path: null, sha256: sha } };
+        reference: 'fixture-authority', canonical_path: null, sha256: sha },
+        ...(companionText ? { companion: { schema_version: 1, ...companionIds,
+          revision: 1, content_digest: 'a'.repeat(64),
+          confirmation_at: '2026-01-01T00:00:00.000Z', ticket_scope_digest: 'b'.repeat(64),
+          product_endpoint: 'to-pr', action: 'implementation', policy_digest: policy.digest },
+          confirmed_request: companionText } : {}) };
     },
   };
   let starts = 0;
@@ -121,6 +128,7 @@ function fixture(t: test.TestContext) {
     get lastPrompt() { return lastPrompt; },
     setAvailable(value: boolean) { available = value; }, changePolicy() { policyBody = { ...policyBody, revision: policyBody.revision + 1 }; },
     changeAuthoritySource() { sourceRevision++; },
+    setCompanionText(value: string) { companionText = value; },
     requireExecutable(name: string) { policyBody = { ...policyBody, preflight: {
       ...policyBody.preflight, required_executables: [name],
     } }; },
@@ -151,9 +159,23 @@ test('launches one fresh delegated implementation into Ticket Main and freezes a
   assert.equal(f.starts, 1);
   assert.ok(f.lastPrompt.includes('fixed_point:'));
   assert.ok(f.lastPrompt.includes('环境事实：'));
+  assert.equal(f.lastPrompt.includes('已确认卡片原文'), false);
   assert.ok(Buffer.byteLength(f.lastPrompt) < 4096, 'fresh prompt stays bounded to references and facts');
   assert.equal(result.prompt_cost.prompt_utf8_bytes, Buffer.byteLength(f.lastPrompt));
   assert.equal(result.prompt_cost.duplicate_reference_count, 2, 'duplicate artifact references are counted');
+  await assert.rejects(f.launcher.start(f.input({ confirmed_request: '伪造 Owner 确认' })),
+    (error: any) => error.code === 'INVALID_IMPLEMENTATION_LAUNCH_REQUEST');
+});
+
+test('trusted Companion original remains context while implementation authority bounds merge and deploy', async t => {
+  const f = fixture(t);
+  f.setCompanionText('实现 #130，完成后 merge PR 并 deploy 线上');
+  const result = await f.launcher.start(f.input());
+  assert.equal(result.state, 'bound');
+  assert.match(f.lastPrompt, /实现 #130，完成后 merge PR 并 deploy 线上/);
+  assert.match(f.lastPrompt, /仅作用户请求背景及范围溯源/);
+  assert.match(f.lastPrompt, /当前阶段的结构化授权与 contract 为执行依据/);
+  assert.match(f.lastPrompt, /不得执行当前阶段授权未包含的能力，包括 merge、deploy/);
 });
 
 test('required dependency is checked before reservation and again before dispatch', async t => {

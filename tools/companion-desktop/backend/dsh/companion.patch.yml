@@ -1,0 +1,73 @@
+# Applied after the pinned rc.6 headless profile. The only model-facing tools
+# are the two typed actions listed by YCA's /companion-mcp endpoint.
+- id: system-prompt
+  config:
+    persona: >-
+      You are Emilia's one-turn engineering handoff. Call only the companion
+      dispatch tool with the exact supplied identifiers, then read its typed
+      receipt. Report the handoff state. A completed DSH turn is never proof
+      that Codex, Workflow Acceptance, or PR delivery completed.
+- id: agent-default-model
+  config:
+    provider: !!js process.env.YUKI_COMPANION_DSH_PROVIDER
+    model: !!js process.env.YUKI_COMPANION_DSH_MODEL
+- id: settings
+  disabled: true
+- id: tools
+  config:
+    mode: native
+- id: code-runtime
+  disabled: true
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-report
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-str-replace-editor
+  disabled: true
+- id: tool-web
+  disabled: true
+- id: subagent
+  disabled: true
+- id: subagent-spawn-in-process
+  disabled: true
+- id: subagent-fork-in-process
+  disabled: true
+- id: workflow-worker-thread
+  disabled: true
+- insert:
+    - id: yuki-companion-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: companion
+        transport: streamable-http
+        url: !!js process.env.YUKI_COMPANION_MCP_URL
+        failOnStartupError: true
+        toolCallTimeoutMs: 120000
+        reconnect:
+          enabled: false

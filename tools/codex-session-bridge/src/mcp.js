@@ -12,6 +12,7 @@ import { DEFAULT_MODEL, DEFAULT_REASONING } from './model-policy.js';
 import { startTicketReviewInputSchema } from './orchestration/review-launcher.ts';
 import { WorkflowAgentLauncher, startWorkflowAgentInputSchema } from './orchestration/workflow-agent-launcher.ts';
 import { EngineeringMemoryStore, RuleAuthorityVerifier, memoryDraft, memoryQuery } from './orchestration/engineering-memory.ts';
+import { companionDispatchInputSchema } from './orchestration/companion-contract.mjs';
 
 export function createMcpServer(manager, computer) {
   const server = new McpServer({ name: 'yuki-computer-agent', version: '0.2.0' });
@@ -156,6 +157,16 @@ export function createMcpServer(manager, computer) {
   };
   register('manage-existing', 'start_workflow_agent', 'Preferred high-level typed Workflow Agent launcher. Fixes fresh session, destination, phase policy and Owner native permissions; returns one durable execution receipt.',
     startWorkflowAgentInputSchema, input => workflowAgent().start(input));
+  register('manage-existing', 'dispatch_confirmed_engineering_card', 'Receive one confirmed Desktop card revision and dispatch only its prepared current Workflow phase through the existing launcher.',
+    companionDispatchInputSchema, input => {
+      if (!manager.companionDispatch) throw new HarnessError('COMPANION_DISPATCH_UNAVAILABLE');
+      return manager.companionDispatch.dispatch(input);
+    });
+  register('observe', 'get_companion_engineering_receipt', 'Read the durable card claim and original YCA operation without creating execution.',
+    companionDispatchInputSchema, input => {
+      if (!manager.companionDispatch) throw new HarnessError('COMPANION_DISPATCH_UNAVAILABLE');
+      return manager.companionDispatch.get(input);
+    }, true);
   register('manage-existing', 'start_ticket_implementation', 'Compatibility wrapper for start_workflow_agent implementation; delegated Review and Ticket Main destination remain fixed.',
     startTicketImplementationInputSchema, input => {
       return workflowAgent().start({ ...input, action: 'implementation' });
@@ -227,5 +238,28 @@ export function createMcpServer(manager, computer) {
       cwd: z.string().min(1), path: z.string().min(1), staged: z.boolean().optional(),
     }, input => computer.gitQuery(input, 'diff'), true);
   }
+  return server;
+}
+
+// Dedicated DSH surface: discovery cannot expose YCA's administrator tools.
+export function createCompanionMcpServer(manager) {
+  const server = new McpServer({ name: 'yuki-companion-engineering', version: '1.0.0' });
+  const register = (name, readOnly, action) => server.registerTool(name, {
+    inputSchema: companionDispatchInputSchema,
+    description: readOnly ? 'Read the original engineering receipt for this dispatch.'
+      : 'Dispatch one confirmed, prepared Desktop engineering card revision.',
+    annotations: { readOnlyHint: readOnly, idempotentHint: true, destructiveHint: false },
+  }, async input => {
+    try {
+      if (!manager.companionDispatch) throw new HarnessError('COMPANION_DISPATCH_UNAVAILABLE');
+      const result = await action(input);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
+    } catch (error) {
+      const result = { error: error instanceof HarnessError ? { code: error.code, message: error.message, details: error.details } : publicError(error) };
+      return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
+    }
+  });
+  register('dispatch_confirmed_engineering_card', false, input => manager.companionDispatch.dispatch(input));
+  register('get_companion_engineering_receipt', true, input => manager.companionDispatch.get(input));
   return server;
 }
