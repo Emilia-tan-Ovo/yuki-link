@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runCompanionTurn, validateDshConfig } from './dsh/runner.mjs';
-import { getEngineeringReceipt } from './yca-engineering-client.mjs';
+import { getEngineeringReceipt, prepareNewRequirement, getPreparationReceipt } from './yca-engineering-client.mjs';
 
 export function loadEngineeringConfig(directory) {
   const file = join(directory,'engineering-runtime.json');
@@ -20,7 +20,21 @@ export class EngineeringCoordinator {
     return { schema_version:1, card_store_id:envelope.card_store_id, card_id:card.cardId,
       revision:card.revision, dispatch_id:envelope.dispatch_id };
   }
+  preparationInput(card) { return { card_store_id:this.store.storeId,
+    card_id:card.cardId,revision:card.revision }; }
+  async prepare(card) {
+    if (card.preparationStatus !== 'authorized') return this.status(card);
+    try { const receipt = await prepareNewRequirement(this.config.ycaUrl,this.preparationInput(card));
+      return { preparation:receipt }; }
+    catch { return { preparation:{ preparation_for_ticket_design:{state:'unknown',
+      blockers:['PREPARATION_OUTCOME_UNKNOWN']},unknown_side_effects:['preparation-transport'] } }; }
+  }
   async status(card) {
+    if (card.content.resolution?.status === 'explicit_new_requirement') {
+      try { return { preparation:await getPreparationReceipt(this.config.ycaUrl,this.preparationInput(card)) }; }
+      catch { return { preparation:{ preparation_for_ticket_design:{state:'unknown',
+        blockers:['PREPARATION_RECEIPT_UNAVAILABLE']},unknown_side_effects:[] } }; }
+    }
     const input = this.input(card);
     if (!input) return { card_dispatch:'not-dispatched', dsh_turn:'not-started', engineering_operation:null,
       run:null, workflow:null, acceptance:null, pr_delivery:{state:'unknown'} };

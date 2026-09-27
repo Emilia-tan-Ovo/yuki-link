@@ -9,6 +9,7 @@ import { BackendSession } from '../backend/session.mjs';
 import { createWorkerHandler } from '../backend/worker.mjs';
 import { GITHUB_ISSUE_TIMEOUT_MS, githubIssueSource } from '../backend/github-issue-source.mjs';
 import { harnessCandidateSource } from '../backend/harness-candidate-source.mjs';
+import { DatabaseSync } from 'node:sqlite';
 
 const projects = [{ key: 'yuki-link', aliases: ['Yuki', 'yuki-link'], repository: 'Emilia-tan-Ovo/yuki-link' }, { key: 'other', aliases: ['other'], repository: 'example/other' }];
 const issue = (repository, number, title = 'COMPANION-004') => ({ repository, number, title, url: `https://github.com/${repository}/issues/${number}`, state: 'closed' });
@@ -29,6 +30,71 @@ test('content revisions are immutable; confirmation, edit and revoke check revis
   assert.equal(store.confirm(created.cardId, 2, 'desktop-user-action').conflict, true);
   store.close(); store = new EngineeringCardStore(dir);
   assert.equal(store.get(created.cardId).revision, 2); assert.equal(store.get(created.cardId).state, 'revoked'); store.close();
+});
+
+test('no-ticket preparation authority is explicit, versioned, and old confirmations never upgrade', async t => {
+  const dir = await fixture(t); let store = new EngineeringCardStore(dir);
+  const content = { original: 'yuki-link 新需求，只做设计', summary: '设计新需求', projectKey: 'yuki-link',
+    repository: 'Emilia-tan-Ovo/yuki-link', ticket: null,
+    resolution: { status: 'explicit_new_requirement', source: 'owner-explicit' },
+    desiredPhase: 'ticket-design', endpoint: 'design-only', extraAuthorization: { merge: false, deploy: false } };
+  const old = store.create(content);
+  assert.equal(store.confirm(old.cardId, 1, 'desktop-user-action').card.state, 'confirmed');
+  assert.equal(store.get(old.cardId).preparationStatus, 'not-authorized');
+  const changed = store.edit(old.cardId, 1, { ...content, preparationAuthorization: {
+    schemaVersion: 1, issue: true, worktree: true, forbidden: ['implementation','pr','merge','deploy'] } });
+  assert.equal(changed.revision, 2);
+  assert.equal(store.get(old.cardId).preparationStatus, 'not-authorized');
+  const confirmed = store.confirm(old.cardId, 2, 'desktop-user-action');
+  assert.equal(confirmed.card.preparationStatus, 'authorized');
+  assert.equal(confirmed.card.content.ticket, null);
+  store.close(); store = new EngineeringCardStore(dir);
+  assert.equal(store.get(old.cardId).preparationStatus, 'authorized');
+  assert.equal(store.revision(old.cardId, 1).content.preparationAuthorization, undefined);
+  store.close();
+});
+
+test('preparation identity and side-effect receipts survive reopen and block card edits', async t => {
+  const dir = await fixture(t); let store = new EngineeringCardStore(dir);
+  const content = { original: 'yuki-link 新需求，只做设计', summary: '设计新需求', projectKey: 'yuki-link',
+    repository: 'Emilia-tan-Ovo/yuki-link', ticket: null, resolution: { status: 'explicit_new_requirement' },
+    desiredPhase: 'ticket-design', endpoint: 'design-only', extraAuthorization: { merge:false, deploy:false },
+    preparationAuthorization: { schemaVersion:1, issue:true, worktree:true,
+      forbidden:['implementation','pr','merge','deploy'] } };
+  const card = store.create(content); store.confirm(card.cardId,1,'desktop-user-action');
+  const marker = 'yuki-preparation:11111111-1111-4111-8111-111111111111';
+  const first = store.beginPreparation(card.cardId,1,marker);
+  assert.equal(first.payloadDigest.length,64);
+  assert.equal(store.beginPreparation(card.cardId,1,marker).preparationId,first.preparationId);
+  assert.equal(store.edit(card.cardId,1,{...content,summary:'changed'}).conflict,true);
+  const next = store.updatePreparation(first.preparationId,1,record => ({ ...record,
+    unknownSideEffects:['github-issue-create'] }));
+  assert.equal(next.version,2);
+  store.close(); store = new EngineeringCardStore(dir);
+  assert.deepEqual(store.preparation(card.cardId,1).unknownSideEffects,['github-issue-create']);
+  assert.equal(store.updatePreparation(first.preparationId,1,record => record).conflict,true);
+  assert.equal(store.beginPreparation(card.cardId,1,'different').conflict,true);
+  store.close();
+});
+
+test('v1 and v2 card databases migrate without upgrading old confirmation authority', async t => {
+  for (const version of [1,2]) {
+    const dir = await fixture(t); let store = new EngineeringCardStore(dir);
+    const card = store.create({ original:'旧新需求', summary:'旧新需求', projectKey:'yuki-link',
+      repository:'Emilia-tan-Ovo/yuki-link', ticket:null,
+      resolution:{status:'explicit_new_requirement'},desiredPhase:'ticket-design',endpoint:'design-only',
+      extraAuthorization:{merge:false,deploy:false} });
+    store.confirm(card.cardId,1,'desktop-user-action'); store.close();
+    const database = new DatabaseSync(join(dir,'engineering-cards.sqlite'));
+    database.exec('DROP TABLE card_preparations');
+    if (version === 1) database.exec('DROP TABLE card_dispatches; DROP TABLE card_store_identity');
+    database.exec(`PRAGMA user_version=${version}`); database.close();
+    store = new EngineeringCardStore(dir);
+    assert.equal(store.get(card.cardId).state,'confirmed');
+    assert.equal(store.get(card.cardId).preparationStatus,'not-authorized');
+    assert.equal(store.preparation(card.cardId,1),null);
+    store.close();
+  }
 });
 
 test('resolver separates verified ticket, no-ticket intent, ambiguity, unavailable source and workflow freshness', async () => {
