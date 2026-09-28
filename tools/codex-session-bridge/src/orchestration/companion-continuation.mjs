@@ -11,6 +11,7 @@ import { reviewContractDigest } from './review-launcher.ts';
 import { HarnessError } from '../harness/model.ts';
 import { GhPreparationTransport } from './companion-preparation.mjs';
 import { githubIssueSource } from '../../../companion-desktop/backend/github-issue-source.mjs';
+import { issueAcceptanceCriteria, notesAcceptancePlan, candidateMatchesPlan } from './companion-acceptance-plan.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const fail = code => { throw new HarnessError(code); };
@@ -27,17 +28,6 @@ const identity = subject => {
   }
   return null;
 };
-// #132 Acceptance criteria, version 1. Exact Issue text is the authority for this
-// bounded producer; a design result may request more evidence but cannot weaken it.
-const acceptance132 = Object.freeze({version:1,issue:'https://github.com/Emilia-tan-Ovo/yuki-link/issues/132',
-  criteria:[
-    {text:'确认目标与终点后常规阶段连续推进；只设计样例不实现，授权到 PR 样例交付真实 PR，不擅自合并/部署。',source_kind:'external-observation'},
-    {text:'沿用 006 的准备及授权交接，不退回 ChatGPT 人工预制工程状态；每一步根据既有事实选择对应能力，不另存一套竞争工程 phase。',source_kind:'harness-run'},
-    {text:'fresh 实现/Review 及必要修复遵守既有协作规则，原 Harness Main/Review 分离、运行归属、diff 与结果继续可查。',source_kind:'agent-session'},
-    {text:'产品/范围实质变化或无法确认的状态才说明具体阻碍；常规准备和核对不制造新的逐阶段 Owner 批准点。',source_kind:'external-observation'},
-    {text:'一条受控代表性任务从确认到终点可复核，正确区分 run 完成、验收完成和 PR 交付。修复路径用必要确定性样例覆盖，不为凑流程特意制造一次真实 finding。',source_kind:'external-observation'},
-  ]});
-
 export class CompanionContinuationService {
   constructor({manager,directory,computer=null,projects=[],preparation=null,dispatch=null,issueSource=githubIssueSource(),
     issueTransport=new GhPreparationTransport(),delivery=null}) {
@@ -149,6 +139,44 @@ export class CompanionContinuationService {
     return this.evidence.operation(ticket.id,requestId,'ticket-design','ticket-design',
       ticket.expected_worktree,expected);
   }
+  async acceptanceAuthority(context,content) {
+    const {card,ticket,link,binding}=context;
+    const number=link.binding_kind==='dispatch' ? card.content.ticket.number:binding.bindings.issue.number;
+    const id=link.binding_kind==='dispatch' ? card.content.ticket.id:binding.bindings.issue.id;
+    const issue=await this.issueSource.details(card.content.repository,number).catch(()=>null);
+    if (!issue || issue.id!==id || issue.url!==ticket.reference || typeof issue.body!=='string')
+      return {state:'unknown',reason:'COMPANION_ACCEPTANCE_ISSUE_UNKNOWN'};
+    const criteria=issueAcceptanceCriteria(issue.body);
+    const plan=notesAcceptancePlan(content,ticket.reference,criteria);
+    if (!plan) return {state:'blocked',reason:'COMPANION_ACCEPTANCE_AUTHORITY_CONFLICT'};
+    return {state:'completed',plan,notes_sha256:hash(content),
+      issue_criteria_sha256:plan.criteria_sha256};
+  }
+  notesAtSubject(ticket,head) {
+    try {
+      return execFileSync('git',['--no-optional-locks','show',
+        `${head}:docs/implementation-notes/${ticket.key}.md`],{
+        cwd:ticket.expected_worktree,encoding:'utf8',windowsHide:true,shell:false,
+        timeout:10_000,maxBuffer:1024*1024});
+    } catch { return null; }
+  }
+  obligationDigest(ticket,authority) {
+    return hash(JSON.stringify({issue_ref:ticket.reference,
+      issue_criteria_sha256:authority.issue_criteria_sha256,
+      notes_sha256:authority.notes_sha256,plan:authority.plan}));
+  }
+  async acceptanceBindingCurrent(context,head) {
+    const {card,ticket}=context;
+    const saved=this.store.continuationAction(card.cardId,card.revision,
+      'boundary:acceptance-collection');
+    const filename=path.join(ticket.expected_worktree,'docs','implementation-notes',`${ticket.key}.md`);
+    const content=existsSync(filename) ? readFileSync(filename,'utf8'):null;
+    const authority=await this.acceptanceAuthority(context,content);
+    return Boolean(saved?.attempt_state==='verified' && authority.state==='completed'
+      && this.notesAtSubject(ticket,head)===content
+      && saved.intent.predecessor?.obligation_version===authority.plan.schema_version
+      && saved.intent.predecessor?.obligation_sha256===this.obligationDigest(ticket,authority));
+  }
   async designEvidence(raw,context,initial) {
     if (initial.state!=='completed') return initial;
     const {link,binding,ticket,card}=context;
@@ -157,6 +185,8 @@ export class CompanionContinuationService {
     if (!existsSync(filename)) return {state:'unknown',reason:'COMPANION_DESIGN_NOTES_MISSING'};
     const bytes=readFileSync(filename);
     const content=bytes.toString('utf8');
+    const authority=await this.acceptanceAuthority(context,content);
+    if (authority.state!=='completed') return authority;
     if (link.binding_kind==='dispatch' && binding.action!=='ticket-design') {
       const workflow=this.manager.harness.workflowHistory.current.get(ticket.id);
       const artifact=workflow?.snapshot?.artifacts?.find(value=>value.role==='implementation-notes'
@@ -172,6 +202,8 @@ export class CompanionContinuationService {
     }
     const candidate=this.designResult(context);
     if (candidate.state!=='completed') return candidate;
+    if (!candidateMatchesPlan(candidate.value.acceptance_plan,authority.plan))
+      return {state:'blocked',reason:'COMPANION_ACCEPTANCE_PLAN_SCOPE_CONFLICT'};
     if (candidate.value.product_decision_required || candidate.value.product_decisions.length)
       return {state:'blocked',reason:'PRODUCT_DECISION_REQUIRED'};
     if (!/^### Context Plan|^## Context Plan/mu.test(content)
@@ -925,36 +957,17 @@ export class CompanionContinuationService {
       || harness.workflowHistory.source.assess(ticket,workflow.snapshot).state!=='verified')
       fail('COMPANION_ACCEPTANCE_SUBJECT_UNVERIFIED');
     const design=this.designResult(context);
+    const filename=path.join(ticket.expected_worktree,'docs','implementation-notes',`${ticket.key}.md`);
+    const content=existsSync(filename) ? readFileSync(filename,'utf8'):null;
+    const authority=await this.acceptanceAuthority(context,content);
+    if (authority.state!=='completed') return {...receipt,next_action:{action:'collect-acceptance',
+      state:authority.state,reason:authority.reason}};
+    if (this.notesAtSubject(ticket,workflow.snapshot.subject.head)!==content)
+      return {...receipt,next_action:{action:'collect-acceptance',state:'blocked',
+        reason:'COMPANION_ACCEPTANCE_AUTHORITY_CONFLICT'}};
+    const obligation=authority.plan.criteria;
     const plan=design?.state==='completed' ? design.value.acceptance_plan:null;
-    if (design && !plan?.length) return {...receipt,next_action:{action:'collect-acceptance',state:'blocked',
-      reason:'COMPANION_ACCEPTANCE_PLAN_MISSING'}};
-    const issueNumber=link.binding_kind==='dispatch' ? card.content.ticket.number:binding.bindings.issue.number;
-    const issue=await this.issueSource.details(card.content.repository,issueNumber).catch(()=>null);
-    if (!issue || issue.id!==(link.binding_kind==='dispatch'
-      ? card.content.ticket.id:binding.bindings.issue.id))
-      return {...receipt,next_action:{action:'collect-acceptance',state:'unknown',
-        reason:'COMPANION_ACCEPTANCE_ISSUE_UNKNOWN'}};
-    const section=/^## Acceptance criteria[ \t]*\r?\n([\s\S]*?)(?=^## |$(?![\s\S]))/imu.exec(issue.body)?.[1] ?? '';
-    const checklist=section.split(/\r?\n/u).filter(value=>/^\s*- \[[ xX]\] /u.test(value));
-    const required=checklist.map((_,index)=>`AC${index+1}`);
-    const obligation=ticket.reference===acceptance132.issue
-      && checklist.length===acceptance132.criteria.length
-      && checklist.every((line,index)=>line.replace(/^\s*- \[[ xX]\] /u,'').trim()
-        ===acceptance132.criteria[index].text)
-      ? acceptance132.criteria.map((value,index)=>({criteria_ref:`AC${index+1}`,
-        source_kind:value.source_kind})) : null;
-    if (!obligation) return {...receipt,next_action:{action:'collect-acceptance',state:'blocked',
-      reason:'COMPANION_ACCEPTANCE_AUTHORITY_CONFLICT'}};
-    if (!required.length || plan?.some(value=>value.source_kind==='pr-delivery')
-      || plan && new Set(plan.map(value=>value.criteria_ref)).size!==plan.length
-      || plan?.some(value=>!/^AC[1-9][0-9]{0,2}$/u.test(value.criteria_ref))
-      || plan && required.length!==plan.length
-      || plan && required.some(value=>!plan.some(item=>item.criteria_ref===value))
-      || plan && obligation.some(value=>{
-        const proposed=plan.find(item=>item.criteria_ref===value.criteria_ref)?.source_kind;
-        return proposed!==value.source_kind
-          && !(value.source_kind==='harness-run' && proposed==='external-observation');
-      }))
+    if (!candidateMatchesPlan(plan,authority.plan))
       return {...receipt,next_action:{action:'collect-acceptance',state:'blocked',
         reason:'COMPANION_ACCEPTANCE_PLAN_SCOPE_CONFLICT'}};
     const snapshot=workflow.snapshot;
@@ -1034,8 +1047,9 @@ export class CompanionContinuationService {
       next_action:{action:'collect-acceptance',state:'blocked',
         reason:'COMPANION_ACCEPTANCE_EVIDENCE_PENDING'}};
     this.movePhase(context,'acceptance','acceptance-collection',
-      {plan_sha256:design?.sha256 ?? null,obligation_version:acceptance132.version,
-        obligation_sha256:hash(JSON.stringify(acceptance132)),subject_head:snapshot.subject.head},next=>{
+      {plan_sha256:design?.sha256 ?? null,obligation_version:authority.plan.schema_version,
+        obligation_sha256:this.obligationDigest(ticket,authority),
+        subject_head:snapshot.subject.head},next=>{
         next.acceptance={acceptance_id:`companion-acceptance:${card.cardId}:${card.revision}`,
           status:'passed',actor:{name:'Emilia',method:'deterministic'},
           subject_ref:next.subject.subject_id,criteria,
@@ -1067,6 +1081,8 @@ export class CompanionContinuationService {
     const summary=this.manager.harness.workflowHistory.summary(ticket.id);
     if (!summary.acceptance?.accepted || summary.assessment?.state!=='verified')
       fail('COMPANION_PR_ACCEPTANCE_NOT_VERIFIED');
+    if (!await this.acceptanceBindingCurrent(context,workflow.snapshot.subject.head))
+      fail('COMPANION_ACCEPTANCE_AUTHORITY_CONFLICT');
     const fix=this.store.continuationActions(card.cardId,card.revision)
       .find(value=>value.slot.startsWith('finding-fix-'));
     const subjectKey=fix ? `fix-${hash(fix.intent.origin_review_id).slice(0,32)}`:'implementation';
@@ -1109,6 +1125,8 @@ export class CompanionContinuationService {
     if (`workflow:${context.ticket.id}:${workflow?.workflow_revision}`!==intent.acceptance_ref
       || identity(workflow.snapshot.subject)!==intent.subject_identity)
       fail('COMPANION_PR_ACCEPTANCE_CHANGED');
+    if (!await this.acceptanceBindingCurrent(context,workflow.snapshot.subject.head))
+      fail('COMPANION_ACCEPTANCE_AUTHORITY_CONFLICT');
     const issueNumber=context.link.binding_kind==='dispatch'
       ? context.card.content.ticket.number:context.binding.bindings.issue.number;
     const issue=await this.issueSource.details(context.card.content.repository,issueNumber).catch(()=>null);

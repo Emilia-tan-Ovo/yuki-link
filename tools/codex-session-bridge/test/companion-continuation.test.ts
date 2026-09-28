@@ -19,6 +19,15 @@ const issueCriteria=[
   '产品/范围实质变化或无法确认的状态才说明具体阻碍；常规准备和核对不制造新的逐阶段 Owner 批准点。',
   '一条受控代表性任务从确认到终点可复核，正确区分 run 完成、验收完成和 PR 交付。修复路径用必要确定性样例覆盖，不为凑流程特意制造一次真实 finding。',
 ];
+const writePlan=(dir:string,key:string,ref:string,texts:string[],kinds:string[])=>{
+  const criteria=texts.map((text,index)=>({criteria_ref:`AC${index+1}`,text}));
+  const plan={schema_version:1,issue_ref:ref,criteria_sha256:digest(JSON.stringify(criteria)),
+    criteria:criteria.map((item,index)=>({...item,source_kind:kinds[index]}))};
+  const filename=join(dir,'docs','implementation-notes',`${key}.md`);
+  mkdirSync(dirname(filename),{recursive:true});
+  writeFileSync(filename,`## Acceptance Evidence Plan\n\`\`\`json\n${JSON.stringify(plan)}\n\`\`\`\n`, 'utf8');
+  return filename;
+};
 
 test('registered confirmation stops at design-only and exposes implementation only for to-pr',async t=>{
   const dir=mkdtempSync(join(tmpdir(),'companion-continuation-'));
@@ -55,9 +64,14 @@ test('registered confirmation stops at design-only and exposes implementation on
 });
 
 test('Acceptance rejects a complete plan that downgrades #132 external and session obligations',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'companion-acceptance-'));
+  try {
   const service=Object.create(CompanionContinuationService.prototype) as any;
-  const ticket={id:'ticket-132',expected_worktree:'unused',
+  const ticket={id:'ticket-132',key:'COMPANION-007',expected_worktree:dir,
     reference:'https://github.com/Emilia-tan-Ovo/yuki-link/issues/132'};
+  writePlan(dir,ticket.key,ticket.reference,issueCriteria,
+    ['external-observation','harness-run','agent-session','external-observation','external-observation']);
+  service.notesAtSubject=()=>readFileSync(join(dir,'docs','implementation-notes',`${ticket.key}.md`),'utf8');
   const card={cardId:'card-1',revision:1,content:{repository:'Emilia-tan-Ovo/yuki-link',
     ticket:{number:132,id:132}}};
   const context={card,ticket,link:{binding_kind:'dispatch'},binding:null};
@@ -66,7 +80,7 @@ test('Acceptance rejects a complete plan that downgrades #132 external and sessi
     findings:[],artifacts:[],runtime_refs:[]};
   service.manager={harness:{workflowHistory:{current:{get:()=>({snapshot})},
     source:{assess:()=>({state:'verified',artifacts:[]})}}}};
-  service.issueSource={details:async()=>({id:132,body:'## Acceptance criteria\n'
+  service.issueSource={details:async()=>({id:132,url:ticket.reference,body:'## Acceptance criteria\n'
     +issueCriteria.map(value=>`- [ ] ${value}`).join('\n')+'\n\n## Notes\nOther'})};
   service.store={continuationActions:()=>[]};
   service.mechanical={suiteReceipt:()=>({state:'passed',head:'a'.repeat(40),task_id:'task-1'}),
@@ -88,6 +102,86 @@ test('Acceptance rejects a complete plan that downgrades #132 external and sessi
   const downgraded=await service.collectAcceptance(locator,context,{schema_version:1});
   assert.equal(downgraded.next_action.reason,'COMPANION_ACCEPTANCE_PLAN_SCOPE_CONFLICT');
   assert.equal(recorded,0);
+  } finally { rmSync(dir,{recursive:true,force:true}); }
+});
+
+test('a new Issue uses its own Notes obligations and blocks checklist or Notes drift',async t=>{
+  const dir=mkdtempSync(join(tmpdir(),'companion-new-issue-'));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const ref='https://github.com/Emilia-tan-Ovo/yuki-link/issues/901';
+  const texts=['Repository tests pass','Reviewed change is current','Commit matches the reviewed subject'];
+  const kinds=['repository-test','review','git-subject'];
+  const notes=writePlan(dir,'SAMPLE-901',ref,texts,kinds);
+  const committedNotes=readFileSync(notes,'utf8');
+  const ticket={id:'ticket-901',key:'SAMPLE-901',reference:ref,expected_worktree:dir};
+  const card={cardId:'card-901',revision:1,content:{repository:'Emilia-tan-Ovo/yuki-link',
+    ticket:{id:901,number:901}}};
+  const context={card,ticket,link:{binding_kind:'dispatch'},binding:null};
+  let issueTexts=[...texts];
+  const service=Object.create(CompanionContinuationService.prototype) as any;
+  service.issueSource={details:async()=>({id:901,url:ref,body:'## Acceptance criteria\n'
+    +issueTexts.map(value=>`- [ ] ${value}`).join('\n')+'\n'})};
+  service.notesAtSubject=()=>committedNotes;
+  service.manager={harness:{workflowHistory:{current:{get:()=>({snapshot:{phase:'acceptance',
+    subject:{head:'b'.repeat(40),subject_id:'subject-901'},reviews:[{mode:'full',status:'passed',
+      applicability:'verified',review_id:'review-901'}],findings:[],artifacts:[],runtime_refs:[]}})},
+    source:{assess:()=>({state:'verified',artifacts:[]})}}}};
+  service.store={continuationActions:()=>[]};
+  service.mechanical={suiteReceipt:()=>({state:'pending',head:'a'.repeat(40),task_id:'task-901'}),
+    reconcileCommit:()=>({state:'committed',parent:'a'.repeat(40),oid:'b'.repeat(40)})};
+  service.actionEvidence=()=>({state:'completed',run_id:'run-901'});
+  service.designResult=()=>({state:'completed',sha256:'c'.repeat(64),value:{acceptance_plan:
+    kinds.map((source_kind,index)=>({criteria_ref:`AC${index+1}`,source_kind}))}});
+  service.movePhase=()=>{throw Error('fixture must stop before recording Acceptance');};
+  const locator={card_id:'card-901',revision:1};
+  const receipt={schema_version:1};
+  const collected=await service.collectAcceptance(locator,context,receipt);
+  assert.equal(collected.next_action.reason,'COMPANION_ACCEPTANCE_EVIDENCE_PENDING');
+  assert.deepEqual(collected.acceptance_evidence.criteria.map((item:any)=>item.criteria_ref),
+    ['AC1','AC2','AC3']);
+  const authority=await service.acceptanceAuthority(context,committedNotes);
+  service.store.continuationAction=()=>({attempt_state:'verified',intent:{predecessor:{
+    obligation_version:1,obligation_sha256:service.obligationDigest(ticket,authority)}}});
+  assert.equal(await service.acceptanceBindingCurrent(context,'b'.repeat(40)),true);
+  writeFileSync(notes,committedNotes+'\n## Implementation Handoff\nchanged\n','utf8');
+  assert.equal(await service.acceptanceBindingCurrent(context,'b'.repeat(40)),false);
+  assert.equal((await service.collectAcceptance(locator,context,receipt)).next_action.reason,
+    'COMPANION_ACCEPTANCE_AUTHORITY_CONFLICT');
+  writeFileSync(notes,committedNotes,'utf8');
+  issueTexts=[texts[1],texts[0],texts[2]];
+  assert.equal((await service.collectAcceptance(locator,context,receipt)).next_action.reason,
+    'COMPANION_ACCEPTANCE_AUTHORITY_CONFLICT');
+  issueTexts=[...texts]; issueTexts[0]+=' changed';
+  assert.equal((await service.collectAcceptance(locator,context,receipt)).next_action.reason,
+    'COMPANION_ACCEPTANCE_AUTHORITY_CONFLICT');
+  issueTexts=[...texts]; issueTexts[0]+=' ';
+  assert.equal((await service.collectAcceptance(locator,context,receipt)).next_action.reason,
+    'COMPANION_ACCEPTANCE_AUTHORITY_CONFLICT');
+  issueTexts=[...texts];
+  writeFileSync(notes,'## Test Plan\nmissing plan\n','utf8');
+  assert.equal((await service.designEvidence({},context,{state:'completed'})).reason,
+    'COMPANION_ACCEPTANCE_AUTHORITY_CONFLICT');
+  writeFileSync(notes,'## Acceptance Evidence Plan\n```json\n{broken}\n```\n','utf8');
+  assert.equal((await service.designEvidence({},context,{state:'completed'})).reason,
+    'COMPANION_ACCEPTANCE_AUTHORITY_CONFLICT');
+  writePlan(dir,'SAMPLE-901',ref,[texts[0],texts[2],texts[1]],kinds);
+  assert.equal((await service.designEvidence({},context,{state:'completed'})).reason,
+    'COMPANION_ACCEPTANCE_AUTHORITY_CONFLICT');
+  writePlan(dir,'SAMPLE-901',ref,texts,kinds);
+  writeFileSync(notes,committedNotes+'\n## Acceptance Evidence Plan\nmissing fence\n','utf8');
+  assert.equal((await service.designEvidence({},context,{state:'completed'})).reason,
+    'COMPANION_ACCEPTANCE_AUTHORITY_CONFLICT');
+  writeFileSync(notes,committedNotes,'utf8');
+  service.designResult=()=>({state:'completed',sha256:'c'.repeat(64),value:{acceptance_plan:
+    ['repository-test','repository-test','git-subject'].map((source_kind,index)=>
+      ({criteria_ref:`AC${index+1}`,source_kind}))}});
+  assert.equal((await service.collectAcceptance(locator,context,receipt)).next_action.reason,
+    'COMPANION_ACCEPTANCE_PLAN_SCOPE_CONFLICT');
+  service.designResult=()=>({state:'completed',sha256:'c'.repeat(64),value:{acceptance_plan:
+    ['external-observation','review','git-subject'].map((source_kind,index)=>
+      ({criteria_ref:`AC${index+1}`,source_kind}))}});
+  assert.equal((await service.collectAcceptance(locator,context,receipt)).next_action.reason,
+    'COMPANION_ACCEPTANCE_EVIDENCE_PENDING');
 });
 
 test('recorded design handoff survives a later Notes handoff update',async t=>{
@@ -106,7 +200,8 @@ test('recorded design handoff survives a later Notes handoff update',async t=>{
   service.evidence={operation:()=>({state:'completed',sha256:'d'.repeat(64),
     value:{product_decision_required:false,product_decisions:[]}})};
   service.designResult=()=>({state:'completed',sha256:'d'.repeat(64),
-    value:{product_decision_required:false,product_decisions:[]}});
+    value:{product_decision_required:false,product_decisions:[],acceptance_plan:[]}});
+  service.acceptanceAuthority=async()=>({state:'completed',plan:{criteria:[]}});
   const context={link:{binding_kind:'preparation'},binding:{preparationId:'prep-1'},
     ticket:{id:'ticket-1',key:'COMPANION-007',expected_worktree:dir},
     card:{cardId:'card-1',revision:1}};

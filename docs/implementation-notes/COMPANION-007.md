@@ -162,6 +162,24 @@ fresh implementation 启动前由 Emilia + YCA 完成 0-token preflight：
 - 明确 full suite/commit/push/GitHub adapter 的 YCA 执行责任和 owned task 入口、报告摘要位置；确认无另一活跃模型工作线。
 - 更新 checkpoint 的真实 design run/usage；本 run 目前无法取得 durable usage，记 unknown，不由模型估算。复杂实现建议 fresh `gpt-6-sol high`；模型启动由 Emilia 执行，本设计不启动下一模型。
 
+## Acceptance Evidence Plan
+```json
+{
+  "schema_version": 1,
+  "issue_ref": "https://github.com/Emilia-tan-Ovo/yuki-link/issues/132",
+  "criteria_sha256": "bbb02cf53cce44cb7d53c12ef3d0a97c0e106f8a4981fdb5c8d2d14301f70754",
+  "criteria": [
+    {"criteria_ref":"AC1","text":"确认目标与终点后常规阶段连续推进；只设计样例不实现，授权到 PR 样例交付真实 PR，不擅自合并/部署。","source_kind":"external-observation"},
+    {"criteria_ref":"AC2","text":"沿用 006 的准备及授权交接，不退回 ChatGPT 人工预制工程状态；每一步根据既有事实选择对应能力，不另存一套竞争工程 phase。","source_kind":"harness-run"},
+    {"criteria_ref":"AC3","text":"fresh 实现/Review 及必要修复遵守既有协作规则，原 Harness Main/Review 分离、运行归属、diff 与结果继续可查。","source_kind":"agent-session"},
+    {"criteria_ref":"AC4","text":"产品/范围实质变化或无法确认的状态才说明具体阻碍；常规准备和核对不制造新的逐阶段 Owner 批准点。","source_kind":"external-observation"},
+    {"criteria_ref":"AC5","text":"一条受控代表性任务从确认到终点可复核，正确区分 run 完成、验收完成和 PR 交付。修复路径用必要确定性样例覆盖，不为凑流程特意制造一次真实 finding。","source_kind":"external-observation"}
+  ]
+}
+```
+
+本块绑定 #132 Issue 原文的五条 checklist；`criteria_sha256` 是按顺序排列的 `{criteria_ref,text}` JSON 的 SHA-256。Notes 改动后重新读取完整文件 digest；设计结果的 `acceptance_plan` 仅为候选，不能降低本块证据要求。真实外部观察缺席时对应 AC 保持 not-verified。
+
 ## Test Plan
 
 确定性测试穿过公开 Companion 入口，使用真实 card SQLite、Harness Journal/Workflow/ExecutionOperations、launcher 和本地 Git fixture；只替换外部 GitHub transport、实际模型 spawn、耗时测试/外部设备 transport。禁止用 fake 整个 preflight/Workflow/Acceptance 返回 ready/passed 来证明闭环。
@@ -197,6 +215,7 @@ fresh implementation 启动前由 Emilia + YCA 完成 0-token preflight：
 
 - **实现状态：**timeout 后在保留的 delta 上完成 narrow recovery；产品未决项 none。已接确认卡片持久关联、continuation selector/wake、候选结果证据读取、finding batch、机械 full suite/commit/push/PR intent 与回执核对、MCP/main/Desktop 投影。design-only 停在设计完成；to-pr 的 implementation、Review、Acceptance、PR 各按原 Workflow 与外部事实推进。普通模型 run 完成、Acceptance accepted 与 PR delivered 分层显示，不从上游状态推导下游完成。
 - **本次恢复修正：**公开 Companion MCP continuation 路由及 Desktop typed code/source；只读 get 不写 PR 回执，advance 先 reconcile 原 intent；已匹配但未落回执的 PR 仍为 unknown。Acceptance 对 Issue 全部 checklist 与 plan 逐项核对，缺证据不写 incomplete/pass 边界，PR criterion 不能被静默过滤。后续阶段采用已记录的 design→implementation 边界验证历史设计，允许正常 Implementation Handoff 更新 Notes；push 核对 canonical origin 并先采用已有 intent。PR endpoint 对当前已验收 subject/head 与冻结交付对象核对。
+- **E2E preflight blocker fix：**去除运行时 #132 URL/AC 硬编码；本 Notes 新增 schema v1 Acceptance Evidence Plan，绑定 #132 Issue checklist 原文和顺序。通用 continuation 在设计完成前核对当前 Issue、Notes 计划及候选结果；Acceptance 只读取 canonical obligation，并要求 Notes 与受审 Git subject 字节一致。验收后至 Draft PR 交付仍按冻结 obligation digest 复核，AC/Notes 漂移停止交付。此处未运行 representative E2E、真实 Acceptance 或 PR。
 - **实际写集：**`tools/codex-session-bridge/src/harness/execution-model.ts`、`src/main.js`、`src/mcp.js`、`src/orchestration/companion-{dispatch,preparation,continuation,evidence,mechanical,delivery}.mjs`、`src/orchestration/{workflow-agent,implementation,review}-launcher.ts`；`tools/companion-desktop/backend/{engineering-card-store,engineering-coordinator,yca-engineering-client}.mjs`、`desktop/renderer.js`；`tools/codex-session-bridge/test/{companion-continuation,companion-delivery,orchestration-companion-mcp}.test.ts`、`tools/companion-desktop/test/renderer.test.mjs`；本 Notes。未修改 checkpoint。
 - **focused verification：**本 recovery 的 continuation + delivery + public MCP 测试 10/10 PASS，exit 0；bridge `npm run typecheck` exit 0；相关 `.mjs`/`mcp.js` syntax checks exit 0。首次 full bridge suite 暴露 5 个直接回归：2 个旧 MCP tool-count 断言仍为 35、3 个 legacy/mock dispatch fixture 缺少 `tickets` registry 时被新增 result-path 逻辑直接读取；已做窄兼容修复，相关回归 40/40 PASS。随后 deterministic full validation：bridge 307 PASS / 0 FAIL / 1 SKIP，Desktop 171/171 PASS，bridge typecheck、Desktop syntax check、Context Plan validator、`git diff --check` 均 exit 0。
 - **未验证/后续事实：**完整本地 suites/checks 已通过；仍未运行真实 Desktop→DSH→YCA→Codex 代表链、真实 Acceptance 或 PR create/push。Acceptance 中 `external-observation`/`agent-session` 仍须适用的真实外部证据；缺失时保持 not-verified。PR unknown 的本地确定性测试不等于 GitHub 真实回执验收。下一步由 Emilia + YCA 冻结 commit，再做 fresh primary Review；Review 通过后再进行逐 AC Acceptance 与 representative E2E / Draft PR 交付，本 implementation session 不作 Acceptance 判定。
