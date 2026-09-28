@@ -11,6 +11,19 @@ worktree: "<当前绝对路径>"
 branch: "<实际分支>"
 fixed_point: "<已解析 SHA>"
 head: "<最近观察的 SHA>"
+work_item:
+  id: null
+  revision: null
+  purpose: null
+  cycle_id: null
+  generation: null
+  session_id: null
+  operation_id: null
+  journal_ref: null
+  observed_state: null
+  continuation_ref: null
+  replacement_decision_ref: null
+  reconciliation_ref: null
 design_session: null
 design_runs: []
 implementation_session: null
@@ -34,13 +47,14 @@ updated_at: "<UTC ISO-8601>"
 - 本轮授权的范围、结束点和仍需 Owner 审批的动作。
 
 # Current evidence
+- 按所选同根 engineering-workflow/SKILL.md 的“工作项生命周期”记录工作项与 generation；复制模板后仍通过 Skill 根定位该规范。这些字段不授予启动权限；未知或尚无 runtime 支持的字段填 null，以外部事实与授权引用补充，不编造 journal 回执。
 - 证据引用、观察时间、来源、结果和适用的内容身份。Git 是 branch/HEAD/diff 的 source of truth。
 - test/review/acceptance 要记录 fixed point、受检 commit；若有未提交内容，附 tracked diff 和相关 untracked 文件字节摘要。仅 HEAD 不足以覆盖脏工作区。
 - Review 的两轴结论、原 finding、修复检查及 reviewer 隔离证据；命令退出码与精简报告路径。
-- runtime/YCA/session/run 是观察值，附查询入口与最近状态；未使用 YCA 标记不适用，不编造 ID。
-- 每个模型 run 终态后，用 YCA durable run status 累加 `model_usage` 的 input/cached/output 与 run 数；这些数字只作工程成本诊断，不等同于产品 quota。启动下一次模型 run 前必须先检查 anomaly 状态和最近一次成本说明。
+- runtime/执行工具/session/run 是观察值，附查询入口与最近状态；未使用 执行工具 标记不适用，不编造 ID。
+- 每个模型 run 终态后，用 执行工具 durable run status 累加 `model_usage` 的 input/cached/output 与 run 数；这些数字只作工程成本诊断，不等同于产品 quota。启动下一次模型 run 前必须先检查 anomaly 状态和最近一次成本说明。
 
-# Open findings / blockers
+# Issue set / 待处理问题
 - finding 标识、状态（open/fixed/verified）、对应 diff/证据和下一检查。无则写无。
 - external interruption 的来源与尚未知事实，不把观察连接失败写成项目失败。
 - cost anomaly：任一单 run input >3M 或整票累计 input >6M 时记录原因、收缩方案和 Owner 状态；复杂大票允许超过预算，但必须保留 cost anomaly、说明继续理由并主动缩小下一轮上下文；不设置固定 token 数字作为禁止继续的硬熔断。

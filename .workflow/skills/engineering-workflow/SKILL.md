@@ -29,23 +29,44 @@ checkpoint 的 `phase` 表示**下一步要进行的工作**，不是已经完�
 | 已有 Spec，缺可执行 Ticket frontier | tickets | `to-tickets` → 票据引用、blocking edges、frontier |
 | 当前 Ticket 可开始，缺实现决定 | ticket-design | `ticket-design` → Implementation Notes + 简短 Context Plan；frontier 为空直接 ready |
 | 已有 Notes，实现/测试尚未完成，或有待修 finding | implementation | `implement`；修复时携带原 finding 及受影响范围 |
-| 实现及必要测试已完成，缺对应内容的有效 Review | review | fresh review；见下方兼容边界 |
-| Review 已通过且证据仍适用，缺验收 | acceptance | **优先由 Emilia 从外部事实逐项核对 Ticket**；只有 criteria 本身要求 Agent/session 行为时才启动 fresh 验收者 |
+| 实现及必要测试已完成，缺对应内容的有效 Review | review | 独立 Review；会话边界遵循下方生命周期规范 |
+| Review 已通过且证据仍适用，缺验收 | acceptance | **优先由 Orchestrator 从外部事实逐项核对 Ticket**；只有 criteria 本身要求 Agent/session 行为时才启动 fresh 验收者 |
 | 验收已通过，待交接/归档 | closeout | 读取随包 closeout archive 说明，生成摘要并核对证据 |
 
 领域 Skill 调用前实际读取文件。新 Owner 产品、安全、架构、数据语义或范围决定才向 Owner 提问；事实查找和已决定事项由 Agent 完成。上游产物缺失时返回最早的必要阶段，明确缺口，保留仍然有效的下游证据。
 
 ### 成本、范围与停止条件
 
-把 **Owner 时间 / 注意力 / 模型额度** 视为和权限、安全同样真实的资源边界。当前 Ticket 默认只为满足其 Ticket / Spec 明确目标和 Acceptance Criteria 工作；不是 blocker 的 drift/recovery、压力测试、额外 fixture、工作流研究或“顺便证明”内容只记录 follow-up，不扩大当前票。
+把 **Owner 时间 / 注意力 / 模型额度** 视为和权限、安全同样真实的资源边界。当前 Ticket 默认只为满足其 Ticket / Spec 明确目标和 Acceptance Criteria 工作；不阻塞当前验收的 drift/recovery、压力测试、额外 fixture、工作流研究或“顺便证明”内容只记录 follow-up，不扩大当前票。
 
-#### Session 生命周期
+#### 工作项生命周期
 
-- `ticket-design` 与 `implementation` **默认使用不同 fresh model session**。设计阶段只负责把实现决定写入 Ticket `Implementation Notes` / repo Notes 与 checkpoint；实现阶段从这些持久化产物、fixed point 与当前 Git 事实恢复，不继承设计聊天。
-- implementation prompt 使用“引用 + delta”：Ticket/Notes/checkpoint 路径、fixed point/HEAD、当前授权、必要约束；不得复制完整聊天、完整 Issue/Spec/Notes 或大型日志来补上下文。
-- implementation 完成并交给 fresh primary Review 后，原 implementation session 结束。若 Review 产生 finding，修复必须启动 **fresh fix session**，只携带原 finding、Review 报告引用、修复基线、直接受影响文件/规范和最小回归 seam；不得回原 implementation session。
-- finding 修复后只允许一次必要的 fresh focused re-review；只有修复引入独立新高风险范围时才由 `review-change` 升级。
-- 只有 continuity 本身就是明确验收目标，或 Owner 明确批准的例外，才允许跨阶段复用 model session；checkpoint 必须记录理由。
+本节是通用生命周期的唯一规范来源；领域 Skills 只引用，项目 AGENTS 只声明覆盖，安装目录是发布产物。
+
+| 术语 | 含义 |
+| --- | --- |
+| delivery item / 交付项 | Ticket、需求或维护目标 |
+| work item / 工作项 | 对明确对象、范围和授权承担的固定职责，是模型工作生命周期主单位 |
+| phase / 阶段 | 工作流下一步活动，不代替工作项状态 |
+| review cycle / 审查周期 | 主审及关联修复、复核的关联标识 |
+| issue set / 问题集合 | 工作项承担的问题；增补成员不改变工作项身份 |
+| session generation / 会话代 | 同一工作项的执行上下文版本，同一时刻仅一代可续发 |
+| run / 调用 | session 的一次执行；终态不代表工作项完成 |
+| content version / 内容版本 | 代码或审查对象的精确快照；正常编辑、提交不改变工作项身份 |
+
+工作项记录交付项、职责、对象、范围、授权、父项、审查周期、问题集合、revision、session/generation 绑定和完成证据。执行状态为 ready、active、awaiting_verification、completed；阻塞或取消单独记录。未知执行与副作用先 reconciliation，不能通过另建工作项或替代执行跳过核验。
+
+1. 同一未完成工作项默认 continue 已有 usable session。同一职责、范围、对象与授权内的新问题增补到同一 issue set，不按问题数量新建工作项或 session；已有 active run 只观察。
+2. design→implementation、implementation→primary review、primary review→repair 是不同职责工作项，首次执行必须 fresh。主审与实现、复核与修复保持上下文隔离，不继承被审者聊天。交接只传持久化引用、当前 delta 与必要约束。Owner 显式例外须记录授权范围和理由，不能默认为通用豁免。
+3. repair 交付后进入 awaiting_verification，原 generation suspended。focused review 未通过时，原 repair 回 active，继续原 usable generation；不回到最初 implementation session，也不按残留问题另开 session。完成必须有适用于当前内容的证据，不能由 run completed、commit 或模型自述代替。
+4. 默认自动 focused review 预算为一轮，不是正确性上限。首次复核 fresh；后续轮次需显式预算与依据，可继续原独立 reviewer 工作项。未通过时保持未完成，不以预算耗尽宣布通过。
+5. 只有确认原 session 无法可信恢复时，才在同一工作项做 generation replacement，旧代 retired。上下文失真或权限、授权变化须保留事实与决定依据；独立目标、对象或高风险范围变化应经授权拆分为关联工作项。不得靠更换 ID、purpose 或审查周期绕过复用约束。
+6. 聊天切换、中断、服务重启和上下文压缩不自动触发 fresh。恢复先核对已记录的工作项、runtime 与副作用；unknown 先 reconcile，确认无重复执行风险后再续发或换代。内容版本变化只使相应测试、审查证据重新判定适用性。
+7. 相关问题集中修复，局部变化做必要定向检查；工作项收敛并准备交接时统一做必要完整检查。不要对每个问题机械重复 full suite、commit、restart 或 Review；新证据确有需要时允许补验。
+
+**后续 runtime 实现要求，本轮未实现：** 受管 start / continue / replace 应由持久化工作项、绑定、受信授权与当前对象事实推导，不能接受调用方自报 fresh 理由。入口应校验身份/revision/state、职责/范围/对象/授权、generation 归属、active/unknown run、内容版本、审查隔离和模型并发策略；创建与拆分也必须受约束。扩展现有 execution journal 与 launcher，不另建并行状态库，不把工作流状态机下沉到 transport manager。raw 低层入口不能成为正常 workflow 的绕过路径，只保留明确、可审计的兼容/诊断/管理授权，不改变 Owner 原生权限。
+
+gate 落地后，journal 为受管工作项状态的权威来源，checkpoint 只保存引用和观察值。当前尚无该 gate 时，在 checkpoint 保存最少生命周期事实及外部核验引用，由编排者遵守本节；不得把文档规则宣称为已实现的硬门禁。
 
 #### Context Plan
 
@@ -57,42 +78,42 @@ checkpoint 的 `phase` 表示**下一步要进行的工作**，不是已经完�
 - **Expansion triggers**：权限/安全、并发、持久化、数据一致性、跨模块/外部契约，或任何会影响设计/实现判断的不确定性出现时，Agent 应主动扩大调查。Context budget 是效率护栏，不能压过正确性；不需要为正常事实查找逐次向 Owner 请求许可。
 - **Large files by slice**：大源码、大测试或长文档在完成首次定位后，后续优先按 symbol / section / line range 读取，避免为了确认局部事实反复全文加载。
 
-implementation prompt 引用 Context Plan 与持久化来源，从 Core 开始、Related 按需展开；显著超出计划时只需在 handoff/checkpoint 说明扩张原因和新增关键来源，不维护逐文件阅读账本。Codex 自身的 compaction、cache、history/notes 或其他原生 context management 仍由 Codex 管理；YCA/Workflow **不另建竞争性的模型记忆或压缩状态**。工程 source of truth 继续是 Git、Ticket/Notes、checkpoint 与可核验外部事实。
+implementation prompt 引用 Context Plan 与持久化来源，从 Core 开始、Related 按需展开；显著超出计划时只需在 handoff/checkpoint 说明扩张原因和新增关键来源，不维护逐文件阅读账本。Codex 自身的 compaction、cache、history/notes 或其他原生 context management 仍由 Codex 管理；Workflow **不另建竞争性的模型记忆或压缩状态**。工程 source of truth 继续是 Git、Ticket/Notes、checkpoint 与可核验外部事实。
 #### 模型路由
 
 - 模型路由以仓库根 `AGENTS.md` 的“模型路由固定”为唯一规范。启动前读取当前政策，并按当前阶段难度选择；高层受保护 launch 仍以可信 authority snapshot 与 Codex catalog 共同决定实际 model/reasoning。
 
 #### 0-token 环境 preflight
 
-任何 fresh worktree 或 fresh model session 在启动模型前，Emilia 先用 YCA 确定性核对：
+任何 fresh worktree 或 fresh model session 在启动模型前，Orchestrator 先用确定性工具核对：
 
 1. Git fixed point / branch / worktree 身份；
 2. 项目依赖是否就绪（例如 package lock 对应的 `node_modules` / 构建依赖）；新 worktree 不假设自动继承依赖，缺失时先准备或复用项目既有依赖缓存；
 3. 当前任务真正需要的宿主工具是否存在；不存在的可选工具直接选择已知 fallback，不让模型先撞一次错误；
-4. GitHub/外部系统动作的认证 source of truth；默认由 Emilia + YCA direct 执行机械写入，不让模型用额度试认证；
-5. 预计超过短同步窗口的命令改走 owned task；测试/日志仍由 YCA 保存原始输出，模型只收摘要/失败切片；
+4. GitHub/外部系统动作的认证 source of truth；默认由 Orchestrator 通过确定性工具执行机械写入，不让模型用额度试认证；
+5. 预计超过短同步窗口的命令改走 owned task；测试/日志仍由执行工具保存原始输出，模型只收摘要/失败切片；
 6. 下一 model session 的模型/reasoning、权限默认与 `model_usage` anomaly 状态。
 7. fresh worktree 默认位于仓库 allowlist 内的 `.local/worktrees/<ticket-or-maintenance>`；Context Plan / prompt 的代码与测试入口使用完整 repo-relative path，不依赖调用时 cwd；
 8. 当前已知工具缺口及 fallback（例如宿主无 `rg` → PowerShell/Git）写入 checkpoint/preflight 结论；同一环境事实不得让每个模型 session 重新失败一次；
-9. YCA/Codex `request_id` 只在 protected payload 完全相同时复用；脚本、cwd 或参数变化即生成新 request_id；
+9. 执行工具 `request_id` 只在 protected payload 完全相同时复用；脚本、cwd 或参数变化即生成新 request_id；
 10. 机械命令若包含长 Markdown/JSON、反引号、regex、here-string 或多层 shell 字符串，先拆成文件/参数再调用；不要把格式转义问题交给模型试错。
 
-Preflight 失败时先修环境或记录 blocker，**不得启动模型来诊断一个确定性工具已经能发现的问题**。
+Preflight 失败时先修环境或记录阻塞原因，**不得启动模型来诊断一个确定性工具已经能发现的问题**。
 
 #### 权限与 Agent Adapter
 
-- Workflow 不自行收紧 Owner 已选择的原生 Agent 权限。当前 Codex/YCA 已支持在 session 创建时解析并冻结本机默认权限；普通仓库工程 session **默认省略显式 `permissions`**，让 YCA 继承 Owner 的有效本机默认（当前为 `danger-full-access + on-request`）。
-- 若调用方必须显式指定权限，只能使用 Owner 已确认的等价模式；没有 Owner 明确要求，不得把 `danger-full-access` 降成 `workspace-write` / `read-only`。权限在 session 创建时冻结，发现创建错模式时不得在旧 session 上假装修复；停止该 session，保存事实，从 fresh session 用正确权限继续。
+- Workflow 不自行收紧 Owner 已选择的原生 Agent 权限。执行适配器应在 session 创建时解析并冻结 Owner 的有效原生权限；具体继承方式与权限值以项目约定和当前本机事实为准，不把一次探测值当作通用默认。
+- 若调用方必须显式指定权限，只能使用 Owner 已确认的等价模式；没有 Owner 明确要求，不得把 `danger-full-access` 降成 `workspace-write` / `read-only`。权限在 session 创建时冻结，发现创建错模式时不得在旧 session 上假装修复；保存事实与授权依据，按工作项生命周期处理 generation replacement；未知执行结果先协调。
 - Full Access 不等于无限业务授权。模型仍必须遵守 Ticket scope、Owner gate、不可逆操作与 deployment/merge 边界；使用行为约束替代破坏环境一致性的隐式沙箱降级。
-- 后续接入其他 Repository Engineer（包括 DeepSeek Agent）时，adapter 必须提供与本 workflow 等价的：权限 source of truth/冻结、durable run/session、usage/模型身份、side-effect 证据与恢复语义。缺失这些能力时只能标记为部分兼容，不能静默跳过规则。
+- 后续接入其他 Repository Engineer 时，adapter 必须提供与本 workflow 等价的：权限 source of truth/冻结、durable run/session、usage/模型身份、side-effect 证据与恢复语义。缺失这些能力时只能标记为部分兼容，不能静默跳过规则。
 
 #### 并发与机械工作
 
 - 默认最多一条活跃 Codex 模型工作线。第二条模型线只有在能明确缩短关键路径且 Owner 明确批准后才能启动；“允许并发”只是上限，不是默认配置。
-- Git/status/diff、hash、checkpoint/closeout、GitHub Issue/PR/merge/close、full suite 执行、日志筛选/压缩等由 Emilia + YCA 确定性完成，不为方便启动模型。
+- Git/status/diff、hash、checkpoint/closeout、GitHub Issue/PR/merge/close、full suite 执行、日志筛选/压缩等由 Orchestrator 通过确定性工具完成，不为方便启动模型。
 - 长 Markdown/JSON/PR body 使用 `filesystem_write` + `--body-file`/脚本文件；Git revision/range 作为独立参数或先构造单一变量；纯字符串匹配优先 `-SimpleMatch` / `.Contains()`；安全 fixture 被 `filesystem_*` 判为 `SENSITIVE_CONTENT` 时，改用 PowerShell 精确行段，不重复撞拒绝。
-- 同一 baseline/full-suite 红项连续出现在两张 Ticket，或两个独立观测都复现时，必须在下一 frontier 前升级为 maintenance 或明确 follow-up Issue；不能无限期以“非本票 blocker”携带。若根因是过时测试/fixture，优先修测试确定性；若确属环境限制，记录 owner、触发条件和后续验证入口。
-- 实现模型只运行直接驱动当前红→绿所需的最小定向测试与必要 typecheck；完整测试套件默认由 YCA 执行。若 full suite 失败，只把计数、退出码、失败 case 与必要上下文切片交给模型。
+- 同一 baseline/full-suite 红项连续出现在两张 Ticket，或两个独立观测都复现时，必须在下一 frontier 前升级为 maintenance 或明确 follow-up Issue；不能无限期以“非本票阻塞项”携带。若根因是过时测试/fixture，优先修测试确定性；若确属环境限制，记录 owner、触发条件和后续验证入口。
+- 实现模型只运行直接驱动当前红→绿所需的最小定向测试与必要 typecheck；完整测试套件默认由执行工具执行。若 full suite 失败，只把计数、退出码、失败 case 与必要上下文切片交给模型。
 - 大型日志、Git history、runtime JSONL、完整测试输出和长文件先经确定性工具筛选/压缩；fresh session 只接收结构化摘要、失败切片和来源引用。
 
 #### 成本预算与异常提醒
@@ -106,16 +127,16 @@ Preflight 失败时先修环境或记录 blocker，**不得启动模型来诊断
 - focused re-review 目标 ≤ 0.7M；
 - 普通 Ticket 累计目标 ≤ 6M。
 
-每个模型 run 到达终态后，Emilia 从 YCA durable run status 读取并累加 input / cached input / output / model / reasoning / run 数到 checkpoint `model_usage`；无法取得时记 unknown，不能用模型自述代替。启动下一次模型 run 前检查该字段，用于判断是否需要收缩上下文或调整路由，**不是固定 token 门禁**。
+每个模型 run 到达终态后，Orchestrator 从运行时 durable run status 读取并累加 input / cached input / output / model / reasoning / run 数到 checkpoint `model_usage`；无法取得时记 unknown，不能用模型自述代替。启动下一次模型 run 前检查该字段，用于判断是否需要收缩上下文或调整路由，**不是固定 token 门禁**。
 
 - 上述阶段目标与整票 6M 均为参考目标，不是硬上限；超过 3M/6M 本身不自动阻止下一次模型 run。
 - 阶段或整票明显高于目标、出现重复肥上下文/异常暴涨，或消耗与当前任务规模明显不相称时，标记 `cost anomaly`。下一次模型调用前简短说明主要消耗来源、继续的必要性与收缩方案；复杂大票可以合理超标。
 - 只有出现明显失控、无效重复或上下文明显失真时才暂停扩展并先收缩；不得把固定 token 数字当作机械熔断线。
 - cached input 单独记录，用来发现“肥 session 反复搬运上下文”；不得把 cached token 占比高解释成“所以成本没问题”。
 
-Acceptance **优先由 Emilia 使用确定性外部事实直接逐条核对 Ticket**。只有 Acceptance Criteria 本身要求观察 Agent 路由、session/thread continuity 或其他模型行为时，才启动额外 fresh acceptance agent；普通 Ticket 不为“证明工作流本身”生成场景矩阵。
+Acceptance **优先由 Orchestrator 使用确定性外部事实直接逐条核对 Ticket**。只有 Acceptance Criteria 本身要求观察 Agent 路由、session/thread continuity 或其他模型行为时，才启动额外 fresh acceptance agent；普通 Ticket 不为“证明工作流本身”生成场景矩阵。
 
-Owner 明确表达“收尾”“别扩范围”“我要休息/睡觉”或等价意图时，立即进入 **stop-expansion**：禁止新增 scope、fixture、测试矩阵、reviewer、模型升级和旁支调查；只允许处理当前 blocker、保存 checkpoint、完成必要 closeout。外部平台中断仍按恢复协议查 durable run/session/checkpoint，不因为 UI 静默或观察超时重启一套任务。
+Owner 明确表达“收尾”“别扩范围”“我要休息/睡觉”或等价意图时，立即进入 **stop-expansion**：禁止新增 scope、fixture、测试矩阵、reviewer、模型升级和旁支调查；只允许处理当前阻塞项、保存 checkpoint、完成必要 closeout。外部平台中断仍按恢复协议查 durable run/session/checkpoint，不因为 UI 静默或观察超时重启一套任务。
 
 对 Owner 的过程更新默认只回答三件事：**现在在做什么、为什么这是当前票必须的、还剩什么**。内部 digest、fixture、cursor、isolation 等低层细节只在 Owner 主动询问或确实影响决策时展开。
 
@@ -125,21 +146,21 @@ Owner 明确表达“收尾”“别扩范围”“我要休息/睡觉”或等�
 
 implement 返回持久化 Implementation Handoff 后，核对测试、实际 commit、未提交范围和内容身份，保存 `phase: review`。当前 implementation context 不执行审查；从外部创建无历史 reviewer，显式给出 handoff、fixed point/目标内容、Ticket/Spec、规范和必要测试结果，实际读取同根 `review-change/SKILL.md`。若调用者保留 reviewer 启动权，到此交接停止。依赖缺失/不可用则保持 review 待办，不能静默改用其他安装根或宣称已通过。
 
-风险分类只由 review-change 定义。接收其报告后核对受审内容仍适用及 finding 状态：有待修 finding → **fresh fix implementation session**（只携带原 finding、修复基线和受影响范围）；缺轴/漂移 → 补必要审查；有效通过 → acceptance。已有充分证据时不重复 full review。finding 修复后 fresh 定向复核，出现新风险时由 review-change 升级；始终保留原 Standards / Spec 两轴结论。
+风险分类只由 review-change 定义。接收其报告后核对受审内容仍适用及 finding 状态：有待修 finding → 本节约定的 repair 工作项（携带问题集合、修复基线和受影响范围）；缺轴/漂移 → 补必要审查；有效通过 → acceptance。已有充分证据时不重复 full review。修复后按复核预算交独立审查工作项，出现新风险时由 review-change 升级；始终保留原 Standards / Spec 两轴结论。
 
-进入 closeout 时读取 [归档输入与生成协议](closeout-archive.md)，用同根 `scripts/closeout-archive.mjs` 从精简本地输入生成 `.workflow/history/<ticket>.md`。先保存本机 evidence 观察快照，再确定性生成；Emilia 提交前回读摘要，对照实际来源做 evidence consistency 检查。完成标准是必要字段及来源齐全、缺失/过期/未知已标明、raw 留本机、归档可独立理解；生成成功本身不证明验收通过。PR/merge 等尚未发生时保留 pending/unknown，后续有回执再补记；checkpoint 保存剩余动作和授权边界。不能自动关闭父 Issue、合并 PR、安装全局 Skills，或把本票验收说成整个 v1.1 已完成。
+进入 closeout 时读取 [归档输入与生成协议](closeout-archive.md)，用同根 `scripts/closeout-archive.mjs` 从精简本地输入生成 `.workflow/history/<ticket>.md`。先保存本机 evidence 观察快照，再确定性生成；Orchestrator 提交前回读摘要，对照实际来源做 evidence consistency 检查。完成标准是必要字段及来源齐全、缺失/过期/未知已标明、raw 留本机、归档可独立理解；生成成功本身不证明验收通过。PR/merge 等尚未发生时保留 pending/unknown，后续有回执再补记；checkpoint 保存剩余动作和授权边界。不能自动关闭父 Issue、合并 PR、安装全局 Skills，或把本票验收说成整个项目已完成。
 
 ## 3. 在边界保存可恢复产物
 
-使用随包 [checkpoint 模板](checkpoint-template.md)。设计产物写到仓库约定的 handoff / Spec / Ticket，执行状态留在非 Git checkpoint。确认 `.local/` 已被忽略；如未忽略，先为当前仓库建立忽略规则再写，不能把运行状态纳入提交。以 UTF-8 完整替换当前 checkpoint；存在活跃 writer 时先确定所有权，避免两个 session 争写。
+使用随包 [checkpoint 模板](checkpoint-template.md)。设计产物写到仓库约定的 handoff / Spec / Ticket，执行状态留在非 Git checkpoint。确认 `.local/` 已被忽略；如未忽略，先为当前仓库建立忽略规则再写，不能把运行状态纳入提交。以 UTF-8 保存 checkpoint；已有运行时权威记录时只存观察引用，不能从 Markdown 覆盖 journal。存在活跃 writer 时先确定所有权。
 
 只在以下变化后更新：阶段交接、finding 状态变化、acceptance 转换、影响恢复路径的异常/中断，**以及每个模型 run 终态后更新 `model_usage`**。普通命令、轮询和未改变下一步的证据读取不触发其他正文更新。正文保存引用与短结论，不复制完整聊天、逐命令日志或大型 JSONL。
 
-每次交接检查：已确认决定可定位；证据指向具体文件/命令结果和内容身份；finding 有状态；未知/已完成副作用区分；`Next action` 是可直接执行的一步。Ticket-design → implementation **默认 fresh**：先保存并回读 Notes/checkpoint，再由 fresh implementation session 从持久化事实继续。Review finding → fix 同样默认 fresh。checkpoint 同时保存最新 `model_usage` 与 anomaly 状态。
+每次交接检查：已确认决定可定位；证据指向具体文件/命令结果和内容身份；finding 有状态；未知/已完成副作用区分；`Next action` 是可直接执行的一步。工作项交接遵循生命周期协议：先保存并回读 Notes/checkpoint，再从持久化事实推进。checkpoint 同时保存最新 `model_usage` 与 anomaly 状态。
 
-若当前 YCA 已登记 Harness Ticket 且公开提供 `harness_record_workflow`，在阶段交接、finding 状态变化、Acceptance 转换或恢复异常完成本地产物与外部事实核对后，由 Emilia 提交一次完整结构化快照，并保存成功回执中的 revision/event_id/cursor；首次 expected_revision 为 null，后续使用最近成功 revision。冲突时先读取最新记录协调，不覆盖；记录失败不把阶段误报为已保存，也不重放工程动作。未启用 Harness 的独立 Workflow 保持原 checkpoint 约定，不把该入口当成新的执行、Review 或 Acceptance Agent。
+若当前执行工具已登记 Harness Ticket 且公开提供 `harness_record_workflow`，在阶段交接、finding 状态变化、Acceptance 转换或恢复异常完成本地产物与外部事实核对后，由 Orchestrator 提交一次完整结构化快照，并保存成功回执中的 revision/event_id/cursor；首次 expected_revision 为 null，后续使用最近成功 revision。冲突时先读取最新记录协调，不覆盖；记录失败不把阶段误报为已保存，也不重放工程动作。未启用 Harness 的独立 Workflow 保持原 checkpoint 约定，不把该入口当成新的执行、Review 或 Acceptance Agent。
 
-Review、focused re-review 默认 fresh sub-agent/session，输入只含 fixed point、目标 diff/内容身份、Ticket/Spec、标准及必要测试证据，不能继承 implementation 聊天。Acceptance 默认由 Emilia 使用外部事实直接核验；只有验收 criteria 本身要求 Agent 路由、session/thread continuity 或其他模型行为时才启动 fresh acceptance agent，且不为普通 Ticket 额外构造验收矩阵。
+独立审查工作项的输入只含 fixed point、目标 diff/内容身份、Ticket/Spec、标准及必要测试证据，不能继承 implementation 聊天。Acceptance 默认由 Orchestrator 使用外部事实直接核验；只有验收 criteria 本身要求 Agent 路由、session/thread continuity 或其他模型行为时才启动 fresh acceptance agent，且不为普通 Ticket 额外构造验收矩阵。
 
 ## 4. 中断与交接
 
