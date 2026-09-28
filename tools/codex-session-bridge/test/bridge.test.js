@@ -13,6 +13,9 @@ import { ModelCatalog } from '../src/catalog.js';
 import { CodexExecutor, execArguments } from '../src/executor.js';
 import { readLines, spawnDirect, stopProcessTree, isProcessAlive } from '../src/process.js';
 import { createHttpServer } from '../src/http.js';
+import { createHarnessRuntime } from '../src/harness/runtime.ts';
+import { FileExecutionAuthority } from '../src/orchestration/execution-authority.ts';
+import { workDigest } from '../src/orchestration/work-items.ts';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const until = async (predicate, timeoutMs = 1000) => {
@@ -93,6 +96,21 @@ function setup(t, options = {}) {
   t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
   const input = () => ({ cwd, request_id: randomUUID(), prompt: '你好\r\n"引号" $HOME `tick` C:\\中文 空格\\a.txt', sender: 'AI 助手' });
   return { root, cwd, runtime, catalog, executor, permissionResolver, store, manager, input };
+}
+
+function diagnosticAccess(f) {
+  f.manager.harness = createHarnessRuntime(f.manager);
+  const file = path.join(f.root, 'execution-authority.json');
+  const document = { schema_version: 1, decisions: [], raw_access: [] };
+  writeFileSync(file, JSON.stringify(document), 'utf8');
+  f.manager.executionAuthority = new FileExecutionAuthority(file, { forbiddenRoots: [f.cwd] });
+  return (action, payload) => {
+    const authorization_ref = `fixture:${payload.request_id}`;
+    document.raw_access.push({ authorization_ref, category: 'diagnostic', action,
+      payload_digest: workDigest(payload), reason: 'Explicit fixture diagnostic' });
+    writeFileSync(file, JSON.stringify(document), 'utf8');
+    return { ...payload, authorization_ref };
+  };
 }
 
 test('fresh session resolves model catalog before permission discovery', async t => {
@@ -472,7 +490,8 @@ test('UTF-8 split byte streams, multiline input and shell metacharacters round-t
 });
 
 test('real MCP HTTP clients reconnect to durable runs; host/origin checks and explicit errors work', async t => {
-  const { manager, executor, input } = setup(t);
+  const f = setup(t), { manager, executor, input } = f;
+  const authorize = diagnosticAccess(f);
   const server = createHttpServer(manager);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
@@ -491,7 +510,9 @@ test('real MCP HTTP clients reconnect to durable runs; host/origin checks and ex
   }
   assert.match(toolList.tools.find(tool => tool.name === 'codex_start_session').inputSchema.properties.model.description,
     /Start default: gpt-6-sol/);
-  const started = await client.callTool({ name: 'codex_start_session', arguments: input() });
+  const denied = await client.callTool({ name: 'codex_start_session', arguments: input() });
+  assert.equal(denied.structuredContent.error.code, 'RAW_EXECUTION_NOT_AUTHORIZED');
+  const started = await client.callTool({ name: 'codex_start_session', arguments: authorize('start', input()) });
   assert.equal(started.isError, undefined);
   const { run_id, session_id } = started.structuredContent;
   await client.close(); await tick(); executor.complete(0);
@@ -500,14 +521,14 @@ test('real MCP HTTP clients reconnect to durable runs; host/origin checks and ex
   const output = await next.callTool({ name: 'codex_get_output', arguments: { run_id } });
   assert.equal(output.structuredContent.final_response, '协作助手回复 🌸');
   const runCountBeforePermissionChange = Object.keys(manager.store.state.runs).length;
-  const permissionChange = await next.callTool({ name: 'codex_send_message', arguments: {
+  const permissionChange = await next.callTool({ name: 'codex_send_message', arguments: authorize('send', {
     session_id, request_id: randomUUID(), prompt: 'must reject permission changes',
     permissions: { sandbox_mode: 'read-only', approval_policy: 'never' },
-  } });
+  }) });
   assert.equal(permissionChange.isError, true);
   assert.equal(permissionChange.structuredContent.error.code, 'PERMISSION_CHANGE_REQUIRES_NEW_SESSION');
   assert.equal(Object.keys(manager.store.state.runs).length, runCountBeforePermissionChange);
-  const invalid = await next.callTool({ name: 'codex_start_session', arguments: { ...input(), reasoning: 'imaginary' } });
+  const invalid = await next.callTool({ name: 'codex_start_session', arguments: authorize('start', { ...input(), reasoning: 'imaginary' }) });
   assert.equal(invalid.isError, true); assert.equal(invalid.structuredContent.error.code, 'UNSUPPORTED_REASONING');
   const forbidden = await fetch(url, { method: 'POST', headers: { origin: 'https://attacker.invalid', 'content-type': 'application/json' }, body: '{}' });
   assert.equal(forbidden.status, 403);
@@ -516,7 +537,8 @@ test('real MCP HTTP clients reconnect to durable runs; host/origin checks and ex
 
 test('MCP output wait exposes its schema and HTTP disconnect cancels only the observation', async t => {
   const timers = new FakeTimers();
-  const { manager, executor, input } = setup(t, { timers });
+  const f = setup(t, { timers }), { manager, executor, input } = f;
+  const authorize = diagnosticAccess(f);
   const server = createHttpServer(manager);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
@@ -529,7 +551,7 @@ test('MCP output wait exposes its schema and HTTP disconnect cancels only the ob
   assert.equal(outputTool.inputSchema.properties.wait_ms.minimum, 0);
   assert.equal(outputTool.inputSchema.properties.wait_ms.maximum, 60_000);
 
-  const started = await client.callTool({ name: 'codex_start_session', arguments: input() });
+  const started = await client.callTool({ name: 'codex_start_session', arguments: authorize('start', input()) });
   const { run_id } = started.structuredContent;
   await tick();
   let cursor = manager.run(run_id).event_count;

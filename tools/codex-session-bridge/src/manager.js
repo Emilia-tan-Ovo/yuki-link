@@ -119,7 +119,14 @@ export class SessionManager {
     return this.enqueue(session, input, hash, config, Boolean(guard));
   }
 
-  async send(input) {
+  async send(input) { return this.sendWithGuard(input, null); }
+
+  async sendGuarded(input, guard) {
+    if (typeof guard !== 'function') throw new BridgeError('INVALID_DISPATCH_GUARD', 'A synchronous dispatch guard is required.');
+    return this.sendWithGuard(input, guard);
+  }
+
+  async sendWithGuard(input, guard) {
     if (input.permissions !== undefined) throw new BridgeError('PERMISSION_CHANGE_REQUIRES_NEW_SESSION', 'Create a new session to use a different Codex permission mode.');
     this.validateMessage(input);
     const hash = fingerprint(['send', input.session_id, input.prompt, input.sender ?? 'caller', input.model ?? null, input.reasoning ?? null, input.timeout_ms ?? null]);
@@ -134,7 +141,18 @@ export class SessionManager {
     const concurrentReplay = this.replay(input.request_id, hash);
     if (concurrentReplay) return concurrentReplay;
     if (session.active_run_id) throw new BridgeError('SESSION_BUSY', 'This session already has an active run.', { run_id: session.active_run_id });
-    return this.enqueue(session, input, hash, config);
+    if (guard) {
+      const result = guard(Object.freeze({ request_id: input.request_id, fingerprint: hash,
+        session_id: session.id, cwd: this.cwd(session.cwd), config: structuredClone(config),
+        permissions: structuredClone(session.permissions), launch: Object.freeze({
+          prompt_sha256: createHash('sha256').update(input.prompt).digest('hex'),
+          prompt_utf8_bytes: Buffer.byteLength(input.prompt), sender: input.sender ?? null,
+          model: input.model ?? null, reasoning: input.reasoning ?? null, timeout_ms: input.timeout_ms ?? null,
+          permission_selection: null,
+        }) }));
+      if (result && typeof result.then === 'function') throw new BridgeError('INVALID_DISPATCH_GUARD', 'The dispatch guard must not await.');
+    }
+    return this.enqueue(session, input, hash, config, Boolean(guard));
   }
 
   enqueue(session, input, hash, config, immediate = false) {

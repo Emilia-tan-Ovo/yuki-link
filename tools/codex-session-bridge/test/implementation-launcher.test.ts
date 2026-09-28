@@ -147,7 +147,7 @@ test('launches one fresh delegated implementation into Ticket Main and freezes a
   assert.equal(result.state, 'bound');
   assert.equal(result.contract.kind, 'ticket-implementation');
   assert.equal(result.contract.review_policy, 'delegated');
-  assert.equal(result.contract.session, 'fresh');
+  assert.equal(result.contract.session, 'work-item');
   assert.equal(result.destination.kind, 'main');
   assert.equal(result.destination.conversation_id, f.registration.conversation_id);
   assert.equal(result.policy.revision, 7);

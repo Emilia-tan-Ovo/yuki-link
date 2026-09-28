@@ -113,7 +113,26 @@ export class ConversationHistory {
       const target = runs.find(value => value.id === runId);
       if (!target || target.session_id !== sessionId) add('mismatch', 'RUN_SESSION_MISMATCH', 'source.runs');
       const first = [...runs].sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id))[0];
-      if (target && first?.id !== target.id) add('mismatch', 'SESSION_REUSED_BEFORE_BOUND_RUN', 'source.runs');
+      if (target && first?.id !== target.id) {
+        // Only durable managed ownership can authorize another run in an isolated
+        // reviewer context. Legacy association alone never proves that boundary.
+        const managed = this.journal.records.flatMap(record => {
+          const data = record.data;
+          if (data.kind !== 'execution_operation_bound' && data.kind !== 'execution_operation_transitioned') return [];
+          const operation = data.operation;
+          if (!('work_item' in operation) || !operation.work_item) return [];
+          return operation.runtime.session_id === sessionId
+            && operation.destination.conversation_id === conversationId
+            && ['started', 'bound'].includes(operation.state)
+            ? [{ run_id: operation.runtime.run_id, owner: operation.work_item.item }] : [];
+        });
+        const owner = managed.find(operation => operation.run_id === runId)?.owner;
+        const sameGeneration = owner && runs.every(run => managed.some(operation =>
+          operation.run_id === run.id && operation.owner.work_item_id === owner.work_item_id
+          && operation.owner.generation === owner.generation));
+        if (!sameGeneration) add('mismatch', 'SESSION_REUSED_BEFORE_BOUND_RUN', 'source.runs');
+        else reasons.push({ code: 'MANAGED_GENERATION_CONTINUATION', source: 'execution journal/session runs' });
+      }
     } catch { add('unknown', 'RUN_SOURCE_UNAVAILABLE', 'source.runs'); }
     if ([...this.bindings.values()].some(binding => binding.session_id === sessionId
       && binding.conversation_id !== conversationId)) {

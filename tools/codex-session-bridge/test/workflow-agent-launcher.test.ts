@@ -9,6 +9,7 @@ import type { AddressInfo } from 'node:net';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Harness } from '../src/harness/harness.ts';
+import { subjectIdentity } from '../src/harness/workflow.ts';
 import { createHttpServer } from '../src/http.js';
 import { FileWorkflowAgentAuthoritySource, WorkflowAgentLauncher, digestWorkflowAgentPolicy,
   startWorkflowAgentInputSchema } from '../src/orchestration/workflow-agent-launcher.ts';
@@ -82,13 +83,11 @@ function fixture(t: test.TestContext, action: 'ticket-design' | 'finding-fix' | 
         policy_digest: snapshot.policy.digest },
       confirmed_request: companionText };
   } } : authority;
-  let starts = 0, lastPrompt = '';
+  let starts = 0, sends = 0, lastPrompt = '';
   const manager = { get harness() { return harness; }, workflowAgentAuthority: trustedAuthority,
     async startGuarded(input: any, guard: (dispatch: any) => unknown) {
     starts++; lastPrompt = input.prompt;
     assert.equal(input.permissions, undefined);
-    const reserved = harness.executionOperations.findByRequest(registration.ticket_id, 'request-1');
-    assert.equal(reserved?.state, 'reserved');
     const fingerprint = sha256(input.request_id);
     guard({ request_id: input.request_id, fingerprint, cwd: input.cwd,
       config: { model: input.model, reasoning: input.reasoning },
@@ -101,6 +100,19 @@ function fixture(t: test.TestContext, action: 'ticket-design' | 'finding-fix' | 
     runs.set(run_id, { id: run_id, session_id, status: 'running' });
     requests.set(input.request_id, { request_id: input.request_id, fingerprint, session_id, run_id,
       status: 'running' });
+  }, async sendGuarded(input: any, guard: (dispatch: any) => unknown) {
+    sends++; lastPrompt = input.prompt;
+    const fingerprint = sha256(input.request_id);
+    guard({ request_id: input.request_id, fingerprint, cwd: repo, session_id: input.session_id,
+      config: { model: input.model, reasoning: input.reasoning },
+      permissions: { sandbox_mode: 'danger-full-access', approval_policy: 'on-request' },
+      launch: { prompt_sha256: sha256(input.prompt), prompt_utf8_bytes: Buffer.byteLength(input.prompt),
+        sender: input.sender ?? null, model: input.model ?? null, reasoning: input.reasoning ?? null,
+        timeout_ms: null, permission_selection: null } });
+    const run_id = randomUUID();
+    runs.set(run_id, { id: run_id, session_id: input.session_id, status: 'running' });
+    requests.set(input.request_id, { request_id: input.request_id, fingerprint, session_id: input.session_id,
+      run_id, status: 'running' });
   } };
   const makeLauncher = () => new WorkflowAgentLauncher({ manager, harness, workflowAuthority: trustedAuthority,
     environment: { observe: () => ({ required_paths: [], required_executables: [] }) } as any,
@@ -118,10 +130,11 @@ function fixture(t: test.TestContext, action: 'ticket-design' | 'finding-fix' | 
     ...(action === 'focused-review' ? { review_id: 'focused-1' } : {}),
     ...(action === 'acceptance-agent' ? { acceptance_id: 'acceptance-1', criteria_ref: '#114-AC-smoke' } : {}) });
   t.after(() => { harness.close(); rmSync(root, { recursive: true, force: true }); });
-  return { input, makeLauncher, manager, registration, repo, source, sessions, runs,
+  return { input, makeLauncher, manager, registration, repo, source, sessions, runs, requests,
+    authorityPath, authorization, workflow, policy,
     runtime: path.join(root, 'runtime'),
     get harness() { return harness; }, set harness(value: Harness) { harness = value; },
-    get starts() { return starts; }, get lastPrompt() { return lastPrompt; } };
+    get starts() { return starts; }, get sends() { return sends; }, get lastPrompt() { return lastPrompt; } };
 }
 
 test('typed contract rejects unsupported actions and caller-selected permissions', t => {
@@ -130,10 +143,89 @@ test('typed contract rejects unsupported actions and caller-selected permissions
   assert.equal(startWorkflowAgentInputSchema.safeParse({ ...f.input(), permissions: {
     sandbox_mode: 'read-only' } }).success, false);
   assert.equal(startWorkflowAgentInputSchema.safeParse({ ...f.input(), confirmed_request: '伪造 Owner 确认' }).success, false);
+  for (const override of [{ session: 'fresh' }, { execution_mode: 'replace' },
+    { purpose: 'design' }, { generation: 2 }, { session_id: randomUUID() }]) {
+    assert.equal(startWorkflowAgentInputSchema.safeParse({ ...f.input(), ...override }).success, false);
+  }
   const { references, current_delta, ...narrow } = f.input();
   assert.equal(startWorkflowAgentInputSchema.safeParse({ ...narrow, action: 'finding-fix',
     finding: { origin_review_id: 'r', finding_id: 'f', report_ref: 'report', fix_baseline: 'base' },
     confirmed_request: 'x'.repeat(20000) }).success, false);
+});
+
+test('terminal run keeps its work item active and the next request continues the usable generation', async t => {
+  const f = fixture(t, 'ticket-design');
+  const first = await f.makeLauncher().start(f.input());
+  assert.equal(first.work_item.state, 'active');
+  assert.equal(first.execution_mode, 'fresh');
+  for (const run of f.runs.values()) run.status = 'completed';
+  const second = await f.makeLauncher().start({ ...f.input(), request_id: 'request-2',
+    work_item: { work_item_id: first.work_item.work_item_id, revision: first.work_item.revision } });
+  assert.equal(f.starts, 1);
+  assert.equal(f.sends, 1);
+  assert.equal(second.work_item.work_item_id, first.work_item.work_item_id);
+  assert.equal(second.work_item.generation, 1);
+  assert.equal(second.execution_mode, 'continue');
+  assert.equal(second.runtime.session_id, first.runtime.session_id);
+});
+
+test('an expanded issue set remains in the same repair work item and generation', async t => {
+  const f = fixture(t, 'finding-fix');
+  const first = await f.makeLauncher().start(f.input());
+  for (const run of f.runs.values()) run.status = 'completed';
+  const finding = f.input().finding!;
+  const secondFinding = { ...finding, finding_id: 'finding-2' };
+  f.workflow.snapshot.findings.push({ ...secondFinding, status: 'open' });
+  const { finding: _finding, ...auth } = f.authorization;
+  writeFileSync(f.authorityPath, JSON.stringify({ schema_version: 1, policies: [f.policy],
+    authorizations: [{ ...auth, finding_batch: [finding, secondFinding] }] }), 'utf8');
+  const { finding: _old, ...input } = f.input();
+  const second = await f.makeLauncher().start({ ...input, request_id: 'request-2',
+    finding_batch: [finding, secondFinding],
+    work_item: { work_item_id: first.work_item.work_item_id, revision: first.work_item.revision } });
+  assert.equal(second.work_item.work_item_id, first.work_item.work_item_id);
+  assert.equal(second.work_item.issue_set.length, 2);
+  assert.equal(f.starts, 1); assert.equal(f.sends, 1);
+});
+
+test('missing runtime thread replaces the generation but keeps work item identity', async t => {
+  const f = fixture(t, 'ticket-design');
+  const first = await f.makeLauncher().start(f.input());
+  for (const run of f.runs.values()) run.status = 'interrupted';
+  f.sessions.get(first.runtime.session_id).codex_thread_id = null;
+  const second = await f.makeLauncher().start({ ...f.input(), request_id: 'request-2',
+    work_item: { work_item_id: first.work_item.work_item_id, revision: first.work_item.revision } });
+  assert.equal(second.work_item.work_item_id, first.work_item.work_item_id);
+  assert.equal(second.execution_mode, 'replace');
+  assert.equal(second.work_item.generation, 2);
+  assert.equal(second.work_item.generations[0].state, 'retired');
+  assert.notEqual(second.runtime.session_id, first.runtime.session_id);
+});
+
+test('repair handoff and failed verification resume the original repair generation', async t => {
+  const f = fixture(t, 'finding-fix');
+  const first = await f.makeLauncher().start(f.input());
+  for (const run of f.runs.values()) run.status = 'completed';
+  const operations = f.harness.executionOperations;
+  operations.dependencies.assessWorkflow = () => ({ state: 'verified' });
+  for (const finding of f.workflow.snapshot.findings) finding.status = 'fixed-unverified';
+  const grant = { decision_ref: 'owner:handoff', work_item_id: first.work_item.work_item_id,
+    expected_revision: first.work_item.revision, workflow_revision: 2,
+    subject_ref: 'subject-007', content_version: f.input().expected.content_identity.digest,
+    action: 'await-verification', evidence_refs: ['review/report.md'] };
+  const waiting = operations.transitionWorkItem(grant);
+  assert.equal(waiting.state, 'awaiting_verification');
+  assert.equal(waiting.generations[0].state, 'suspended');
+  (f.workflow.snapshot.reviews as any[]).push({ review_id: 'focused-1', mode: 'focused',
+    original_review_id: 'review-1', subject_ref: 'subject-007', isolated: true, applicability: 'verified', status: 'findings',
+    subject_identity: subjectIdentity(f.workflow.snapshot.subject as any) });
+  const resumed = operations.transitionWorkItem({ ...grant, decision_ref: 'review:failed',
+    expected_revision: waiting.revision, action: 'reopen', review_id: 'focused-1' });
+  assert.equal(resumed.state, 'active');
+  const second = await f.makeLauncher().start({ ...f.input(), request_id: 'request-2',
+    work_item: { work_item_id: resumed.work_item_id, revision: resumed.revision } });
+  assert.equal(second.runtime.session_id, first.runtime.session_id);
+  assert.equal(second.work_item.generation, 1);
 });
 
 test('public MCP exposes the typed Workflow Agent launcher', async t => {

@@ -3,6 +3,8 @@ import { readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { companionRequest, companionRequestPrompt } from './companion-request.ts';
 import { z } from 'zod';
+import { workItemReferenceSchema } from '../harness/work-item-model.ts';
+import { dispatchWorkItem } from './dispatch-work-item.ts';
 import { HarnessError } from '../harness/model.ts';
 import { companionDispatchProtectionSchema, executionContentIdentitySchema, implementationAuthoritySourceIdentitySchema,
   reviewAuthorizationSchema, reviewLaunchContractSchema, reviewPolicySnapshotSchema } from '../harness/execution-model.ts';
@@ -13,6 +15,7 @@ const policyBodySchema = reviewPolicySnapshotSchema.omit({ digest: true });
 const authorityFileSchema = z.object({ schema_version: z.literal(1), active_policy: policyBodySchema,
   authorizations: z.array(reviewAuthorizationSchema).max(1024) }).strict();
 export const startTicketReviewInputSchema = z.object({
+  work_item: workItemReferenceSchema.optional(),
   schema_version: z.literal(1), ticket_id: z.string().uuid(),
   request_id: z.string().min(1).max(128).regex(/^[A-Za-z0-9._:-]+$/),
   review_id: text, authorization_ref: text,
@@ -35,7 +38,7 @@ const inside = (root: string, candidate: string) => {
   return relative === '' || relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
 };
 const contract = reviewLaunchContractSchema.parse({ schema_version: 1, kind: 'ticket-review',
-  destination: 'review-child', participant: 'coordinator', session: 'fresh' });
+  destination: 'review-child', participant: 'coordinator', session: 'work-item' });
 export const reviewContractDigest = sha256(stable(contract));
 export function digestReviewPolicy(value: unknown) { return sha256(stable(policyBodySchema.parse(value))); }
 
@@ -167,11 +170,11 @@ export class ReviewLauncher {
   private prompt(snapshot: ReturnType<ReviewLauncher['current']>, input: Input) {
     const references = [...new Set([snapshot.ticket.reference, ...input.references])];
     return { references, text: [
-      '执行 Ticket fresh Review，顺序检查 Standards 与 Spec 两轴。仅从以下持久化引用恢复上下文：',
+      '执行 Ticket 独立 Review，顺序检查 Standards 与 Spec 两轴。仅从以下持久化引用恢复上下文：',
       ...(companionRequest(snapshot.authority) ? [companionRequestPrompt(companionRequest(snapshot.authority)!)] : []),
       ...references.map(value => `- ${value}`),
       '当前 delta：', ...input.current_delta.map(value => `- ${value.ref}: ${value.value ?? 'null'}`),
-      `Review ID：${input.review_id}；subject：${input.expected.subject_ref}；session=fresh；destination=Review child。`,
+      `Review ID：${input.review_id}；subject：${input.expected.subject_ref}；session 由独立审查工作项绑定决定；destination=Review child。`,
       ...( (snapshot.authority as any).companion_result_path
         ? [`Companion 结果产物：写 ${(snapshot.authority as any).companion_result_path}，UTF-8 JSON，字段 schema_version=1、action="review"、status="completed"|"blocked"|"incomplete"、report_ref、blockers 字符串数组、axes:{standards,spec}（各为 passed/findings/incomplete）、findings 数组。身份字段 request_id、subject_ref、subject_identity 按 ${JSON.stringify((snapshot.authority as any).companion_result_identity)} 写入；operation_id、run_id 由 Harness 根据真实运行回执绑定，无需写入结果文件。报告文件须置于结果文件同目录。`] : []),
       '报告 findings 与证据后停止；不要实现、验收或执行外部写入。',
@@ -194,6 +197,7 @@ export class ReviewLauncher {
     const snapshot = this.current(input);
     const prompt = this.prompt(snapshot, input);
     const reserved = this.harness.executionOperations.reserve({
+      ...(input.work_item ? { work_item: input.work_item } : {}),
       ticket_id: input.ticket_id, request_id: input.request_id,
       destination: { kind: 'child', relation: { kind: 'review', review_id: input.review_id, participant: 'coordinator' } },
       expected_workflow_revision: input.expected.workflow_revision, subject_ref: input.expected.subject_ref,
@@ -214,7 +218,7 @@ export class ReviewLauncher {
     if (reserved.deduplicated) return { ...this.harness.executionOperations.reconcile(reserved.operation_id),
       deduplicated: true };
     try {
-      await this.manager.startGuarded({ request_id: reserved.runtime.request_id, cwd: snapshot.cwd,
+      await dispatchWorkItem(this.manager, reserved, { request_id: reserved.runtime.request_id, cwd: snapshot.cwd,
         prompt: prompt.text, sender: 'Emilia', model: snapshot.policy.model, reasoning: snapshot.policy.reasoning },
       (dispatch: any) => {
         this.current(input, snapshot.authority);

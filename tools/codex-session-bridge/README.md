@@ -123,21 +123,32 @@ Windows 常驻服务可以显式传入 `--codex-bin 'C:\path\to\codex.exe'`，�
 
 ## 工具
 
-正常 Repository Engineer 模型启动使用 `start_workflow_agent`。`action` 严格限定为 `ticket-design`、`implementation`、`finding-fix`、`review`、`focused-review`、`acceptance-agent`；阶段策略固定 fresh session、Main/Review child/Acceptance child、模型策略及 Owner native permissions。implementation/review 的原有输入经同一入口兼容映射。新增阶段由服务端 `--workflow-agent-authority` 指向工作树外的受信任 JSON，按 action 配置版本化 policy 与 Ticket authorization；未配置时拒绝启动。当前 MCP 平台仍公开低层工具，因此这里只能保证推荐路径，不能宣称低层入口已被物理隐藏。`codex_start_session`、`harness_attach`、`harness_associate_child_conversation` 供兼容、诊断或管理员显式操作。
+正常 Repository Engineer 执行统一使用 `start_workflow_agent`。`action` 限定职责；ExecutionOperations 根据持久化 work item、受信授权、对象与 session generation 推导 `fresh / continue / replace`，不接受调用者指定执行方式。首次职责切换 fresh；同一未完成工作项的 terminal run 不关闭工作项，后续请求须携带 `work_item: {work_item_id, revision}` 继续 usable session。相关问题只增补 issue set，正常编辑/commit 只更新 content version。implementation/review 兼容 wrapper 同样受此 gate 约束。
 
-受信任 authorization 为 `finding-fix` / `focused-review` 固定原 finding 与可选的最多 8 条 `finding_context_refs`；启动时从当前 Workflow subject 推导 fix delta，并核对 focused Review 的 subject 身份。`acceptance-agent` authorization 还需给出 `agent_criterion`（具体 `criteria_ref`、要求文本和 `behavior: "agent-session"`）；启动时核对当前 Workflow Acceptance 中存在同一 criterion。
+policy 与 Ticket authorization 仍由相应的 implementation/review/workflow authority 提供；缺少授权时拒绝执行。职责交接、修复等待验证、验证失败恢复与 reviewer 追加预算由 `transition_work_item` 应用受信决定；unknown 先用 `reconcile_work_item` 核对原操作，不重发模型执行。新 scope 必须在受信 authorization 中提供 `work_item_scope: {scope_ref, parent_work_item_id, decision_ref}`，不能靠换 ID 绕过原工作项。默认 focused review 预算为一个内容版本；同版本未完成检查可续发，新内容版本消耗下一轮授权预算。
+
+服务端可配置 `--execution-authority <工作树及 allow-cwd 之外的绝对 JSON 路径>`。该文件为 `{schema_version: 1, decisions: [], raw_access: []}`。decision 包含 `decision_ref, work_item_id, expected_revision, workflow_revision, subject_ref, content_version, action, evidence_refs, evidence`；`evidence` 为工作树内文件的 `{path, sha256}` 数组，必须覆盖 evidence_refs。action 为 await-verification、complete、reopen、retire-generation、cancel 或 review-budget；审查相关转换还需 review_id，增加预算需 review_budget，授权变更换代可指定 next_authority_digest。证据、当前内容与版本冲突时拒绝转换；run completed 不能替代完成证据。
+
+低层 `codex_start_session / codex_send_message` 仅保留明确、可审计的 compatibility/diagnostic/admin 路径。调用必须传 `authorization_ref`，匹配受信 raw_access 项的 `authorization_ref, category, action: start|send, payload_digest, reason`。payload_digest 使用 work-items.ts 的 workDigest，对移除 authorization_ref 后的实际 payload 做键排序的稳定 JSON SHA-256；不能把 raw 权限附在普通 workflow 上。受管工作项的全部 generation（包括 retired）禁止 raw send。未配置授权源或无精确 grant 时拒绝 raw 执行。`harness_attach / harness_associate_child_conversation` 仅登记归属，不授予执行权限。Owner 原生权限模型不变。
+
+工作项与绑定复用现有 execution journal；transport manager 只提供同步 guarded start/send seam。旧 journal 可回放，但旧 session 不会被自动收编为新工作项。上层 adapter 必须持久化真实工作项引用并显式办理有证据的交接，不能仅凭终态 run 推进；未适配时 fail closed。当前验证级别是代码与契约测试，尚未进行生产或真实模型链路验收。
+
+受信任 authorization 为 `finding-fix` / `focused-review` 固定 finding 或 finding_batch 与可选的最多 8 条 `finding_context_refs`。修复批次必须覆盖原 Review 当前全部未验证问题；启动时从当前 Workflow subject 推导 fix delta，并核对 focused Review 的 subject 身份。`acceptance-agent` authorization 还需给出 `agent_criterion`（具体 `criteria_ref`、要求文本和 `behavior: "agent-session"`）；启动时核对当前 Workflow Acceptance 中存在同一 criterion。
 
 | 工具 | 主要输入 | 返回 |
 | --- | --- | --- |
 | `start_workflow_agent` | `action, ticket_id, request_id, authorization_ref, expected`；`ticket-design` / `acceptance-agent` 必填 `references, current_delta`；`finding-fix` / `focused-review` 必填 `finding`，引用与 fix delta 从受信任 authorization / Workflow 生成，拒绝调用者传入 `references, current_delta`；`focused-review` 必填 `review_id`，`acceptance-agent` 必填 `acceptance_id, criteria_ref` | durable operation receipt、实际冻结权限及 Main/child 归属 |
-| `start_ticket_implementation` / `start_ticket_review` | 既有输入 | 兼容 wrapper，receipt 与重启 reconcile 沿用既有记录 |
+| `start_ticket_implementation` / `start_ticket_review` | 既有输入；续发增加 `work_item: {work_item_id, revision}` | 受同一 gate 管理，返回 work_item、execution_mode 和实际运行回执 |
+| `get_work_item` | `work_item_id` | 当前 revision、state、issue_set、parent_refs、cycle_id、generations 与复核预算 |
+| `transition_work_item` | `work_item_id, revision, decision_ref` | 受信证据校验后的工作项；调用方不能自报目标 state 或预算 |
+| `reconcile_work_item` | `work_item_id, revision` | 核验已记录 runtime request 并恢复绑定；unknown 不启动替代执行 |
 | `harness_register_ticket` | `project_key, project_name, ticket_key, title, reference, expected_worktree?` | 稳定 `project_id, ticket_id, conversation_id` |
 | `harness_attach` | `ticket_id, session_id, run_id?` | 显式 Codex 归属与 recording 状态 |
 | `harness_record_workflow` | `ticket_id, request_id, expected_revision, schema_version: 1, snapshot` | `workflow_revision, event_id, cursor, deduplicated, applicability, recording` |
 | `harness_associate_child_conversation` | `ticket_id, request_id, session_id, run_id, relation` | `conversation_id, parent_conversation_id, binding_id, isolation, event_id, cursor, deduplicated, recording` |
 | `codex_list_models` | `refresh?` | 本机模型、各自 reasoning 档位、查询时间 |
-| `codex_start_session` | `request_id, cwd, prompt, permissions?, sender?, model?, reasoning?, timeout_ms?` | `session_id, run_id, status, model, reasoning, permissions, timeout_ms, deduplicated` |
-| `codex_send_message` | `request_id, session_id, prompt, sender?, model?, reasoning?, timeout_ms?` | 同上；权限固定继承 session，不能在续聊中切换 |
+| `codex_start_session` | 精确受信 `authorization_ref` 与 `request_id, cwd, prompt, permissions?, sender?, model?, reasoning?, timeout_ms?` | 仅获准 raw 路径返回 session/run 回执 |
+| `codex_send_message` | 精确受信 `authorization_ref` 与 `request_id, session_id, prompt, sender?, model?, reasoning?, timeout_ms?` | 同上；禁止续发受管工作项 session，权限仍固定继承 session |
 | `codex_get_status` | `session_id? / run_id?`，至少一个 | session、选定 run、当前 session 状态 |
 | `codex_get_output` | `run_id, cursor?, limit?, wait_ms?` | 事件、`next_cursor`、`has_more`、状态、最终回复、`return_reason` |
 | `codex_stop_session` | `session_id` | 停止进度，需继续查状态 |

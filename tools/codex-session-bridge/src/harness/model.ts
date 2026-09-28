@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { workItemTransitionRecordSchema, rawExecutionRecordSchema } from './work-item-model.ts';
 import { taskRecordSchema } from './task-model.ts';
 import { workflowObservationRecordSchema, workflowSnapshotRecordSchema } from './workflow-model.ts';
 import { childConversationAssociationRecordSchema, isolationAssessmentSchema } from './conversation-model.ts';
@@ -93,6 +94,8 @@ export const recordSchema = z.object({
     executionOperationReservedRecordSchema,
     executionOperationTransitionedRecordSchema,
     executionOperationBoundRecordSchema,
+    workItemTransitionRecordSchema,
+    rawExecutionRecordSchema,
     z.object({ kind: z.literal('control_action'), control: z.object({
       control_id: id, ticket_id: id, action: z.enum(['refresh', 'run.stop', 'task.stop', 'worktree.open']),
       stage: z.enum(['requested', 'result']), outcome: text, target: z.unknown(), source_status: z.unknown(),
