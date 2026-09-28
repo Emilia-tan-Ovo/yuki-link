@@ -16,5 +16,8 @@
 - fresh worktree 默认建立在仓库 allowlist 内的 `.local/worktrees/<ticket-or-maintenance>`；Context Plan / prompt 中代码与测试入口必须写完整 repo-relative path，不依赖隐含 cwd。
 - **普通 Ticket raw input 成本参考目标：** ticket-design ≤1.5M、implementation ≤3M、primary Review ≤2M、finding fix ≤1M、focused re-review ≤0.7M，整票累计目标 ≤6M。以上均为诊断与优化目标，**不是硬上限，也不因超过固定数字自动禁止下一次模型 run**。阶段或整票明显高于目标、出现重复肥上下文/异常暴涨，或消耗与当前任务规模明显不相称时，标记 `cost anomaly`，在下一次模型调用前简短说明主要消耗来源、继续的必要性与收缩方案；复杂或大票可合理超标。只有出现明显失控或无效重复时才暂停扩展并先收缩，不以 3M/6M 等固定数字机械熔断。raw/cached/output usage 由 YCA durable run status 记录；这些数字是工程诊断指标，不等同于产品周额度的 1:1 token 计费。
 - 仓库工程执行继承 Owner 本机原生权限并在创建 session 时冻结；正常编排路径的 gate 不修改 Owner Full Access。权限来源变化按生命周期协议处理，不能静默降级。
+- 创建 Codex session 时优先省略 `permissions`，由 YCA 解析并冻结 Owner 当前本机默认；具体权限值从当前事实读取，不硬编码。
+- GitHub 写入默认由已认证的 Emilia + YCA direct 完成；只有确需 Repository Engineer 自己操作且其认证已单独验证时才交给模型。
+- 本项目 runtime gate 在现有 ExecutionOperations / WorkflowAgentLauncher 与执行 journal 上扩展；transport manager 仅提供通用 guarded start/send seam，不承载工作流状态机，不另建并行状态库。
 - PowerShell 使用 pwsh.exe，文本读写显式 UTF-8；优先使用项目已就绪的宿主工具与依赖。GitHub/部署等外部写入仍以本轮具体授权为界。
 - 工作项达到完成条件后停止扩展。Owner 明确要求收尾时，只处理当前范围、checkpoint 与必要交接。

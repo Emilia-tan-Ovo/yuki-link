@@ -26,7 +26,7 @@ Use /tdd where possible, at pre-agreed seams. 实现模型只运行直接驱动�
 
 ### delegated：workflow 调用
 
-实现和测试完成后，在授权范围内 commit 到当前分支；先核对只包含本任务文件。按 [Implementation Handoff](handoff-template.md) 持久化并回读验证，返回上层，由上层在 fresh context 调用同根 review-change。
+实现和测试完成后，在授权范围内 commit 到当前分支；先核对只包含本任务文件。按 [Implementation Handoff](handoff-template.md) 持久化并回读验证，返回上层，由上层按 engineering-workflow 生命周期选择首次独立审查或续发复核，再调用同根 review-change；reviewer 不继承被审者的 implementation 聊天。
 
 本 implementation session 不调用 code-review/review-change，不自行给实现下审查结论。上层若明确接手启动 reviewer，完成交接后停止。未获 commit 权限或提交失败时如实记录未提交内容、原因和下一步；不伪造 commit、不把交接误报成 Review/acceptance 通过。
 

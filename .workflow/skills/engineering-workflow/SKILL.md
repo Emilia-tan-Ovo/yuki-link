@@ -64,9 +64,9 @@ checkpoint 的 `phase` 表示**下一步要进行的工作**，不是已经完�
 6. 聊天切换、中断、服务重启和上下文压缩不自动触发 fresh。恢复先核对已记录的工作项、runtime 与副作用；unknown 先 reconcile，确认无重复执行风险后再续发或换代。内容版本变化只使相应测试、审查证据重新判定适用性。
 7. 相关问题集中修复，局部变化做必要定向检查；工作项收敛并准备交接时统一做必要完整检查。不要对每个问题机械重复 full suite、commit、restart 或 Review；新证据确有需要时允许补验。
 
-**后续 runtime 实现要求，本轮未实现：** 受管 start / continue / replace 应由持久化工作项、绑定、受信授权与当前对象事实推导，不能接受调用方自报 fresh 理由。入口应校验身份/revision/state、职责/范围/对象/授权、generation 归属、active/unknown run、内容版本、审查隔离和模型并发策略；创建与拆分也必须受约束。扩展现有 execution journal 与 launcher，不另建并行状态库，不把工作流状态机下沉到 transport manager。raw 低层入口不能成为正常 workflow 的绕过路径，只保留明确、可审计的兼容/诊断/管理授权，不改变 Owner 原生权限。
+**受管 runtime 契约：** runtime adapter 必须持久化工作项、授权与执行归属；start / continue / replace 由这些记录和当前对象事实推导，不能接受调用方自报 fresh 理由。入口校验身份/revision/state、职责/范围/对象/授权、generation 归属、active/unknown run、内容版本、审查隔离和模型并发策略；创建与拆分也受约束。unknown 先 reconcile。raw 低层入口不能成为正常 workflow 的绕过路径，只保留明确、可审计的兼容/诊断/管理授权，不改变 Owner 原生权限。具体实现与验收状态由项目文档声明。
 
-gate 落地后，journal 为受管工作项状态的权威来源，checkpoint 只保存引用和观察值。当前尚无该 gate 时，在 checkpoint 保存最少生命周期事实及外部核验引用，由编排者遵守本节；不得把文档规则宣称为已实现的硬门禁。
+已具备 gate 时，runtime 持久化记录为受管工作项状态的权威来源，checkpoint 只保存引用和观察值。尚无该能力时，在 checkpoint 保存最少生命周期事实及外部核验引用，由编排者遵守本节；不得把文档规则宣称为已实现的硬门禁。
 
 #### Context Plan
 
@@ -81,7 +81,7 @@ gate 落地后，journal 为受管工作项状态的权威来源，checkpoint �
 implementation prompt 引用 Context Plan 与持久化来源，从 Core 开始、Related 按需展开；显著超出计划时只需在 handoff/checkpoint 说明扩张原因和新增关键来源，不维护逐文件阅读账本。Codex 自身的 compaction、cache、history/notes 或其他原生 context management 仍由 Codex 管理；Workflow **不另建竞争性的模型记忆或压缩状态**。工程 source of truth 继续是 Git、Ticket/Notes、checkpoint 与可核验外部事实。
 #### 模型路由
 
-- 模型路由以仓库根 `AGENTS.md` 的“模型路由固定”为唯一规范。启动前读取当前政策，并按当前阶段难度选择；高层受保护 launch 仍以可信 authority snapshot 与 Codex catalog 共同决定实际 model/reasoning。
+- 模型路由以仓库根 `AGENTS.md` 的“模型路由固定”为唯一规范。启动前读取当前政策，并按当前阶段难度选择；runtime adapter 以受信授权与当前模型能力共同核定实际 model/reasoning。
 
 #### 0-token 环境 preflight
 
@@ -95,7 +95,7 @@ implementation prompt 引用 Context Plan 与持久化来源，从 Core 开始�
 6. 下一 model session 的模型/reasoning、权限默认与 `model_usage` anomaly 状态。
 7. fresh worktree 默认位于仓库 allowlist 内的 `.local/worktrees/<ticket-or-maintenance>`；Context Plan / prompt 的代码与测试入口使用完整 repo-relative path，不依赖调用时 cwd；
 8. 当前已知工具缺口及 fallback（例如宿主无 `rg` → PowerShell/Git）写入 checkpoint/preflight 结论；同一环境事实不得让每个模型 session 重新失败一次；
-9. 执行工具 `request_id` 只在 protected payload 完全相同时复用；脚本、cwd 或参数变化即生成新 request_id；
+9. runtime adapter 的 `request_id` 只在 protected payload 完全相同时复用；脚本、cwd 或参数变化即生成新 request_id；
 10. 机械命令若包含长 Markdown/JSON、反引号、regex、here-string 或多层 shell 字符串，先拆成文件/参数再调用；不要把格式转义问题交给模型试错。
 
 Preflight 失败时先修环境或记录阻塞原因，**不得启动模型来诊断一个确定性工具已经能发现的问题**。
@@ -109,10 +109,10 @@ Preflight 失败时先修环境或记录阻塞原因，**不得启动模型来�
 
 #### 并发与机械工作
 
-- 默认最多一条活跃 Codex 模型工作线。第二条模型线只有在能明确缩短关键路径且 Owner 明确批准后才能启动；“允许并发”只是上限，不是默认配置。
+- 默认最多一条活跃 Repository Engineer 模型工作线。第二条模型线只有在能明确缩短关键路径且 Owner 明确批准后才能启动；“允许并发”只是上限，不是默认配置。
 - Git/status/diff、hash、checkpoint/closeout、GitHub Issue/PR/merge/close、full suite 执行、日志筛选/压缩等由 Orchestrator 通过确定性工具完成，不为方便启动模型。
 - 长 Markdown/JSON/PR body 使用 `filesystem_write` + `--body-file`/脚本文件；Git revision/range 作为独立参数或先构造单一变量；纯字符串匹配优先 `-SimpleMatch` / `.Contains()`；安全 fixture 被 `filesystem_*` 判为 `SENSITIVE_CONTENT` 时，改用 PowerShell 精确行段，不重复撞拒绝。
-- 同一 baseline/full-suite 红项连续出现在两张 Ticket，或两个独立观测都复现时，必须在下一 frontier 前升级为 maintenance 或明确 follow-up Issue；不能无限期以“非本票阻塞项”携带。若根因是过时测试/fixture，优先修测试确定性；若确属环境限制，记录 owner、触发条件和后续验证入口。
+- 同一 baseline/full-suite 红项连续出现在两张 Ticket，或两个独立观测都复现时，必须在下一 frontier 前处理为 maintenance，或明确延后。任何 deferred 的重复红项都必须记录 owner 与可定位的 follow-up reference，不能只有 Issue 没有责任人，也不能无限期以“非本票阻塞项”携带。若根因是过时测试/fixture，优先修测试确定性；环境限制同样记录责任人、触发条件和后续验证入口。
 - 实现模型只运行直接驱动当前红→绿所需的最小定向测试与必要 typecheck；完整测试套件默认由执行工具执行。若 full suite 失败，只把计数、退出码、失败 case 与必要上下文切片交给模型。
 - 大型日志、Git history、runtime JSONL、完整测试输出和长文件先经确定性工具筛选/压缩；fresh session 只接收结构化摘要、失败切片和来源引用。
 
@@ -152,15 +152,15 @@ implement 返回持久化 Implementation Handoff 后，核对测试、实际 com
 
 ## 3. 在边界保存可恢复产物
 
-使用随包 [checkpoint 模板](checkpoint-template.md)。设计产物写到仓库约定的 handoff / Spec / Ticket，执行状态留在非 Git checkpoint。确认 `.local/` 已被忽略；如未忽略，先为当前仓库建立忽略规则再写，不能把运行状态纳入提交。以 UTF-8 保存 checkpoint；已有运行时权威记录时只存观察引用，不能从 Markdown 覆盖 journal。存在活跃 writer 时先确定所有权。
+使用随包 [checkpoint 模板](checkpoint-template.md)。设计产物写到仓库约定的 handoff / Spec / Ticket，执行状态留在非 Git checkpoint。确认 `.local/` 已被忽略；如未忽略，先为当前仓库建立忽略规则再写，不能把运行状态纳入提交。以 UTF-8 保存 checkpoint；已有运行时权威记录时只存观察引用，不能从 Markdown 覆盖 runtime 权威记录。存在活跃 writer 时先确定所有权。
 
 只在以下变化后更新：阶段交接、finding 状态变化、acceptance 转换、影响恢复路径的异常/中断，**以及每个模型 run 终态后更新 `model_usage`**。普通命令、轮询和未改变下一步的证据读取不触发其他正文更新。正文保存引用与短结论，不复制完整聊天、逐命令日志或大型 JSONL。
 
 每次交接检查：已确认决定可定位；证据指向具体文件/命令结果和内容身份；finding 有状态；未知/已完成副作用区分；`Next action` 是可直接执行的一步。工作项交接遵循生命周期协议：先保存并回读 Notes/checkpoint，再从持久化事实推进。checkpoint 同时保存最新 `model_usage` 与 anomaly 状态。
 
-若当前执行工具已登记 Harness Ticket 且公开提供 `harness_record_workflow`，在阶段交接、finding 状态变化、Acceptance 转换或恢复异常完成本地产物与外部事实核对后，由 Orchestrator 提交一次完整结构化快照，并保存成功回执中的 revision/event_id/cursor；首次 expected_revision 为 null，后续使用最近成功 revision。冲突时先读取最新记录协调，不覆盖；记录失败不把阶段误报为已保存，也不重放工程动作。未启用 Harness 的独立 Workflow 保持原 checkpoint 约定，不把该入口当成新的执行、Review 或 Acceptance Agent。
+若 runtime adapter 提供结构化工作流记录，在阶段交接、问题状态变化、验收转换或恢复异常完成核验后，由 Orchestrator 保存快照并记录成功回执的 revision 与查询引用。冲突时读取最新记录协调，不覆盖；记录失败不冒报成功，也不重放工程动作。未提供该能力时保留 checkpoint 与外部证据，不编造回执。
 
-独立审查工作项的输入只含 fixed point、目标 diff/内容身份、Ticket/Spec、标准及必要测试证据，不能继承 implementation 聊天。Acceptance 默认由 Orchestrator 使用外部事实直接核验；只有验收 criteria 本身要求 Agent 路由、session/thread continuity 或其他模型行为时才启动 fresh acceptance agent，且不为普通 Ticket 额外构造验收矩阵。
+独立审查工作项的输入只含 fixed point、目标 diff/内容身份、Ticket/Spec、标准及必要测试证据，不能继承被审者的 implementation 聊天。
 
 ## 4. 中断与交接
 

@@ -2,7 +2,7 @@
 
 ## 1. 按信息分层重建
 
-先按 [工作项生命周期](SKILL.md#工作项生命周期) 定位已记录的 work item、generation 与执行事实。已有运行时 journal 时核对其 revision 与 operation，checkpoint 不反向覆盖它；尚未实现 gate 时核对 checkpoint 及原始证据，缺失 ID 保持未知，不虚构运行时支持。
+先按 [工作项生命周期](SKILL.md#工作项生命周期) 定位 current 与未完成 related work items、各自 generation/state/issue set 及执行事实。用 cycle_id 与关联 id 恢复原 repair/reviewer 关系，同时核对复核预算 owner、allowance、已消费轮次和追加授权。编排 id 不当作 runtime ID；runtime 字段为 null 时从外部证据核验，不虚构运行时支持。已有 runtime 持久化记录时核对 revision 与 operation，checkpoint 不反向覆盖它。
 
 可以先用 checkpoint 文件名定位 Ticket，但正式读取与理解顺序固定为 Ticket → source Spec → CONTEXT/ADR/AGENTS → Implementation Notes → checkpoint。缺失产物先按仓库/Git/Issue 引用寻找；不能用 checkpoint 摘要替代完整要求，也不能把未知状态自动升级为成功。
 
@@ -21,7 +21,7 @@ Ticket 没有内嵌 Notes 时，先查仓库约定的替代 Notes；无约定则
 | runtime / acceptance | 重新查询当前进程身份、selected/running release、配置和实际验收响应（仅与本票相关项） | 一次探测不是永久配置；依赖变化需要相应回归，不直接重启未知归属服务 |
 | 外部副作用 | 查询 Git commit/远端 ref、现有 PR/Issue、apply plan/receipt 与实际目标内容 | completed 且匹配则跳过；unknown 先调查，查不清则保留现场/阻塞该动作；只能在证明未发生且授权仍有效后重试 |
 
-每项标注 verified / stale / unknown / not-applicable，并指向本次观察。不要为纯文档 fixture 启动真实 执行工具 或 runtime；可控 fixture 文件是测试输入，必须明确区别于真实工具事件。大型数据先以确定性筛选得到有关 ID/时间窗的短摘要。
+每项标注 verified / stale / unknown / not-applicable，并指向本次观察。不要为纯文档 fixture 启动真实外部服务或生产执行链路；文件、Git 与确定性 fixture 校验可正常使用。可控 fixture 文件是测试输入，必须明确区别于真实工具事件。大型数据先以确定性筛选得到有关 ID/时间窗的短摘要。
 
 ## 3. 恢复正确 phase
 
