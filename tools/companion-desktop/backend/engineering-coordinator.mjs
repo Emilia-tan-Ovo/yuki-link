@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runCompanionTurn, validateDshConfig } from './dsh/runner.mjs';
 import { getEngineeringReceipt, prepareNewRequirement, getPreparationReceipt,
-  preparationConflictSources } from './yca-engineering-client.mjs';
+  getContinuationReceipt, preparationConflictSources } from './yca-engineering-client.mjs';
 
 const preparationConflict = error => {
   const value = typeof error?.code === 'string' ? error.code : error?.message;
@@ -18,9 +18,11 @@ export function loadEngineeringConfig(directory) {
 
 export class EngineeringCoordinator {
   constructor({ store, config, runTurn = runCompanionTurn, receipt = getEngineeringReceipt,
-    prepareRequirement = prepareNewRequirement, preparationReceipt = getPreparationReceipt }) {
+    prepareRequirement = prepareNewRequirement, preparationReceipt = getPreparationReceipt,
+    continuationReceipt = getContinuationReceipt }) {
     this.store = store; this.config = config; this.runTurn = runTurn; this.receipt = receipt;
     this.prepareRequirement = prepareRequirement; this.preparationReceipt = preparationReceipt;
+    this.continuationReceipt = continuationReceipt;
   }
   input(card) {
     const envelope = this.store.envelope(card.cardId,card.revision);
@@ -54,8 +56,16 @@ export class EngineeringCoordinator {
     }
   }
   async status(card) {
+    const continuationInput=this.preparationInput(card);
+    let continuation=null;
+    try { if (card.state==='confirmed') continuation=await this.continuationReceipt(this.config.ycaUrl,continuationInput); }
+    catch { /* An unavailable projection does not change the original dispatch/preparation fact. */ }
     if (card.content.resolution?.status === 'explicit_new_requirement') {
-      try { return { preparation:await this.preparationReceipt(this.config.ycaUrl,this.preparationInput(card)) }; }
+      try { return { preparation:await this.preparationReceipt(this.config.ycaUrl,this.preparationInput(card)),
+        continuation,endpoint:continuation?.endpoint ?? card.content.endpoint,
+        workflow:continuation?.workflow ?? null,acceptance:continuation?.acceptance ?? null,
+        pr_delivery:continuation?.pr_delivery ?? {state:'unknown'},
+        run:continuation?.initial_run ?? null }; }
       catch { return { preparation:{ preparation_for_ticket_design:{state:'unknown',
         blockers:['PREPARATION_RECEIPT_UNAVAILABLE']},unknown_side_effects:[] } }; }
     }
@@ -69,9 +79,13 @@ export class EngineeringCoordinator {
       dsh_turn:dispatch?.producer_state ?? 'unknown', dsh_receipt:dispatch?.producer_receipt ? JSON.parse(dispatch.producer_receipt) : null,
       engineering_operation:receipt ? { id:receipt.operation_id,state:receipt.operation_state,
         reconciliation:receipt.reconciliation } : null,
-      run:receipt?.run ?? null, workflow:receipt?.workflow ?? null,
-      acceptance:receipt?.acceptance ?? null, pr_delivery:receipt?.pr_delivery ?? {state:'unknown'},
-      receipt, observed_at:new Date().toISOString() };
+      run:continuation?.initial_run ?? receipt?.run ?? null,
+      workflow:continuation?.workflow ?? receipt?.workflow ?? null,
+      acceptance:continuation?.acceptance ?? receipt?.acceptance ?? null,
+      pr_delivery:continuation?.pr_delivery ?? receipt?.pr_delivery ?? {state:'unknown'},
+      endpoint:continuation?.endpoint ?? card.content.endpoint,
+      next_action:continuation?.next_action ?? null,
+      continuation,receipt, observed_at:new Date().toISOString() };
   }
   async dispatch(card) {
     const input = this.input(card);

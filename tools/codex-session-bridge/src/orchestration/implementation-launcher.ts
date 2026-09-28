@@ -320,7 +320,9 @@ export class ImplementationLauncher {
       `依赖事实：${JSON.stringify(snapshot.environment.dependencies ?? [])}`,
       '当前 delta：', ...input.current_delta.map(value => `- ${value.ref}: ${value.value ?? 'null'}`),
       '结构化 workflow contract：review_policy=delegated；destination=Ticket Main；session=fresh。',
-      '完成实现、最小定向测试、commit 与 Implementation Handoff 后停止；不要执行 Review。',
+      (snapshot.authority as any).companion_result_path
+        ? `Companion 结果产物：写 ${(snapshot.authority as any).companion_result_path}，UTF-8 JSON，字段 schema_version=1、action="implementation"、status="completed"|"blocked"|"incomplete"、report_ref、blockers 字符串数组、files（本票修改的 repo-relative 路径数组）。完成最小定向测试与 Implementation Handoff 后停止。Git commit、push、full suite 和 PR 由 Emilia/YCA 执行；不要执行 Review。`
+        : '完成实现、最小定向测试、commit 与 Implementation Handoff 后停止；不要执行 Review。',
     ].join('\n');
   }
 

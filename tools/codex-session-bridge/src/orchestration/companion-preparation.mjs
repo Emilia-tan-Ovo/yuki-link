@@ -451,6 +451,10 @@ export class CompanionPreparationService {
       bindings:{...value.bindings,harness:{ticketId:ticket.id,conversationId:ticket.main_conversation_id,
         ticketKey}},stepReceipts:{...value.stepReceipts,harness:{state:'verified'}}}));
     else if (record.bindings.harness.ticketId !== ticket.id) throw Error('PREPARATION_HARNESS_CONFLICT');
+    if (this.store.registerContinuation(card.cardId,card.revision,'preparation',
+      record.preparationId,ticket.id).conflict) throw Error('PREPARATION_CONTINUATION_CONFLICT');
+    this.manager.companionContinuation?.wake({schema_version:1,card_store_id:this.store.storeId,
+      card_id:card.cardId,revision:card.revision});
     const cp = checkpoint(worktree.path,ticketKey,worktree.branch,worktree.oid,issue.url);
     const snapshot = initialWorkflow(ticket,issue,worktree,cp,card);
     let workflow;
@@ -511,6 +515,7 @@ export class CompanionPreparationService {
       expected:{workflow_revision:workflow.workflow_revision,subject_ref:snapshot.subject.subject_id,
         subject_identity:null,content_identity:contentIdentity,policy:{policy_id:policy.policy_id,
           revision:policy.revision,digest:policy.digest}},references:[issue.url],current_delta:[]};
+    mkdirSync(path.join(worktree.path,'.local','workflow-artifacts','ticket-design'),{recursive:true});
     record = this.update(record,value => ({...value,
       stepReceipts:{...value.stepReceipts,launch:{state:'attempted',requestId:launcherInput.request_id}},
       unknownSideEffects:['ticket-design-launch']}));
@@ -610,7 +615,9 @@ export class CompanionPreparationService {
           revision:card.revision,dispatch_id:record.preparationId,content_digest:record.payloadDigest,
           confirmation_at:record.confirmationAt,ticket_scope_digest:hash(`${issue.id}:${issue.body}`),
           product_endpoint:card.content.endpoint,action:'ticket-design',policy_digest:policy.digest},
-        confirmed_request:card.content.original};
+        confirmed_request:card.content.original,
+        companion_result_path:path.join(current.bindings.worktree.path,'.local','workflow-artifacts',
+          'ticket-design','result.json')};
     }};
   }
 }
