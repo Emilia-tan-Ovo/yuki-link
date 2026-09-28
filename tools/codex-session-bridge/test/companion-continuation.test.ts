@@ -184,6 +184,27 @@ test('a new Issue uses its own Notes obligations and blocks checklist or Notes d
     'COMPANION_ACCEPTANCE_EVIDENCE_PENDING');
 });
 
+test('preparation-bound Acceptance reuses the authenticated preparation Issue source',async t=>{
+  const dir=mkdtempSync(join(tmpdir(),'companion-preparation-issue-source-'));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const ref='https://github.com/Emilia-tan-Ovo/yuki-link/issues/901';
+  const texts=['A','B','C'],kinds=['review','git-subject','review'];
+  const notes=writePlan(dir,'ISSUE-901',ref,texts,kinds);
+  const content=readFileSync(notes,'utf8');
+  let authenticatedReads=0,publicReads=0;
+  const issue={repository:'Emilia-tan-Ovo/yuki-link',id:901001,number:901,url:ref,title:'fixture',
+    body:'## Acceptance criteria\n'+texts.map(value=>'- [ ] '+value).join('\n')};
+  const service=Object.create(CompanionContinuationService.prototype) as any;
+  service.preparation={issues:{details:async()=>{authenticatedReads++;return issue;}}};
+  service.issueSource={details:async()=>{publicReads++;throw Error('public source unavailable');}};
+  const context={link:{binding_kind:'preparation'},binding:{bindings:{issue}},
+    card:{content:{repository:'Emilia-tan-Ovo/yuki-link'}},
+    ticket:{reference:ref,key:'ISSUE-901',expected_worktree:dir}};
+  const authority=await service.acceptanceAuthority(context,content);
+  assert.equal(authority.state,'completed');
+  assert.equal(authenticatedReads,1);
+  assert.equal(publicReads,0);
+});
 test('recorded design handoff survives a later Notes handoff update',async t=>{
   const dir=mkdtempSync(join(tmpdir(),'companion-design-handoff-'));
   t.after(()=>rmSync(dir,{recursive:true,force:true}));
@@ -297,16 +318,17 @@ test('real WorkflowSource permits only the bound implementation delta through CA
 test('ticket-design evidence uses the public ExecutionOperations receipt contract',t=>{
   const dir=mkdtempSync(join(tmpdir(),'companion-design-receipt-'));
   t.after(()=>rmSync(dir,{recursive:true,force:true}));
-  const expected=companionResultIdentity(dir,'card-design',2,'ticket-design','design-request',1,
+  const requestId='companion-prep:prep-design:ticket-design';
+  const expected=companionResultIdentity(dir,'card-design',2,'ticket-design',requestId,1,
     'design-subject',null);
   mkdirSync(dirname(expected.result_path),{recursive:true});
   const report=join(dirname(expected.result_path),'report.md');
   writeFileSync(report,'design report\n','utf8');
   writeFileSync(expected.result_path,JSON.stringify({schema_version:1,action:'ticket-design',
-    status:'completed',request_id:'design-request',subject_ref:'design-subject',
+    status:'completed',request_id:requestId,subject_ref:'design-subject',
     subject_identity:null,report_ref:relative(dir,report).replaceAll('\\','/'),blockers:[],
     product_decision_required:false,product_decisions:[],acceptance_plan:[]}), 'utf8');
-  const operation:any={operation_id:'operation-design',request_id:'design-request',
+  const operation:any={operation_id:'operation-design',request_id:requestId,
     action:'ticket-design',policy:{action:'ticket-design'},
     preflight:{workflow_revision:1,subject_ref:'design-subject',subject_identity:null},
     destination:{kind:'main'}};
@@ -315,11 +337,17 @@ test('ticket-design evidence uses the public ExecutionOperations receipt contrac
       runtime:{session_id:'session-design',run_id:'run-design'}})},
     source:{runs:()=>[{id:'run-design',status:'completed'}]}}};
   const evidence=new CompanionEvidenceAdapter({manager});
-  const observed=evidence.operation('ticket-design','design-request','ticket-design',
+  const observed=evidence.operation('ticket-design',requestId,'ticket-design',
     'ticket-design',dir,expected);
   assert.equal(observed.state,'completed');
   assert.equal(observed.operation_id,'operation-design');
   assert.equal(observed.run_id,'run-design');
+  const service=Object.create(CompanionContinuationService.prototype) as any;
+  service.manager=manager; service.evidence=evidence;
+  const viaService=service.designResult({link:{binding_kind:'preparation'},
+    binding:{preparationId:'prep-design'},ticket:{id:'ticket-design',expected_worktree:dir},
+    card:{cardId:'card-design',revision:2}});
+  assert.equal(viaService.state,'completed');
 });
 
 test('result identity isolates confirmations and rejects an old run or subject',t=>{

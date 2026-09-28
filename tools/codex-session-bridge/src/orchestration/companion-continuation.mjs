@@ -133,17 +133,21 @@ export class CompanionContinuationService {
     const operation=this.manager.harness.executionOperations.findByRequest(ticket.id,requestId);
     if (!operation) return {state:'unknown',reason:'COMPANION_DESIGN_OPERATION_UNKNOWN'};
     const expected=companionResultIdentity(ticket.expected_worktree,card.cardId,card.revision,
-      'ticket-design',requestId,operation.protected_intent?.expected_workflow_revision,
-      operation.protected_intent?.subject_ref,
-      operation.protected_intent?.workflow_agent?.preflight?.subject_identity ?? null);
+      'ticket-design',requestId,operation.preflight?.workflow_revision,
+      operation.preflight?.subject_ref,
+      operation.preflight?.subject_identity ?? null);
     return this.evidence.operation(ticket.id,requestId,'ticket-design','ticket-design',
       ticket.expected_worktree,expected);
   }
-  async acceptanceAuthority(context,content) {
+  async issueDetails(context,number) {
+    const source=context.link.binding_kind==='preparation' ? this.preparation?.issues:this.issueSource;
+    if (!source || typeof source.details!=='function') return null;
+    return source.details(context.card.content.repository,number);
+  }  async acceptanceAuthority(context,content) {
     const {card,ticket,link,binding}=context;
     const number=link.binding_kind==='dispatch' ? card.content.ticket.number:binding.bindings.issue.number;
     const id=link.binding_kind==='dispatch' ? card.content.ticket.id:binding.bindings.issue.id;
-    const issue=await this.issueSource.details(card.content.repository,number).catch(()=>null);
+    const issue=await this.issueDetails(context,number).catch(()=>null);
     if (!issue || issue.id!==id || issue.url!==ticket.reference || typeof issue.body!=='string')
       return {state:'unknown',reason:'COMPANION_ACCEPTANCE_ISSUE_UNKNOWN'};
     const criteria=issueAcceptanceCriteria(issue.body);
@@ -1101,7 +1105,7 @@ export class CompanionContinuationService {
       next_action:{action:'push',state:pushed.state,reason:pushed.reason ?? null}};
     const issueNumber=context.link.binding_kind==='dispatch'
       ? card.content.ticket.number:context.binding.bindings.issue.number;
-    const issue=await this.issueSource.details(card.content.repository,issueNumber).catch(()=>null);
+    const issue=await this.issueDetails(context,issueNumber).catch(()=>null);
     if (!issue || issue.url!==ticket.reference) return {...await this.get(raw),
       next_action:{action:'pr-delivery',state:'unknown',reason:'COMPANION_PR_ISSUE_UNKNOWN'}};
     let baseOid;
@@ -1135,7 +1139,7 @@ export class CompanionContinuationService {
       fail('COMPANION_ACCEPTANCE_AUTHORITY_CONFLICT');
     const issueNumber=context.link.binding_kind==='dispatch'
       ? context.card.content.ticket.number:context.binding.bindings.issue.number;
-    const issue=await this.issueSource.details(context.card.content.repository,issueNumber).catch(()=>null);
+    const issue=await this.issueDetails(context,issueNumber).catch(()=>null);
     if (!issue || issue.url!==context.ticket.reference) fail('COMPANION_PR_ISSUE_UNKNOWN');
   }
   mirrorBody(base,notes,digest) {

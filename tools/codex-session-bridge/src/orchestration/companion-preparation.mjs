@@ -47,7 +47,12 @@ export class GitHubPreparationIssues {
     if (typeof actor !== 'string' || !actor.trim()) throw Error('PREPARATION_GITHUB_AUTH_UNAVAILABLE');
     return actor;
   }
-  markerLine({marker,payloadDigest}) { return `<!-- ${marker}:${payloadDigest} -->`; }
+  async details(repository,number) {
+    const issue = await this.transport.read(repository,number);
+    if (!identity(repository,issue)) return null;
+    return {...issue,scope:{digest:hash(JSON.stringify({repository,id:issue.id,number:issue.number,
+      title:issue.title,body:issue.body})),observedAt:new Date().toISOString()}};
+  }  markerLine({marker,payloadDigest}) { return `<!-- ${marker}:${payloadDigest} -->`; }
   valid(issue,{repository,marker,payloadDigest},actor) {
     return identity(repository,issue) && issue.creator === actor
       && issue.body.includes(this.markerLine({marker,payloadDigest}));
