@@ -9,6 +9,7 @@ import type { ExecutionContentIdentity, ExecutionOperation, ExecutionReserveInpu
   ResolvedExecutionDestination } from '../harness/execution-model.ts';
 import type { IsolationAssessment } from '../harness/conversation-model.ts';
 import { WorkItems, workDigest } from './work-items.ts';
+import { verifyManagedReview } from './review-evidence.ts';
 import { workItemDecisionSchema, workItemReferenceSchema } from '../harness/work-item-model.ts';
 
 type ChildRelation = Extract<RequestedExecutionDestination, { kind: 'child' }>['relation'];
@@ -208,7 +209,7 @@ export class ExecutionOperations {
     }
     const existing = this.reservations.get(key);
     const timestamp = now();
-    const destination: ResolvedExecutionDestination = input.destination.kind === 'main'
+    let destination: ResolvedExecutionDestination = input.destination.kind === 'main'
       ? { kind: 'main', conversation_id: ticket.main_conversation_id }
       : existing?.kind === 'child' ? existing : (() => {
         const legacy = this.dependencies.existingChild?.(input.ticket_id, input.destination.relation);
@@ -221,7 +222,15 @@ export class ExecutionOperations {
     const implementation = 'implementation' in input;
     const review = 'review' in input;
     const workflowAgent = 'workflow_agent' in input;
-    const workItem = this.workItems.prepare(input, this.operations);
+    const workItem = this.workItems.prepare(input, this.operations, this.reviewObservations(input.ticket_id));
+    // Review rounds have distinct report identities but keep the same isolated
+    // work-item conversation; they never move a session into another owner's child.
+    if (workItem?.item.purpose === 'focused-review' && workItem.item.operation_id && destination.kind === 'child') {
+      const previous = this.operations.get(workItem.item.operation_id);
+      if (!previous || previous.destination.kind !== 'child') throw new HarnessError('WORK_ITEM_RECONCILIATION_REQUIRED');
+      destination = { ...destination, conversation_id: previous.destination.conversation_id,
+        parent_conversation_id: previous.destination.parent_conversation_id, created_at: previous.destination.created_at };
+    }
     const operationId = randomUUID();
     if (workItem) workItem.item.operation_id = operationId;
     const operation = executionOperationSchema.parse({
@@ -246,6 +255,13 @@ export class ExecutionOperations {
   }
 
   // Called only with a decision loaded from the trusted authority adapter.
+  private reviewObservations(ticketId: string) {
+    const records = this.journal.records.flatMap(record => record.data.kind === 'workflow_snapshot'
+      && record.data.workflow.ticket_id === ticketId ? [record.data.workflow] : []);
+    const current = this.dependencies.workflow(ticketId);
+    return current ? [...records, current] : records;
+  }
+
   transitionWorkItem(raw: unknown) {
     if (this.uncertainRecording || this.journal.failure) throw new HarnessError('RECORDING_OUTCOME_UNKNOWN');
     const decision = workItemDecisionSchema.parse(raw);
@@ -258,7 +274,11 @@ export class ExecutionOperations {
       || workflow.snapshot.subject.subject_id !== item.subject_ref || item.subject_ref !== decision.subject_ref
       || identity?.completeness !== 'complete' || identity.digest !== decision.content_version)
       throw new HarnessError('WORK_ITEM_EVIDENCE_CONFLICT');
-    const next = this.workItems.transition(item, decision, workflow.snapshot, this.operations);
+    const observations = this.reviewObservations(item.delivery_item_id);
+    const next = this.workItems.transition(item, decision, workflow.snapshot, this.operations,
+      (owner, review, snapshot) => verifyManagedReview(owner, review, snapshot, identity.digest, {
+        items: this.workItems, operations: this.operations, bindings: this.dependencies.bindings,
+        source: this.dependencies.source, assessChild: this.dependencies.assessChild, observations }), observations);
     this.append({ kind: 'work_item_transitioned', previous_revision: item.revision, item: next,
       decision_ref: decision.decision_ref }, 'work-item-transition');
     return this.workItems.get(item.work_item_id);

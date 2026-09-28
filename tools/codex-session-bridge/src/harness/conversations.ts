@@ -112,8 +112,7 @@ export class ConversationHistory {
       runs = this.source.runs(sessionId);
       const target = runs.find(value => value.id === runId);
       if (!target || target.session_id !== sessionId) add('mismatch', 'RUN_SESSION_MISMATCH', 'source.runs');
-      const first = [...runs].sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id))[0];
-      if (target && first?.id !== target.id) {
+      if (target && runs.length > 1) {
         // Only durable managed ownership can authorize another run in an isolated
         // reviewer context. Legacy association alone never proves that boundary.
         const managed = this.journal.records.flatMap(record => {

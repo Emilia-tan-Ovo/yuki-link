@@ -19,6 +19,11 @@ export const workItemSchema = z.object({
   operation_id: id.nullable(), content_version: text.nullable(),
   review_content_version: text.nullable(),
   review_budget: z.number().int().nonnegative(), review_rounds: z.number().int().nonnegative(),
+  review_history: z.array(z.object({ round: z.number().int().positive(), review_id: text,
+    content_version: text, workflow_revision: z.number().int().positive(),
+    conclusion: z.enum(['passed', 'findings', 'incomplete']).nullable(),
+    conclusion_digest: digest.nullable() }).strict()).default([]),
+  verification_issue_set: z.array(text).default([]),
   evidence_refs: z.array(text),
 }).strict();
 export const workItemExecutionSchema = z.object({ item: workItemSchema,

@@ -13,6 +13,8 @@ export const stableValue = (value: unknown): string => Array.isArray(value) ? '[
 export const workDigest = (value: unknown) => createHash('sha256').update(stableValue(value)).digest('hex');
 const terminal = new Set(['completed', 'failed', 'stopped', 'timed_out', 'interrupted']);
 const active = new Set(['queued', 'starting', 'running', 'stopping']);
+export type ReviewObservation = { workflow_revision: number; snapshot: any };
+export type VerifyReview = (item: WorkItem, review: any, snapshot: any) => void;
 
 // A projection of ExecutionOperations' journal, never an independent state store.
 export class WorkItems {
@@ -46,7 +48,8 @@ export class WorkItems {
       throw new HarnessError('WORK_ITEM_RECONCILIATION_REQUIRED');
     if (runs.some(run => active.has(run.status))) throw new HarnessError('WORK_ITEM_BUSY');
   }
-  prepare(input: ExecutionReserveInput, operations: Map<string, ExecutionOperation>): WorkItemExecution | undefined {
+  prepare(input: ExecutionReserveInput, operations: Map<string, ExecutionOperation>,
+    observations: ReviewObservation[] = []): WorkItemExecution | undefined {
     const protection = 'implementation' in input ? input.implementation : 'review' in input ? input.review
       : 'workflow_agent' in input ? input.workflow_agent : null;
     if (!protection) return undefined; // Legacy internal reservations are not a public launch path.
@@ -57,6 +60,9 @@ export class WorkItems {
     const findings = 'finding_batch' in authorization && authorization.finding_batch
       ? authorization.finding_batch : 'finding' in authorization && authorization.finding ? [authorization.finding] : [];
     const cycle = findings[0]?.origin_review_id ?? ('review_id' in authorization ? authorization.review_id ?? null : null);
+    const destinationDigest = workDigest(purpose === 'focused-review' && input.destination.kind === 'child'
+      && input.destination.relation.kind === 'review'
+      ? { ...input.destination, relation: { ...input.destination.relation, review_id: cycle } } : input.destination);
     const scopeRef = authorization.work_item_scope?.scope_ref ?? 'delivery';
     const scope = workDigest({ delivery: input.ticket_id, subject: input.subject_ref, cwd: realpathSync(input.launch.cwd), scopeRef });
     // Content versions and the issue set evolve; neither is session authority.
@@ -85,7 +91,7 @@ export class WorkItems {
       this.idle(item, operations);
       if (!['ready', 'active'].includes(item.state)) throw new HarnessError('WORK_ITEM_STATE_CONFLICT', { state: item.state });
       if (item.authority_digest !== authority) throw new HarnessError('WORK_ITEM_AUTHORITY_CONFLICT');
-      if (item.destination_digest !== workDigest(input.destination)) throw new HarnessError('WORK_ITEM_DESTINATION_CONFLICT');
+      if (item.destination_digest !== destinationDigest) throw new HarnessError('WORK_ITEM_DESTINATION_CONFLICT');
       item = structuredClone(item);
       item.revision++;
       const binding = item.generations.at(-1);
@@ -112,11 +118,11 @@ export class WorkItems {
         : predecessor.state === 'completed')) throw new HarnessError('WORK_ITEM_PREDECESSOR_INCOMPLETE');
       item = { schema_version: 1, work_item_id: randomUUID(), delivery_item_id: input.ticket_id, purpose,
         subject_ref: input.subject_ref, scope_ref: scopeRef, scope_digest: scope, authority_digest: authority, cycle_id: cycle,
-        destination_digest: workDigest(input.destination),
+        destination_digest: destinationDigest,
         parent_refs: [...new Set([parent?.work_item_id, predecessor?.work_item_id].filter((id): id is string => Boolean(id)))],
         issue_set: [], revision: 1, state: 'ready', generation: 0, generations: [],
         operation_id: null, content_version: null, review_content_version: null,
-        review_budget: 1, review_rounds: 0, evidence_refs: [] };
+        review_budget: 1, review_rounds: 0, review_history: [], verification_issue_set: [], evidence_refs: [] };
     }
     const issues = findings.map(value => `${value.origin_review_id}:${value.finding_id}`);
     // Launchers validate every outstanding issue. Already verified members remain
@@ -127,8 +133,26 @@ export class WorkItems {
       item.generations.push({ generation: item.generation, session_id: null, state: 'usable', permissions_digest: null,
         reason: mode === 'replace' ? 'generation-replacement' : 'initial-assignment' });
     }
-    if (purpose === 'focused-review' && item.review_content_version !== input.content_identity.digest) {
-      if (item.review_rounds >= item.review_budget) throw new HarnessError('WORK_ITEM_REVIEW_BUDGET_EXHAUSTED');
+    if (purpose === 'focused-review') {
+      this.observeConclusions(item, observations);
+      const round = item.review_history.at(-1);
+      const reviewId = 'review_id' in authorization ? authorization.review_id : null;
+      if (!reviewId) throw new HarnessError('WORK_ITEM_REVIEW_ROUND_CONFLICT');
+      // Legacy counters cannot establish whether an old round concluded: reconcile,
+      // never silently reset the budget after an upgrade/restart.
+      if (!round && item.review_rounds) throw new HarnessError('WORK_ITEM_RECONCILIATION_REQUIRED');
+      if (!round || round.conclusion) {
+        if (item.review_rounds >= item.review_budget) throw new HarnessError('WORK_ITEM_REVIEW_BUDGET_EXHAUSTED');
+        if (item.review_history.some(value => value.review_id === reviewId))
+          throw new HarnessError('WORK_ITEM_REVIEW_ID_REUSED');
+        item.review_rounds++;
+        item.review_history.push({ round: item.review_rounds, review_id: reviewId,
+          content_version: input.content_identity.digest!, workflow_revision: input.expected_workflow_revision,
+          conclusion: null, conclusion_digest: null });
+      } else if (round.review_id !== reviewId || round.content_version !== input.content_identity.digest) {
+        throw new HarnessError('WORK_ITEM_REVIEW_ROUND_CONFLICT');
+      }
+      item.review_content_version = input.content_identity.digest;
     }
     item.state = 'active'; item.content_version = input.content_identity.digest;
     return { item, mode, session_id: mode === 'continue' ? item.generations.at(-1)!.session_id : null };
@@ -152,22 +176,49 @@ export class WorkItems {
     next.item.revision++;
     const binding = next.item.generations.at(-1)!;
     binding.session_id = sessionId; binding.permissions_digest = workDigest(permissions); binding.state = 'usable';
-    if (next.item.purpose === 'focused-review' && next.item.review_content_version !== next.item.content_version) {
-      next.item.review_rounds++; next.item.review_content_version = next.item.content_version;
-    }
     return next;
   }
-  transition(item: WorkItem, decision: WorkItemDecision, snapshot: any, operations: Map<string, ExecutionOperation>) {
+  observeConclusions(item: WorkItem, observations: ReviewObservation[]) {
+    for (const round of item.review_history) {
+      if (round.conclusion) continue;
+      for (const observation of observations) {
+        if (observation.workflow_revision < round.workflow_revision) continue;
+        const report = observation.snapshot.reviews?.find((review: any) => review.review_id === round.review_id
+          && ['passed', 'findings', 'incomplete'].includes(review.status));
+        if (!report) continue;
+        // Even an invalid terminal claim ends an automatic round. It never grants
+        // completion; that separately requires current managed execution evidence.
+        round.conclusion = report.status; round.conclusion_digest = workDigest(report); break;
+      }
+    }
+  }
+  transition(item: WorkItem, decision: WorkItemDecision, snapshot: any, operations: Map<string, ExecutionOperation>,
+    verifyReview: VerifyReview, observations: ReviewObservation[] = []) {
     this.idle(item, operations);
     if (item.revision !== decision.expected_revision) throw new HarnessError('WORK_ITEM_REVISION_CONFLICT');
     if (['completed', 'cancelled'].includes(item.state)) throw new HarnessError('WORK_ITEM_STATE_CONFLICT');
     const next = structuredClone(item);
+    this.observeConclusions(next, observations);
     const binding = next.generations.at(-1);
+    const verifiedIssue = (id: string) => {
+      const finding = snapshot.findings?.find((value: any) => `${value.origin_review_id}:${value.finding_id}` === id);
+      const review = snapshot.reviews?.find((value: any) => value.review_id === finding?.verification_review_id);
+      if (!finding || finding.status !== 'verified' || finding.subject_ref !== item.subject_ref
+        || finding.subject_identity !== subjectIdentity(snapshot.subject) || finding.applicability !== 'verified'
+        || !review || review.status !== 'passed' || review.mode !== 'focused' || review.original_review_id !== item.cycle_id
+        || !review.finding_refs?.some((value: any) => `${value.origin_review_id}:${value.finding_id}` === id))
+        throw new HarnessError('WORK_ITEM_VERIFICATION_REQUIRED');
+      verifyReview(item, review, snapshot);
+    };
     if (decision.action === 'await-verification') {
       if (item.state !== 'active' || item.purpose !== 'repair') throw new HarnessError('WORK_ITEM_STATE_CONFLICT');
-      if (item.issue_set.some(id => !snapshot.findings?.some((finding: any) =>
-        `${finding.origin_review_id}:${finding.finding_id}` === id && ['fixed', 'fixed-unverified'].includes(finding.status))))
-        throw new HarnessError('WORK_ITEM_VERIFICATION_REQUIRED');
+      next.verification_issue_set = [];
+      for (const id of item.issue_set) {
+        const finding = snapshot.findings?.find((value: any) => `${value.origin_review_id}:${value.finding_id}` === id);
+        if (finding?.status === 'verified') verifiedIssue(id);
+        else if (finding && ['fixed', 'fixed-unverified'].includes(finding.status)) next.verification_issue_set.push(id);
+        else throw new HarnessError('WORK_ITEM_VERIFICATION_REQUIRED');
+      }
       next.state = 'awaiting_verification';
       if (binding) binding.state = 'suspended';
     } else if (decision.action === 'reopen' || (decision.action === 'complete' && item.purpose === 'repair')) {
@@ -178,10 +229,12 @@ export class WorkItems {
         || review.subject_identity !== subjectIdentity(snapshot.subject)
         || !['findings', 'passed'].includes(review.status)
         || decision.action === 'reopen' && review.status !== 'findings'
-        || decision.action === 'complete' && (review.status !== 'passed' || item.issue_set.some(id =>
-          !snapshot.findings?.some((value: any) => `${value.origin_review_id}:${value.finding_id}` === id
-            && value.status === 'verified' && value.verification_review_id === review.review_id))))
+        || decision.action === 'complete' && review.status !== 'passed')
         throw new HarnessError('WORK_ITEM_VERIFICATION_REQUIRED');
+      verifyReview(item, review, snapshot);
+      if (decision.action === 'complete') {
+        for (const id of item.issue_set) verifiedIssue(id);
+      }
       next.state = decision.action === 'reopen' ? 'active' : 'completed';
       if (binding) binding.state = decision.action === 'reopen' ? 'usable' : 'retired';
     } else if (decision.action === 'complete' || decision.action === 'cancel') {
@@ -196,6 +249,7 @@ export class WorkItems {
           || item.purpose === 'focused-review' && review.status !== 'passed'
           || review.applicability !== 'verified' || review.subject_identity !== subjectIdentity(snapshot.subject))
           throw new HarnessError('WORK_ITEM_VERIFICATION_REQUIRED');
+        verifyReview(item, review, snapshot);
       }
       if (decision.action === 'complete' && item.purpose === 'acceptance'
         && (snapshot.acceptance?.status !== 'passed' || snapshot.acceptance?.applicability !== 'verified'))

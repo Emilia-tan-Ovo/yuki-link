@@ -202,7 +202,7 @@ test('missing runtime thread replaces the generation but keeps work item identit
   assert.notEqual(second.runtime.session_id, first.runtime.session_id);
 });
 
-test('repair handoff and failed verification resume the original repair generation', async t => {
+test('repair handoff refuses a fabricated failed verification without a managed reviewer', async t => {
   const f = fixture(t, 'finding-fix');
   const first = await f.makeLauncher().start(f.input());
   for (const run of f.runs.values()) run.status = 'completed';
@@ -219,13 +219,8 @@ test('repair handoff and failed verification resume the original repair generati
   (f.workflow.snapshot.reviews as any[]).push({ review_id: 'focused-1', mode: 'focused',
     original_review_id: 'review-1', subject_ref: 'subject-007', isolated: true, applicability: 'verified', status: 'findings',
     subject_identity: subjectIdentity(f.workflow.snapshot.subject as any) });
-  const resumed = operations.transitionWorkItem({ ...grant, decision_ref: 'review:failed',
-    expected_revision: waiting.revision, action: 'reopen', review_id: 'focused-1' });
-  assert.equal(resumed.state, 'active');
-  const second = await f.makeLauncher().start({ ...f.input(), request_id: 'request-2',
-    work_item: { work_item_id: resumed.work_item_id, revision: resumed.revision } });
-  assert.equal(second.runtime.session_id, first.runtime.session_id);
-  assert.equal(second.work_item.generation, 1);
+  assert.throws(() => operations.transitionWorkItem({ ...grant, decision_ref: 'review:failed',
+    expected_revision: waiting.revision, action: 'reopen', review_id: 'focused-1' }), { code: 'WORK_ITEM_VERIFICATION_REQUIRED' });
 });
 
 test('public MCP exposes the typed Workflow Agent launcher', async t => {

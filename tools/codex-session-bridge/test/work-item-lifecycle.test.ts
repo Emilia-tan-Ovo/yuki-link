@@ -7,6 +7,7 @@ import path from 'node:path';
 import { Journal } from '../src/harness/journal.ts';
 import { ExecutionOperations } from '../src/orchestration/execution-operations.ts';
 import { ConversationHistory } from '../src/harness/conversations.ts';
+import { subjectIdentity } from '../src/harness/workflow.ts';
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 function fixture(t: test.TestContext) {
@@ -105,14 +106,10 @@ test('role transitions need handoff evidence and primary review has its own sess
   assert.ok(review.work_item!.parent_refs.includes(implementation.work_item!.work_item_id));
 });
 
-test('additional focused content versions require explicit review budget', t => {
+test('unfinished focused round cannot silently switch the content under review', t => {
   const f = fixture(t), first = f.begin(f.input('focused-review')); f.finish();
   f.content.digest = 'sha256:' + 'b'.repeat(64);
-  assert.throws(() => f.begin(f.input('focused-review', first.work_item)), { code: 'WORK_ITEM_REVIEW_BUDGET_EXHAUSTED' });
-  const updated = f.operations.transitionWorkItem({ ...f.decision(first.work_item, 'review-budget'), review_budget: 2 });
-  const next = f.begin(f.input('focused-review', updated));
-  assert.equal(next.runtime.session_id, first.runtime.session_id);
-  assert.equal(next.work_item!.review_rounds, 2);
+  assert.throws(() => f.begin(f.input('focused-review', first.work_item)), { code: 'WORK_ITEM_REVIEW_ROUND_CONFLICT' });
 });
 
 test('retired generation cannot be continued and request/content conflicts fail closed', t => {
@@ -211,4 +208,27 @@ test('review completion cannot borrow another review report for the same subject
     applicability: 'verified', subject_ref: 'subject' }];
   assert.throws(() => f.operations.transitionWorkItem({ ...f.decision(first.work_item, 'complete'),
     review_id: 'unrelated' }), { code: 'WORK_ITEM_VERIFICATION_REQUIRED' });
+});
+
+test('primary completion requires managed execution references and current isolation; continuation remains valid', t => {
+  const f = fixture(t);
+  const conversations = new ConversationHistory(f.operations.journal, f.dependencies.source, {} as any,
+    f.dependencies.ticket, f.dependencies.bindings);
+  f.dependencies.assessChild = (session: string, run: string, conversation: string) => conversations.assessExecution(session, run, conversation);
+  f.dependencies.source.events = (run: any) => [{ type: 'codex', data: {
+    type: 'thread.started', thread_id: f.sessions.get(run.session_id).codex_thread_id } }];
+  const first = f.begin(f.input('review')); f.finish();
+  const second = f.begin(f.input('review', first.work_item)); f.finish();
+  f.workflow.snapshot.artifacts = [{ artifact_id: 'report', role: 'review-report', kind: 'file', revision: hash('report') }];
+  f.workflow.snapshot.runtime_refs = [{ runtime_ref_id: 'run', kind: 'codex-run', session_id: second.runtime.session_id, run_id: second.runtime.run_id }];
+  const report = { review_id: 'review', mode: 'full', status: 'passed', isolated: true, applicability: 'verified',
+    subject_ref: 'subject', subject_identity: subjectIdentity(f.workflow.snapshot.subject), artifact_refs: ['report'], execution_refs: [] as string[] };
+  f.workflow.snapshot.reviews = [report];
+  const decision = { ...f.decision(second.work_item, 'complete'), review_id: 'review' };
+  assert.throws(() => f.operations.transitionWorkItem(decision), { code: 'WORK_ITEM_VERIFICATION_REQUIRED' });
+  report.execution_refs = ['run'];
+  const events = f.dependencies.source.events; f.dependencies.source.events = () => [];
+  assert.throws(() => f.operations.transitionWorkItem(decision), { code: 'WORK_ITEM_VERIFICATION_REQUIRED' });
+  f.dependencies.source.events = events;
+  assert.equal(f.operations.transitionWorkItem(decision).state, 'completed');
 });
