@@ -93,15 +93,16 @@ export class CompanionEvidenceAdapter {
   operation(ticketId,requestId,action,slot,worktree,expected=null) {
     const operations=this.manager.harness.executionOperations;
     const operation=operations.findByRequest(ticketId,requestId);
-    const protectedAction=action==='implementation' ? 'implementation'
-      : action==='review' ? 'review':'workflow_agent';
-    if (!operation || operation.request_id!==requestId
-      || !operation.protected_intent?.[protectedAction]
-      || protectedAction==='workflow_agent'
-        && operation.protected_intent.workflow_agent.action!==action)
+    const receiptAction=action==='implementation' ? operation?.policy?.action
+      : action==='review' ? operation?.policy?.action:operation?.action;
+    const expectedAction=action==='implementation' ? 'ticket-implementation'
+      : action==='review' ? 'ticket-review':action;
+    if (!operation || operation.request_id!==requestId || receiptAction!==expectedAction)
       return {state:'unknown',reason:'COMPANION_OPERATION_UNKNOWN'};
-    if (expected && (operation.protected_intent?.subject_ref!==expected.subject_ref
-      || operation.protected_intent?.expected_workflow_revision!==expected.workflow_revision))
+    if (expected && (operation.preflight?.subject_ref!==expected.subject_ref
+      || operation.preflight?.workflow_revision!==expected.workflow_revision
+      || Object.hasOwn(operation.preflight ?? {},'subject_identity')
+        && operation.preflight.subject_identity!==expected.subject_identity))
       return {state:'unknown',reason:'COMPANION_OPERATION_SUBJECT_CONFLICT'};
     if (['ticket-design','implementation','finding-fix'].includes(action)
       && operation.destination?.kind!=='main')

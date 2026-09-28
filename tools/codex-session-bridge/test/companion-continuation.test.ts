@@ -294,6 +294,34 @@ test('real WorkflowSource permits only the bound implementation delta through CA
   assert.equal(source.assess(ticket,current.snapshot).state,'verified');
 });
 
+test('ticket-design evidence uses the public ExecutionOperations receipt contract',t=>{
+  const dir=mkdtempSync(join(tmpdir(),'companion-design-receipt-'));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const expected=companionResultIdentity(dir,'card-design',2,'ticket-design','design-request',1,
+    'design-subject',null);
+  mkdirSync(dirname(expected.result_path),{recursive:true});
+  const report=join(dirname(expected.result_path),'report.md');
+  writeFileSync(report,'design report\n','utf8');
+  writeFileSync(expected.result_path,JSON.stringify({schema_version:1,action:'ticket-design',
+    status:'completed',request_id:'design-request',subject_ref:'design-subject',
+    subject_identity:null,report_ref:relative(dir,report).replaceAll('\\','/'),blockers:[],
+    product_decision_required:false,product_decisions:[],acceptance_plan:[]}), 'utf8');
+  const operation:any={operation_id:'operation-design',request_id:'design-request',
+    action:'ticket-design',policy:{action:'ticket-design'},
+    preflight:{workflow_revision:1,subject_ref:'design-subject',subject_identity:null},
+    destination:{kind:'main'}};
+  const manager:any={harness:{executionOperations:{findByRequest:()=>operation,
+    reconcile:()=>({effective_state:'completed',
+      runtime:{session_id:'session-design',run_id:'run-design'}})},
+    source:{runs:()=>[{id:'run-design',status:'completed'}]}}};
+  const evidence=new CompanionEvidenceAdapter({manager});
+  const observed=evidence.operation('ticket-design','design-request','ticket-design',
+    'ticket-design',dir,expected);
+  assert.equal(observed.state,'completed');
+  assert.equal(observed.operation_id,'operation-design');
+  assert.equal(observed.run_id,'run-design');
+});
+
 test('result identity isolates confirmations and rejects an old run or subject',t=>{
   const dir=mkdtempSync(join(tmpdir(),'companion-result-'));
   t.after(()=>rmSync(dir,{recursive:true,force:true}));
@@ -312,8 +340,8 @@ test('result identity isolates confirmations and rejects an old run or subject',
     subject_ref:first.subject_ref,subject_identity:first.subject_identity};
   writeFileSync(first.result_path,JSON.stringify(result),'utf8');
   const operation:any={operation_id:'operation-1',request_id:'request-1',
-    protected_intent:{subject_ref:'subject-1',expected_workflow_revision:2,
-      review:{}},destination:{kind:'child',relation:{kind:'review'}}};
+    policy:{action:'ticket-review'},preflight:{workflow_revision:2,subject_ref:'subject-1',
+      subject_identity:'a'.repeat(64)},destination:{kind:'child',relation:{kind:'review'}}};
   const manager:any={harness:{executionOperations:{findByRequest:()=>operation,
     reconcile:()=>({effective_state:'completed',runtime:{session_id:'session-1',run_id:'run-1'}})},
     source:{runs:()=>[{id:'run-1',status:'completed'}]}}};
