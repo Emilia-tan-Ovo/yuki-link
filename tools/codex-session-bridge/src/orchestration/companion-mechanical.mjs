@@ -94,6 +94,18 @@ export class CompanionMechanicalAdapter {
     return action?.attempt_state==='verified' && action.receipt?.exit_code===0
       ? {state:'passed',...action.receipt} : {state:'unknown'};
   }
+  verifiedSuite(locator,subjectKey,cwd,files) {
+    const suite=this.store.continuationAction(locator.card_id,locator.revision,`full-suite:${subjectKey}`);
+    const head=git(cwd,'rev-parse','HEAD');
+    const observed=this.changed(cwd);
+    if (suite?.attempt_state!=='verified' || suite.receipt?.exit_code!==0
+      || suite.intent?.head!==head || suite.receipt.head!==head
+      || JSON.stringify(observed)!==JSON.stringify(files)
+      || JSON.stringify(this.content(cwd,observed))!==JSON.stringify(suite.intent.content)
+      || suite.receipt.content_digest!==hash(JSON.stringify(suite.intent.content)))
+      throw fail('COMPANION_TEST_SUBJECT_CHANGED');
+    return suite;
+  }
   commit(locator,ticket,subjectKey,files,tests) {
     const slot=`commit:${subjectKey}`,cwd=ticket.expected_worktree;
     if (tests?.state!=='passed' || !Array.isArray(files) || !files.length
@@ -103,22 +115,55 @@ export class CompanionMechanicalAdapter {
     if (prior) {
       if (JSON.stringify([...files].sort())!==JSON.stringify(prior.intent.files))
         throw fail('COMPANION_COMMIT_INTENT_CONFLICT');
+      if (prior.attempt_state==='reserved') return this.continueReservedCommit(locator,ticket,subjectKey,prior);
       return this.reconcileCommit(locator,ticket,subjectKey);
     }
     const observed=this.changed(cwd);
     if (JSON.stringify([...files].sort())!==JSON.stringify(observed))
       throw fail('COMPANION_COMMIT_SCOPE_CONFLICT');
+    const suite=this.verifiedSuite(locator,subjectKey,cwd,observed);
+    if (tests.task_id!==suite.receipt.task_id || tests.head!==suite.receipt.head
+      || tests.content_digest!==suite.receipt.content_digest)
+      throw fail('COMPANION_TEST_RECEIPT_CONFLICT');
     const parent=git(cwd,'rev-parse','HEAD'),content=this.content(cwd,observed);
     const intent={schema_version:1,parent,content,files:observed,
-      tests:{task_id:tests.task_id,content_digest:tests.content_digest}};
+      tests:{task_id:tests.task_id,head:tests.head,content_digest:tests.content_digest}};
     const claimed=this.store.claimContinuationAction(locator.card_id,locator.revision,slot,intent);
     if (claimed.conflict) throw fail('COMPANION_COMMIT_INTENT_CONFLICT');
-    git(cwd,'add','--',...observed);
+    return this.continueReservedCommit(locator,ticket,subjectKey,claimed.action);
+  }
+  continueReservedCommit(locator,ticket,subjectKey,action) {
+    const slot=`commit:${subjectKey}`,cwd=ticket.expected_worktree,{intent}=action,
+      observed=this.changed(cwd);
+    if (action.attempt_state!=='reserved' || git(cwd,'rev-parse','HEAD')!==intent.parent
+      || JSON.stringify(observed)!==JSON.stringify(intent.files)
+      || JSON.stringify(this.content(cwd,observed))!==JSON.stringify(intent.content))
+      return {state:'unknown',reason:'COMPANION_COMMIT_RESERVED_CONFLICT'};
+    let suite;
+    try { suite=this.verifiedSuite(locator,subjectKey,cwd,intent.files); }
+    catch { return {state:'unknown',reason:'COMPANION_TEST_SUBJECT_CHANGED'}; }
+    if (intent.tests?.task_id!==suite.receipt.task_id
+      || intent.tests?.content_digest!==suite.receipt.content_digest
+      || intent.tests?.head!==undefined && intent.tests.head!==suite.receipt.head)
+      return {state:'unknown',reason:'COMPANION_COMMIT_RESERVED_CONFLICT'};
+    const stagedBefore=git(cwd,'diff','--cached','--name-only').split(/\r?\n/u).filter(Boolean).sort();
+    if (stagedBefore.some(file=>!intent.files.includes(file)))
+      return {state:'unknown',reason:'COMPANION_COMMIT_INDEX_CONFLICT'};
+    git(cwd,'add','--',...intent.files);
     const staged=git(cwd,'diff','--cached','--name-only').split(/\r?\n/u).filter(Boolean).sort();
-    if (JSON.stringify(staged)!==JSON.stringify(observed)) throw fail('COMPANION_COMMIT_INDEX_CONFLICT');
+    if (JSON.stringify(staged)!==JSON.stringify(intent.files))
+      return {state:'unknown',reason:'COMPANION_COMMIT_INDEX_CONFLICT'};
+    for (const file of intent.files) {
+      const expected=intent.content.find(value=>value.path===file)?.sha256;
+      if (expected===null) continue;
+      const stagedBytes=execFileSync('git',['--no-optional-locks','show',`:${file}`],
+        {cwd,windowsHide:true,shell:false,timeout:30_000,maxBuffer:10*1024*1024});
+      if (hash(stagedBytes)!==expected)
+        return {state:'unknown',reason:'COMPANION_COMMIT_INDEX_CONFLICT'};
+    }
     const tree=git(cwd,'write-tree');
     const marked=this.store.updateContinuationAction(locator.card_id,locator.revision,slot,'reserved','attempted',
-      {tree,parent});
+      {tree,parent:intent.parent});
     if (marked.conflict) return {state:'unknown',reason:'COMPANION_COMMIT_ATTEMPT_CONFLICT'};
     try { git(cwd,'commit','--no-verify','-m',`feat: 完成 ${ticket.key} 的已验证实现`); }
     catch { /* Git may have advanced HEAD before its receipt was lost. */ }
@@ -131,7 +176,8 @@ export class CompanionMechanicalAdapter {
     if (action.attempt_state==='verified')
       return head===action.receipt?.oid ? {state:'committed',...action.receipt}
         : {state:'unknown',reason:'COMPANION_COMMIT_HEAD_DRIFT'};
-    if (action.attempt_state==='reserved') return {state:'reserved'};
+    if (action.attempt_state==='reserved')
+      return this.continueReservedCommit(locator,ticket,subjectKey,action);
     let parent,tree;
     try { parent=git(cwd,'rev-parse','HEAD^'); tree=git(cwd,'rev-parse','HEAD^{tree}'); }
     catch { return {state:'unknown',reason:'COMPANION_COMMIT_OUTCOME_UNKNOWN'}; }

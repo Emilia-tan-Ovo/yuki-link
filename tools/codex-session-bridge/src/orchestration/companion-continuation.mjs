@@ -518,6 +518,8 @@ export class CompanionContinuationService {
       if (focused) {
         const result=this.actionEvidence(context,focused.slot,'focused-review');
         if (result?.state!=='completed') return receipt;
+        if (result.isolation!=='verified') return {...receipt,next_action:{action:'verify-review',
+          state:'unknown',reason:'COMPANION_REVIEW_ISOLATION_UNKNOWN'}};
         const fix=this.store.continuationActions(raw.card_id,raw.revision)
           .find(value=>value.slot.startsWith('finding-fix-'));
         const required=fix?.intent.batch.map(value=>value.finding_id).sort();
@@ -556,6 +558,8 @@ export class CompanionContinuationService {
       }
       const result=this.actionEvidence(context,'primary-review','review');
       if (result?.state!=='completed') return receipt;
+      if (result.isolation!=='verified') return {...receipt,next_action:{action:'verify-review',
+        state:'unknown',reason:'COMPANION_REVIEW_ISOLATION_UNKNOWN'}};
       const reviewId=`companion-primary:${context.card.cardId}:${context.card.revision}`;
       const values=result.value.findings;
       if (values.length>32 || values.some(value=>typeof value?.finding_id!=='string'
@@ -621,7 +625,8 @@ export class CompanionContinuationService {
     const old=readFileSync(checkpointArtifact.location,'utf8');
     if (hash(old)!==checkpointArtifact.revision) fail('COMPANION_CHECKPOINT_CONFLICT');
     const head=git(ticket.expected_worktree,'rev-parse','HEAD');
-    const changed=old.replace(/^phase:.*$/mu,`phase: ${phase}`).replace(/^head:.*$/mu,`head: ${JSON.stringify(head)}`);
+    const changed=this.usageBytes(old.replace(/^phase:.*$/mu,`phase: ${phase}`)
+      .replace(/^head:.*$/mu,`head: ${JSON.stringify(head)}`),this.modelUsage(context));
     const snapshot=structuredClone(current.snapshot);
     snapshot.phase=phase; snapshot.checkpoint.phase=phase; snapshot.checkpoint.head=head;
     snapshot.subject.head=head;
@@ -767,7 +772,64 @@ export class CompanionContinuationService {
       context.card.cardId,context.card.revision,slot,'attempted','verified',
       {operation_id:result.operation_id,run_id:result.run_id,result_sha256:result.sha256});
   }
+  modelUsage(context) {
+    const ids=new Map();
+    const initial=this.initialOperation(context);
+    if (initial.receipt?.runtime?.run_id) ids.set(initial.receipt.runtime.run_id,
+      context.link?.binding_kind==='dispatch' ? context.binding.action:'ticket-design');
+    for (const action of this.store.continuationActions(context.card.cardId,context.card.revision)) {
+      if (!['implementation','review','finding-fix','focused-review'].includes(action.intent.action)) continue;
+      const operation=this.manager.harness.executionOperations.findByRequest(context.ticket.id,
+        action.intent.request_id);
+      if (operation?.runtime?.run_id) ids.set(operation.runtime.run_id,action.intent.action);
+    }
+    const runs=[...ids].map(([id,action])=>{
+      try { return {run:this.manager.status({run_id:id})?.run ?? null,action}; }
+      catch { return null; }
+    }).filter(value=>value?.run && finalRuns.has(value.run.status))
+      .sort((a,b)=>a.run.created_at.localeCompare(b.run.created_at)
+        || a.run.id.localeCompare(b.run.id));
+    const token=value=>Number.isSafeInteger(value) && value>=0 ? value:null;
+    const total=key=>runs.every(value=>token(value.run.usage?.[key])!==null)
+      ? runs.reduce((sum,value)=>sum+value.run.usage[key],0):null;
+    const latest=runs.at(-1),input=total('input_tokens');
+    const targets={'ticket-design':1_500_000,implementation:3_000_000,review:2_000_000,
+      'finding-fix':1_000_000,'focused-review':700_000};
+    const stageInput=new Map();
+    for (const {run,action} of runs) {
+      if (token(run.usage?.input_tokens)===null) continue;
+      stageInput.set(action,(stageInput.get(action) ?? 0)+run.usage.input_tokens);
+    }
+    return {runs:runs.length,input_tokens:input,cached_input_tokens:total('cached_input_tokens'),
+      output_tokens:total('output_tokens'),current_model:latest?.run.model ?? null,
+      current_reasoning:latest?.run.reasoning ?? null,
+      anomaly:input!==null && input>6_000_000
+        || [...stageInput].some(([action,value])=>value>targets[action])};
+  }
+  usageBytes(old,usage) {
+    if (!usage.runs && !/^model_usage:/mu.test(old)) return old;
+    const anomaly=usage.anomaly || /^  anomaly: true\s*$/mu.test(old);
+    const block=`model_usage:\n  runs: ${usage.runs}\n  input_tokens: ${usage.input_tokens ?? 'null'}`
+      +`\n  cached_input_tokens: ${usage.cached_input_tokens ?? 'null'}`
+      +`\n  output_tokens: ${usage.output_tokens ?? 'null'}`
+      +`\n  current_model: ${JSON.stringify(usage.current_model)}`
+      +`\n  current_reasoning: ${JSON.stringify(usage.current_reasoning)}`
+      +`\n  anomaly: ${anomaly}\n`;
+    return /^model_usage:\r?\n(?:^  .*\r?\n)*/mu.test(old)
+      ? old.replace(/^model_usage:\r?\n(?:^  .*\r?\n)*/mu,block)
+      : old.replace(/^---\r?\n/u,`---\n${block}`);
+  }
+  requireUsageCheckpoint(context) {
+    const current=this.manager.harness.workflowHistory.current.get(context.ticket.id);
+    const artifact=current?.snapshot.artifacts.find(value=>
+      value.artifact_id===current.snapshot.checkpoint.artifact_id);
+    if (!artifact) fail('COMPANION_MODEL_USAGE_CHECKPOINT_UNKNOWN');
+    const bytes=readFileSync(artifact.location,'utf8');
+    if (hash(bytes)!==artifact.revision || this.usageBytes(bytes,this.modelUsage(context))!==bytes)
+      fail('COMPANION_MODEL_USAGE_CHECKPOINT_UNKNOWN');
+  }
   async retryImplementation(raw,context,existing,workflow) {
+    this.requireUsageCheckpoint(context);
     const {ticket,card}=context,harness=this.manager.harness;
     const intent=existing.intent;
     const notes=intent.authorization?.notes;
@@ -823,6 +885,7 @@ export class CompanionContinuationService {
     const existing=this.store.continuationAction(card.cardId,card.revision,slot);
     if (existing) return existing.attempt_state==='definitely-not-applied'
       ? this.retryImplementation(raw,context,existing,workflow):this.get(raw);
+    this.requireUsageCheckpoint(context);
     const notes=predecessor.notes;
     if (!notes || hash(readFileSync(path.join(ticket.expected_worktree,notes.path)))!==notes.sha256)
       fail('COMPANION_NOTES_CONFLICT');
@@ -878,6 +941,7 @@ export class CompanionContinuationService {
     const {card,ticket}=context,harness=this.manager.harness;
     const slot='primary-review';
     if (this.store.continuationAction(card.cardId,card.revision,slot)) return this.get(raw);
+    this.requireUsageCheckpoint(context);
     const workflow=harness.workflowHistory.current.get(ticket.id);
     const review=workflow?.snapshot.reviews.find(value=>value.review_id===reviewId);
     const subjectIdentity=workflow && identity(workflow.snapshot.subject);
@@ -943,6 +1007,7 @@ export class CompanionContinuationService {
     const origin=open[0].origin_review_id;
     const slot=`finding-fix-${hash(origin).slice(0,32)}`;
     if (this.store.continuationAction(card.cardId,card.revision,slot)) return this.get(raw);
+    this.requireUsageCheckpoint(context);
     const review=workflow.snapshot.reviews.find(value=>value.review_id===origin);
     const report=review?.artifact_refs.map(id=>workflow.snapshot.artifacts.find(value=>value.artifact_id===id))
       .find(value=>value?.role==='review-report');
@@ -1004,6 +1069,7 @@ export class CompanionContinuationService {
     const origin=fix.intent.origin_review_id;
     const slot=`focused-review-${hash(origin).slice(0,32)}`;
     if (this.store.continuationAction(card.cardId,card.revision,slot)) return this.get(raw);
+    this.requireUsageCheckpoint(context);
     const workflow=harness.workflowHistory.current.get(ticket.id);
     const review=workflow?.snapshot.reviews.find(value=>value.review_id===reviewId);
     const subjectIdentity=workflow && identity(workflow.snapshot.subject);

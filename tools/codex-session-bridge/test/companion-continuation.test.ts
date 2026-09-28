@@ -383,6 +383,10 @@ test('real WorkflowSource permits only the bound implementation delta through CA
     }};
   const service=Object.create(CompanionContinuationService.prototype) as any;
   service.manager={harness}; service.store=store; service.mechanical=mechanical;
+  service.initialOperation=()=>({receipt:{runtime:{run_id:'run-1'}}});
+  service.manager.status=()=>({run:{id:'run-1',created_at:'2026-09-28T01:00:00Z',
+    status:'completed',model:'gpt-6-sol',reasoning:'medium',usage:{input_tokens:42,
+      cached_input_tokens:12,output_tokens:3}}});
   service.actionEvidence=()=>({state:'completed',sha256:'d'.repeat(64),value:{files:['feature.txt']}});
   const context:any={ticket,card:{cardId:'card-1',revision:1}};
   assert.equal(source.assess(ticket,snapshot).state,'verified');
@@ -400,6 +404,8 @@ test('real WorkflowSource permits only the bound implementation delta through CA
   assert.equal(after?.committed,true);
   service.movePhase(context,'review','implementation-to-review',{run_id:'run-1'},null,after);
   assert.equal(current.workflow_revision,2);
+  assert.match(readFileSync(checkpoint,'utf8'),/model_usage:\n  runs: 1\n  input_tokens: 42/u);
+  service.requireUsageCheckpoint(context);
   assert.equal(source.assess(ticket,current.snapshot).state,'verified');
 });
 
@@ -457,12 +463,25 @@ test('result identity isolates confirmations and rejects an old run or subject',
   writeFileSync(first.result_path,JSON.stringify(result),'utf8');
   const operation:any={operation_id:'operation-1',request_id:'request-1',
     policy:{action:'ticket-review'},preflight:{workflow_revision:2,subject_ref:'subject-1',
-      subject_identity:'a'.repeat(64)},destination:{kind:'child',relation:{kind:'review'}}};
+      subject_identity:'a'.repeat(64)},destination:{kind:'child',relation:{kind:'review',
+        review_id:'review-1'}}};
+  const child:any={relation:{kind:'review',review_id:'review-1',participant:'coordinator'},
+    isolation:{state:'verified'},bindings:[{session_id:'session-1',run_id:'run-1',
+      isolation:{state:'verified'},isolation_provenance:{event_id:'event-1'}}]};
   const manager:any={harness:{executionOperations:{findByRequest:()=>operation,
     reconcile:()=>({effective_state:'completed',runtime:{session_id:'session-1',run_id:'run-1'}})},
+    conversations:{summary:()=>[child]},
     source:{runs:()=>[{id:'run-1',status:'completed'}]}}};
   const evidence=new CompanionEvidenceAdapter({manager});
   assert.equal(evidence.operation('ticket-1','request-1','review','primary-review',dir,first).state,'completed');
+  child.isolation={state:'unknown'};
+  assert.equal(evidence.operation('ticket-1','request-1','review','primary-review',dir,first).reason,
+    'COMPANION_REVIEW_ISOLATION_UNKNOWN');
+  child.isolation={state:'verified'};
+  child.bindings[0].isolation_provenance=null;
+  assert.equal(evidence.operation('ticket-1','request-1','review','primary-review',dir,first).reason,
+    'COMPANION_REVIEW_ISOLATION_UNKNOWN');
+  child.bindings[0].isolation_provenance={event_id:'event-1'};
   assert.equal(evidence.readResult(dir,'primary-review','review',second).state,'unknown');
   delete result.operation_id; delete result.run_id;
   writeFileSync(first.result_path,JSON.stringify(result),'utf8');
@@ -508,4 +527,82 @@ test('result identity isolates confirmations and rejects an old run or subject',
   writeFileSync(first.result_path,JSON.stringify(result),'utf8');
   assert.equal(evidence.operation('ticket-1','request-1','review','primary-review',dir,first).reason,
     'COMPANION_RESULT_IDENTITY_CONFLICT');
+});
+
+test('mechanical commit rejects stale suite bytes and resumes the one reserved intent',t=>{
+  const dir=mkdtempSync(join(tmpdir(),'companion-mechanical-commit-'));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const git=(...args:string[])=>execFileSync('git',args,{cwd:dir,encoding:'utf8'}).trim();
+  git('init','-b','main'); git('config','user.email','fixture@example.invalid');
+  git('config','user.name','Fixture');
+  writeFileSync(join(dir,'feature.txt'),'before\n','utf8');
+  git('add','--','feature.txt'); git('commit','-m','baseline');
+  writeFileSync(join(dir,'feature.txt'),'after\n','utf8');
+  const head=git('rev-parse','HEAD'),content=[{path:'feature.txt',sha256:digest('after\n')}];
+  const suite:any={attempt_state:'verified',intent:{head,content},receipt:{
+    task_id:'task-1',head,content_digest:digest(JSON.stringify(content)),exit_code:0}};
+  const actions=new Map<string,any>([['full-suite:implementation',suite]]);
+  let claims=0;
+  const store:any={continuationAction:(_card:string,_revision:number,slot:string)=>actions.get(slot),
+    claimContinuationAction:(_card:string,_revision:number,slot:string,intent:any)=>{
+      claims++; const action={attempt_state:'reserved',intent}; actions.set(slot,action);
+      return {action,conflict:false};
+    },updateContinuationAction:(_card:string,_revision:number,slot:string,_from:string,
+      to:string,receipt:any)=>{const action=actions.get(slot); action.attempt_state=to;
+      action.receipt=receipt; return {conflict:false};}};
+  const mechanical=new CompanionMechanicalAdapter({store,computer:null});
+  const locator={card_id:'card-1',revision:1},ticket:any={expected_worktree:dir,key:'T-1'};
+  const tests={state:'passed',...suite.receipt};
+  writeFileSync(join(dir,'feature.txt'),'changed after suite\n','utf8');
+  assert.throws(()=>mechanical.commit(locator,ticket,'implementation',['feature.txt'],tests),
+    {code:'COMPANION_TEST_SUBJECT_CHANGED'});
+  assert.equal(claims,0);
+  writeFileSync(join(dir,'feature.txt'),'after\n','utf8');
+  writeFileSync(join(dir,'extra.txt'),'extra\n','utf8');
+  assert.throws(()=>mechanical.commit(locator,ticket,'implementation',['feature.txt'],tests),
+    {code:'COMPANION_COMMIT_SCOPE_CONFLICT'});
+  rmSync(join(dir,'extra.txt'));
+  assert.throws(()=>mechanical.commit(locator,ticket,'implementation',['feature.txt'],
+    {...tests,task_id:'old-task'}),{code:'COMPANION_TEST_RECEIPT_CONFLICT'});
+  const frozen={schema_version:1,parent:head,content,files:['feature.txt'],
+    tests:{task_id:'task-1',content_digest:suite.receipt.content_digest}};
+  actions.set('commit:implementation',{attempt_state:'reserved',intent:frozen});
+  writeFileSync(join(dir,'feature.txt'),'changed during reserved\n','utf8');
+  assert.equal(mechanical.reconcileCommit(locator,ticket,'implementation').state,'unknown');
+  assert.equal(git('rev-parse','HEAD'),head);
+  writeFileSync(join(dir,'feature.txt'),'after\n','utf8');
+  assert.equal(mechanical.reconcileCommit(locator,ticket,'implementation').state,'committed');
+  assert.equal(claims,0,'recovery reuses the frozen intent');
+  assert.equal(git('rev-parse','HEAD^'),head);
+  assert.equal(git('show','HEAD:feature.txt'),'after');
+});
+
+test('model usage checkpoint uses durable terminal run status and blocks stale launch',t=>{
+  const dir=mkdtempSync(join(tmpdir(),'companion-model-usage-'));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const filename=join(dir,'checkpoint.md');
+  const service=Object.create(CompanionContinuationService.prototype) as any;
+  const context:any={card:{cardId:'card-1',revision:1},ticket:{id:'ticket-1'}};
+  const run:any={id:'run-1',created_at:'2026-09-28T01:00:00Z',status:'completed',
+    model:'gpt-6-sol',reasoning:'medium',usage:{input_tokens:120,cached_input_tokens:20,
+      output_tokens:10}};
+  service.initialOperation=()=>({receipt:{runtime:{run_id:'run-1'}}});
+  service.store={continuationActions:()=>[]};
+  service.manager={status:()=>({run}),harness:{workflowHistory:{current:{get:()=>({
+    snapshot:{checkpoint:{artifact_id:'checkpoint'},artifacts:[{artifact_id:'checkpoint',
+      location:filename,revision:digest(readFileSync(filename))}]}})}}}};
+  writeFileSync(filename,'---\nphase: review\n---\n','utf8');
+  const usage=service.modelUsage(context);
+  assert.deepEqual(usage,{runs:1,input_tokens:120,cached_input_tokens:20,output_tokens:10,
+    current_model:'gpt-6-sol',current_reasoning:'medium',anomaly:false});
+  assert.throws(()=>service.requireUsageCheckpoint(context),
+    {code:'COMPANION_MODEL_USAGE_CHECKPOINT_UNKNOWN'});
+  writeFileSync(filename,service.usageBytes(readFileSync(filename,'utf8'),usage),'utf8');
+  service.requireUsageCheckpoint(context);
+  run.usage=null;
+  assert.throws(()=>service.requireUsageCheckpoint(context),
+    {code:'COMPANION_MODEL_USAGE_CHECKPOINT_UNKNOWN'});
+  const unknown=service.modelUsage(context);
+  assert.equal(unknown.input_tokens,null);
+  assert.equal(unknown.runs,1);
 });

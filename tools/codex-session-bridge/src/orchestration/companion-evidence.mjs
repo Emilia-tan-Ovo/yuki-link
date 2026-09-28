@@ -121,9 +121,25 @@ export class CompanionEvidenceAdapter {
     if (!run) return {state:'unknown',reason:'COMPANION_RUN_OBSERVATION_UNKNOWN',receipt};
     if (run.status!=='completed') return {state:['failed','stopped','timed_out','interrupted'].includes(run.status)
       ? 'blocked':'waiting',reason:`COMPANION_RUN_${run.status.toUpperCase()}`,receipt};
+    if (action==='review' || action==='focused-review') {
+      let children;
+      try { children=this.manager.harness.conversations.summary(ticketId); }
+      catch { return {state:'unknown',reason:'COMPANION_REVIEW_ISOLATION_UNKNOWN',receipt}; }
+      const matches=children.filter(child=>child.relation?.kind==='review'
+        && child.relation.review_id===operation.destination.relation.review_id
+        && child.relation.participant==='coordinator'
+        && child.bindings?.some(binding=>binding.session_id===receipt.runtime.session_id
+          && binding.run_id===run.id));
+      if (matches.length!==1 || matches[0].isolation?.state!=='verified'
+        || matches[0].bindings.length!==1
+        || matches[0].bindings[0].isolation?.state!=='verified'
+        || !matches[0].bindings[0].isolation_provenance)
+        return {state:'unknown',reason:'COMPANION_REVIEW_ISOLATION_UNKNOWN',receipt};
+    }
     const result=this.readResult(worktree,slot,action,expected && {
       ...expected,operation_id:operation.operation_id,run_id:run.id});
     return {...result,operation_id:operation.operation_id,run_id:run.id,
-      session_id:receipt.runtime.session_id,receipt};
+      session_id:receipt.runtime.session_id,receipt,
+      isolation:(action==='review' || action==='focused-review') ? 'verified':'not-applicable'};
   }
 }
