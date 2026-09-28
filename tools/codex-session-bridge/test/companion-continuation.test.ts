@@ -205,6 +205,94 @@ test('preparation-bound Acceptance reuses the authenticated preparation Issue so
   assert.equal(authenticatedReads,1);
   assert.equal(publicReads,0);
 });
+test('checked restart distinguishes a provably absent implementation attempt',()=>{
+  const action:any={slot:'implementation',attempt_state:'unknown',
+    created_at:'2026-09-28T09:00:00.000Z',updated_at:'2026-09-28T09:00:01.000Z',
+    intent:{action:'implementation',request_id:'request-implementation',
+      policy:{model:'gpt-6-sol',reasoning:'high'}}};
+  const updates:any[]=[];
+  const service=Object.create(CompanionContinuationService.prototype) as any;
+  service.startedAt='2026-09-28T09:00:02.000Z';
+  service.store={continuationActions:()=>[action],
+    updateContinuationAction:(...args:any[])=>{updates.push(args);return {conflict:false};}};
+  service.manager={store:{state:{runs:{},sessions:{}}},harness:{executionOperations:{
+    findByRequest:()=>null}}};
+  const context:any={card:{cardId:'card-1',revision:1},
+    ticket:{id:'ticket-1',expected_worktree:'C:/fixture/repo'}};
+  service.reconcileModelActions(context);
+  assert.equal(updates.length,1);
+  assert.equal(updates[0][4],'definitely-not-applied');
+  assert.equal(updates[0][5].reason,'checked-restart-no-operation-or-runtime');
+
+  updates.length=0;
+  action.updated_at='2026-09-28T09:00:03.000Z';
+  service.reconcileModelActions(context);
+  assert.equal(updates.length,0,'same-service absence is not proof that no side effect occurred');
+
+  action.updated_at='2026-09-28T09:00:01.000Z';
+  service.manager.store.state.sessions={session1:{cwd:'C:/fixture/repo'}};
+  service.manager.store.state.runs={run1:{session_id:'session1',
+    created_at:'2026-09-28T09:00:01.500Z',model:'gpt-6-sol',reasoning:'high'}};
+  service.reconcileModelActions(context);
+  assert.equal(updates.length,0,'a matching durable runtime keeps the attempt unknown');
+});
+
+test('known model launch rejection is distinct from recording-outcome unknown',()=>{
+  const updates:any[]=[];
+  const action:any={slot:'implementation',attempt_state:'attempted',
+    intent:{request_id:'request-implementation'}};
+  const service=Object.create(CompanionContinuationService.prototype) as any;
+  service.store={continuationAction:()=>action,
+    updateContinuationAction:(...args:any[])=>{updates.push(args);return {conflict:false};}};
+  const context:any={card:{cardId:'card-1',revision:1},ticket:{id:'ticket-1'}};
+  service.manager={harness:{executionOperations:{findByRequest:()=>null}}};
+  service.recordModelLaunchFailure(context,'implementation',{code:'IMPLEMENTATION_ENVIRONMENT_CONFLICT'});
+  assert.equal(updates.at(-1)[4],'definitely-not-applied');
+  assert.equal(updates.at(-1)[5].code,'IMPLEMENTATION_ENVIRONMENT_CONFLICT');
+  service.recordModelLaunchFailure(context,'implementation',{code:'RECORDING_OUTCOME_UNKNOWN'});
+  assert.equal(updates.at(-1)[4],'unknown');
+
+  service.manager.harness.executionOperations={findByRequest:()=>({operation_id:'operation-1'}),
+    reconcile:()=>({effective_state:'failed',runtime:{run_id:null}})};
+  service.recordModelLaunchFailure(context,'implementation',{code:'IMPLEMENTATION_LAUNCH_REJECTED'});
+  assert.equal(updates.at(-1)[4],'definitely-not-applied');
+  assert.equal(updates.at(-1)[5].operation_id,'operation-1');
+});
+
+test('definitely-not-applied implementation is retry-ready without replacing its intent',async()=>{
+  const action:any={slot:'implementation',attempt_state:'definitely-not-applied',
+    intent:{action:'implementation',request_id:'frozen-request'}};
+  const workflow:any={workflow_revision:3,snapshot:{phase:'implementation',findings:[],
+    subject:{subject_id:'subject-1',head:'a'.repeat(40),staged:[],unstaged:[],untracked:[]}}};
+  const summary:any={assessment:{state:'verified'},acceptance:{accepted:false}};
+  const context:any={card:{cardId:'card-1',revision:1,content:{endpoint:'to-pr'}},
+    link:{binding_kind:'dispatch',binding_id:'dispatch-1'},binding:{},
+    ticket:{id:'ticket-1',reference:'https://github.com/Emilia-tan-Ovo/yuki-link/issues/901'}};
+  const service=Object.create(CompanionContinuationService.prototype) as any;
+  service.locator=()=>context;
+  service.manager={harness:{workflowHistory:{current:{get:()=>workflow},summary:()=>summary}}};
+  service.initialOperation=()=>({state:'completed',receipt:null,run:{status:'completed'}});
+  service.designEvidence=async()=>({state:'completed',notes:{path:'notes',sha256:'a'.repeat(64)}});
+  service.store={continuationActions:()=>[action]};
+  service.controlledImplementation=()=>null;
+  service.delivery={reconcile:async()=>({state:'not-started'})};
+  const receipt=await service.get({card_store_id:'store',card_id:'card-1',revision:1});
+  assert.equal(receipt.next_action.action,'implementation');
+  assert.equal(receipt.next_action.state,'ready');
+  assert.equal(receipt.next_action.reason,'COMPANION_ACTION_RETRY_READY');
+
+  let retried=0;
+  service.store.continuationAction=()=>action;
+  service.manager.harness.workflowHistory.source={assess:()=>({state:'verified'})};
+  service.retryImplementation=async(_raw:any,_context:any,existing:any,current:any)=>{
+    retried++; assert.equal(existing,action); assert.equal(current,workflow);
+    assert.equal(existing.intent.request_id,'frozen-request'); return {retried:true};
+  };
+  const result=await service.startModel({},context,'implementation','implementation',
+    {notes:{path:'unused',sha256:'b'.repeat(64)}});
+  assert.deepEqual(result,{retried:true});
+  assert.equal(retried,1);
+});
 test('recorded design handoff survives a later Notes handoff update',async t=>{
   const dir=mkdtempSync(join(tmpdir(),'companion-design-handoff-'));
   t.after(()=>rmSync(dir,{recursive:true,force:true}));

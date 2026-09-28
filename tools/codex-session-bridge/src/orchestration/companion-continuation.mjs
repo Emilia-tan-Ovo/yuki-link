@@ -35,6 +35,7 @@ export class CompanionContinuationService {
     this.preparation=preparation; this.dispatch=dispatch; this.issueSource=issueSource;
     this.issueTransport=issueTransport;
     this.projects=projects;
+    this.startedAt=new Date().toISOString();
     this.evidence=new CompanionEvidenceAdapter({manager});
     this.mechanical=new CompanionMechanicalAdapter({store:this.store,computer});
     this.taskUnsubscribe=computer?.tasks?.subscribe?.((identity,event)=>{
@@ -353,13 +354,18 @@ export class CompanionContinuationService {
     else if (workflow.snapshot.phase==='ticket-design') next={action:'implementation',state:'ready',reason:null};
     else if (workflow.snapshot.phase==='implementation') {
       const fix=actions.find(item => item.slot.startsWith('finding-fix-'));
+      const implementation=actions.find(item => item.slot==='implementation');
       const slot=fix?.slot ?? 'implementation';
-      const result=controlled?.result ?? this.actionEvidence(context,slot,
-        fix ? 'finding-fix':'implementation');
-      next=result ? {action:'verify-implementation',state:result.state==='completed' ? 'ready':result.state,
-        reason:result.reason ?? null}
-        : {action:fix || workflow.snapshot.findings.some(value=>value.status==='open')
-          ? 'finding-fix':'implementation',state:'ready',reason:null};
+      if (!fix && implementation?.attempt_state==='definitely-not-applied')
+        next={action:'implementation',state:'ready',reason:'COMPANION_ACTION_RETRY_READY'};
+      else {
+        const result=controlled?.result ?? this.actionEvidence(context,slot,
+          fix ? 'finding-fix':'implementation');
+        next=result ? {action:'verify-implementation',state:result.state==='completed' ? 'ready':result.state,
+          reason:result.reason ?? null}
+          : {action:fix || workflow.snapshot.findings.some(value=>value.status==='open')
+            ? 'finding-fix':'implementation',state:'ready',reason:null};
+      }
     } else if (workflow.snapshot.phase==='review') {
       const focused=actions.find(item => item.slot.startsWith('focused-review-'));
       const slot=focused?.slot ?? 'primary-review';
@@ -697,17 +703,62 @@ export class CompanionContinuationService {
       } catch { /* Preserve the original intent and checkpoint for reconciliation. */ }
     }
   }
+  checkedRuntimeAbsence(context,action) {
+    if (!action?.created_at || !action?.updated_at || action.updated_at>=this.startedAt
+      || !this.manager.store?.state?.runs || !this.manager.store?.state?.sessions) return false;
+    const operation=this.manager.harness.executionOperations.findByRequest(context.ticket.id,
+      action.intent.request_id);
+    if (operation) return false;
+    const model=action.intent.policy?.model,reasoning=action.intent.policy?.reasoning;
+    const candidate=Object.values(this.manager.store.state.runs).find(run=>{
+      const session=this.manager.store.state.sessions[run.session_id];
+      return run.created_at>=action.created_at && session?.cwd===context.ticket.expected_worktree
+        && (!model || run.model===model) && (!reasoning || run.reasoning===reasoning);
+    });
+    return !candidate;
+  }
+  recordModelLaunchFailure(context,slot,error) {
+    const action=this.store.continuationAction(context.card.cardId,context.card.revision,slot);
+    if (!action || action.attempt_state!=='attempted') return;
+    const code=error?.code ?? 'COMPANION_MODEL_LAUNCH_REJECTED';
+    const operation=this.manager.harness.executionOperations.findByRequest(context.ticket.id,
+      action.intent.request_id);
+    if (!operation) {
+      const state=code==='RECORDING_OUTCOME_UNKNOWN' ? 'unknown':'definitely-not-applied';
+      this.store.updateContinuationAction(context.card.cardId,context.card.revision,slot,
+        'attempted',state,{code,operation_id:null,run_id:null});
+      return;
+    }
+    const receipt=this.manager.harness.executionOperations.reconcile(operation.operation_id);
+    const state=receipt.effective_state==='failed' && !receipt.runtime?.run_id
+      ? 'definitely-not-applied':'unknown';
+    this.store.updateContinuationAction(context.card.cardId,context.card.revision,slot,
+      'attempted',state,{code,operation_id:operation.operation_id,
+        run_id:receipt.runtime?.run_id ?? null,effective_state:receipt.effective_state});
+  }
   reconcileModelActions(context) {
     for (const action of this.store.continuationActions(context.card.cardId,context.card.revision)
       .filter(value=>value.attempt_state==='unknown'
         && ['implementation','review','finding-fix','focused-review'].includes(value.intent.action))) {
       const operation=this.manager.harness.executionOperations.findByRequest(context.ticket.id,
         action.intent.request_id);
-      if (!operation) continue;
+      if (!operation) {
+        if (action.intent.action==='implementation' && this.checkedRuntimeAbsence(context,action))
+          this.store.updateContinuationAction(context.card.cardId,context.card.revision,
+            action.slot,'unknown','definitely-not-applied',
+            {reason:'checked-restart-no-operation-or-runtime',operation_id:null,run_id:null,
+              checked_at:new Date().toISOString()});
+        continue;
+      }
       const receipt=this.manager.harness.executionOperations.reconcile(operation.operation_id);
-      if (receipt.runtime?.run_id && receipt.effective_state!=='reconciliation-required')
+      if (receipt.effective_state==='failed' && !receipt.runtime?.run_id) {
+        this.store.updateContinuationAction(context.card.cardId,context.card.revision,
+          action.slot,'unknown','definitely-not-applied',
+          {reason:'execution-failed-before-run',operation_id:operation.operation_id,run_id:null});
+      } else if (receipt.runtime?.run_id && receipt.effective_state!=='reconciliation-required') {
         this.store.updateContinuationAction(context.card.cardId,context.card.revision,
           action.slot,'unknown','attempted',{operation_id:operation.operation_id});
+      }
     }
   }
   recordModelResult(context,slot,result) {
@@ -716,6 +767,53 @@ export class CompanionContinuationService {
       context.card.cardId,context.card.revision,slot,'attempted','verified',
       {operation_id:result.operation_id,run_id:result.run_id,result_sha256:result.sha256});
   }
+  async retryImplementation(raw,context,existing,workflow) {
+    const {ticket,card}=context,harness=this.manager.harness;
+    const intent=existing.intent;
+    const notes=intent.authorization?.notes;
+    const active=this.manager.implementationLaunchAuthority?.snapshot(ticket.key,'')?.policy;
+    const resultIdentity=intent.result_identity,resultPath=intent.result_path;
+    const authorization=intent.authorization,input=intent.launcher_input;
+    const authorizationRef=authorization?.authorization_ref;
+    const subjectIdentity=identity(workflow.snapshot.subject);
+    if (intent.action!=='implementation' || intent.workflow_revision!==workflow.workflow_revision
+      || !notes || !active || active.workflow_phase!=='implementation'
+      || active.permission_selection!=='owner-native-default' || active.digest!==intent.policy?.digest
+      || !authorizationRef || !resultIdentity || !resultPath || !input
+      || input.request_id!==intent.request_id
+      || input.expected?.workflow_revision!==workflow.workflow_revision
+      || input.expected?.subject_ref!==workflow.snapshot.subject.subject_id
+      || resultIdentity.request_id!==intent.request_id
+      || resultIdentity.workflow_revision!==workflow.workflow_revision
+      || resultIdentity.subject_ref!==workflow.snapshot.subject.subject_id
+      || resultIdentity.subject_identity!==subjectIdentity
+      || hash(readFileSync(path.join(ticket.expected_worktree,notes.path)))!==notes.sha256)
+      fail('COMPANION_ACTION_INTENT_CONFLICT');
+    const service=this;
+    const authority={snapshot(ticketKey,authorizationRefObserved) {
+      const current=service.locator(raw);
+      const activePolicy=service.manager.implementationLaunchAuthority?.snapshot(ticketKey,'')?.policy;
+      const observed=service.manager.harness.workflowHistory.current.get(ticket.id);
+      if (current.card.content.endpoint!=='to-pr' || ticketKey!==ticket.key
+        || authorizationRefObserved!==authorizationRef || !activePolicy
+        || activePolicy.digest!==active.digest || observed?.workflow_revision!==workflow.workflow_revision
+        || identity(observed.snapshot.subject)!==subjectIdentity
+        || hash(readFileSync(path.join(ticket.expected_worktree,notes.path)))!==notes.sha256)
+        fail('COMPANION_ACTION_AUTHORITY_CONFLICT');
+      return {policy:active,authorization,source:{schema_version:1,kind:'adapter',
+        reference:authorizationRef,canonical_path:null,sha256:hash(JSON.stringify(intent))},
+        companion_result_path:resultPath,companion_result_identity:resultIdentity};
+    }};
+    const attempted=this.store.updateContinuationAction(card.cardId,card.revision,'implementation',
+      'definitely-not-applied','attempted');
+    if (attempted.conflict) return this.get(raw);
+    try {
+      await new WorkflowAgentLauncher({manager:this.manager,harness,implementationAuthority:authority}).start(input);
+    } catch (error) {
+      this.recordModelLaunchFailure(context,'implementation',error);
+    }
+    return this.get(raw);
+  }
   async startModel(raw,context,action,slot,predecessor) {
     const {ticket,card}=context;
     const harness=this.manager.harness;
@@ -723,7 +821,8 @@ export class CompanionContinuationService {
     if (!workflow || harness.workflowHistory.source.assess(ticket,workflow.snapshot).state!=='verified')
       fail('COMPANION_WORKFLOW_UNVERIFIED');
     const existing=this.store.continuationAction(card.cardId,card.revision,slot);
-    if (existing) return this.get(raw);
+    if (existing) return existing.attempt_state==='definitely-not-applied'
+      ? this.retryImplementation(raw,context,existing,workflow):this.get(raw);
     const notes=predecessor.notes;
     if (!notes || hash(readFileSync(path.join(ticket.expected_worktree,notes.path)))!==notes.sha256)
       fail('COMPANION_NOTES_CONFLICT');
@@ -770,8 +869,8 @@ export class CompanionContinuationService {
     if (attempted.conflict) return this.get(raw);
     try {
       await new WorkflowAgentLauncher({manager:this.manager,harness,implementationAuthority:authority}).start(input);
-    } catch {
-      this.store.updateContinuationAction(card.cardId,card.revision,slot,'attempted','unknown');
+    } catch (error) {
+      this.recordModelLaunchFailure(context,slot,error);
     }
     return this.get(raw);
   }
