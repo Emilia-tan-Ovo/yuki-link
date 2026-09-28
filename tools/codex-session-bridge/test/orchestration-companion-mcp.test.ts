@@ -4,7 +4,8 @@ import { once } from 'node:events';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createHttpServer } from '../src/http.js';
-import { prepareNewRequirement } from '../../companion-desktop/backend/yca-engineering-client.mjs';
+import { HarnessError } from '../src/harness/model.ts';
+import { prepareNewRequirement, getContinuationReceipt } from '../../companion-desktop/backend/yca-engineering-client.mjs';
 
 test('companion endpoint exposes typed dispatch and no-ticket preparation actions', async t => {
   const calls: string[] = [];
@@ -14,6 +15,9 @@ test('companion endpoint exposes typed dispatch and no-ticket preparation action
   },companionPreparation:{
     prepare:async()=>{calls.push('prepare');return {schema_version:1,preparation_id:'new'};},
     get:async()=>{calls.push('preparation-get');return {schema_version:1,preparation_id:'new'};},
+  },companionContinuation:{
+    advance:async()=>{calls.push('advance');return {schema_version:1,endpoint:'to-pr'};},
+    get:async()=>{calls.push('continuation-get');return {schema_version:1,endpoint:'to-pr'};},
   }};
   const server = createHttpServer(manager,null);
   server.listen(0,'127.0.0.1'); await once(server,'listening');
@@ -24,8 +28,10 @@ test('companion endpoint exposes typed dispatch and no-ticket preparation action
   await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${address.port}/companion-mcp`)));
   t.after(()=>client.close());
   const tools = await client.listTools();
-  assert.deepEqual(tools.tools.map(tool=>tool.name).sort(),['dispatch_confirmed_engineering_card',
-    'get_companion_engineering_receipt','get_companion_preparation_receipt','prepare_companion_new_requirement']);
+  assert.deepEqual(tools.tools.map(tool=>tool.name).sort(),['advance_companion_engineering',
+    'dispatch_confirmed_engineering_card','get_companion_continuation_receipt',
+    'get_companion_engineering_receipt','get_companion_preparation_receipt',
+    'prepare_companion_new_requirement']);
   const input = {schema_version:1,card_store_id:'00000000-0000-4000-8000-000000000001',
     card_id:'00000000-0000-4000-8000-000000000002',revision:1,
     dispatch_id:'00000000-0000-4000-8000-000000000003'};
@@ -34,7 +40,13 @@ test('companion endpoint exposes typed dispatch and no-ticket preparation action
   const prepared = await client.callTool({name:'prepare_companion_new_requirement',arguments:{
     card_store_id:input.card_store_id,card_id:input.card_id,revision:input.revision}});
   assert.equal((prepared.structuredContent as {preparation_id?: string})?.preparation_id,'new');
-  assert.deepEqual(calls,['get','prepare']);
+  const locator={card_store_id:input.card_store_id,card_id:input.card_id,revision:input.revision};
+  const advanced=await client.callTool({name:'advance_companion_engineering',
+    arguments:{schema_version:1,...locator}});
+  assert.equal(advanced.isError,undefined);
+  assert.equal((advanced.structuredContent as {endpoint?: string})?.endpoint,'to-pr');
+  assert.equal((await getContinuationReceipt(`http://127.0.0.1:${address.port}/companion-mcp`,locator) as {endpoint?:string}).endpoint,'to-pr');
+  assert.deepEqual(calls,['get','prepare','advance','continuation-get']);
 });
 
 test('preparation conflict code survives Companion MCP and Desktop client decoding', async t => {
@@ -63,6 +75,25 @@ test('preparation conflict code survives Companion MCP and Desktop client decodi
     assert.ok(error instanceof Error);
     assert.equal(error.message,'YCA typed preparation receipt unavailable');
     assert.equal((error as Error & {code?: string}).code,undefined);
+    return true;
+  });
+});
+
+test('continuation conflict code and source survive public MCP and Desktop decoding',async t=>{
+  const manager:any={closing:false,companionContinuation:{
+    get:()=>{throw new HarnessError('COMPANION_CONTINUATION_AUTHORITY_CONFLICT',
+      {source_refs:['card-sqlite']});},advance:()=>({schema_version:1})}};
+  const server=createHttpServer(manager,null);
+  server.listen(0,'127.0.0.1'); await once(server,'listening');
+  t.after(()=>server.close());
+  const address=server.address();
+  if (!address || typeof address==='string') throw Error('listener unavailable');
+  const input={card_store_id:'00000000-0000-4000-8000-000000000001',
+    card_id:'00000000-0000-4000-8000-000000000002',revision:1};
+  await assert.rejects(getContinuationReceipt(
+    `http://127.0.0.1:${address.port}/companion-mcp`,input),error=>{
+    assert.equal((error as Error & {code?:string}).code,'COMPANION_CONTINUATION_AUTHORITY_CONFLICT');
+    assert.deepEqual((error as Error & {source_refs?:string[]}).source_refs,['card-sqlite']);
     return true;
   });
 });

@@ -48,3 +48,21 @@ async function preparationCall(url,name,input) {
 }
 export const prepareNewRequirement = (url,input) => preparationCall(url,'prepare_companion_new_requirement',input);
 export const getPreparationReceipt = (url,input) => preparationCall(url,'get_companion_preparation_receipt',input);
+export async function getContinuationReceipt(url,input) {
+  const client=new Client({name:'yuki-link-desktop-continuation',version:'1.0.0'});
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(url)));
+    const result=await client.callTool({name:'get_companion_continuation_receipt',
+      arguments:{schema_version:1,...input}});
+    if (result.isError) {
+      const detail=result.structuredContent?.error;
+      const error=Error(typeof detail?.code==='string' ? detail.code:'COMPANION_CONTINUATION_RECEIPT_UNAVAILABLE');
+      error.code=typeof detail?.code==='string' ? detail.code:'COMPANION_CONTINUATION_RECEIPT_UNAVAILABLE';
+      error.source_refs=Array.isArray(detail?.details?.source_refs) ? detail.details.source_refs.slice(0,8):[];
+      throw error;
+    }
+    if (result.structuredContent?.schema_version!==1)
+      throw Error('COMPANION_CONTINUATION_RECEIPT_INVALID');
+    return result.structuredContent;
+  } finally { await client.close().catch(()=>{}); }
+}

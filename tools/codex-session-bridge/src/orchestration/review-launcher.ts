@@ -172,6 +172,8 @@ export class ReviewLauncher {
       ...references.map(value => `- ${value}`),
       '当前 delta：', ...input.current_delta.map(value => `- ${value.ref}: ${value.value ?? 'null'}`),
       `Review ID：${input.review_id}；subject：${input.expected.subject_ref}；session=fresh；destination=Review child。`,
+      ...( (snapshot.authority as any).companion_result_path
+        ? [`Companion 结果产物：写 ${(snapshot.authority as any).companion_result_path}，UTF-8 JSON，字段 schema_version=1、action="review"、status="completed"|"blocked"|"incomplete"、report_ref、blockers 字符串数组、axes:{standards,spec}（各为 passed/findings/incomplete）、findings 数组。身份字段 request_id、subject_ref、subject_identity 按 ${JSON.stringify((snapshot.authority as any).companion_result_identity)} 写入；operation_id、run_id 由 Harness 根据真实运行回执绑定，无需写入结果文件。报告文件须置于结果文件同目录。`] : []),
       '报告 findings 与证据后停止；不要实现、验收或执行外部写入。',
     ].join('\n') };
   }

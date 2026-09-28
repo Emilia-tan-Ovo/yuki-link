@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { EngineeringCardStore, preparationAuthorized } from '../../../companion-desktop/backend/engineering-card-store.mjs';
 import { WorkflowAgentLauncher } from './workflow-agent-launcher.ts';
+import { companionResultIdentity } from './companion-evidence.mjs';
 import { MarkdownContextDocumentAdapter } from './document-adapter.ts';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -46,7 +47,12 @@ export class GitHubPreparationIssues {
     if (typeof actor !== 'string' || !actor.trim()) throw Error('PREPARATION_GITHUB_AUTH_UNAVAILABLE');
     return actor;
   }
-  markerLine({marker,payloadDigest}) { return `<!-- ${marker}:${payloadDigest} -->`; }
+  async details(repository,number) {
+    const issue = await this.transport.read(repository,number);
+    if (!identity(repository,issue)) return null;
+    return {...issue,scope:{digest:hash(JSON.stringify({repository,id:issue.id,number:issue.number,
+      title:issue.title,body:issue.body})),observedAt:new Date().toISOString()}};
+  }  markerLine({marker,payloadDigest}) { return `<!-- ${marker}:${payloadDigest} -->`; }
   valid(issue,{repository,marker,payloadDigest},actor) {
     return identity(repository,issue) && issue.creator === actor
       && issue.body.includes(this.markerLine({marker,payloadDigest}));
@@ -451,6 +457,10 @@ export class CompanionPreparationService {
       bindings:{...value.bindings,harness:{ticketId:ticket.id,conversationId:ticket.main_conversation_id,
         ticketKey}},stepReceipts:{...value.stepReceipts,harness:{state:'verified'}}}));
     else if (record.bindings.harness.ticketId !== ticket.id) throw Error('PREPARATION_HARNESS_CONFLICT');
+    if (this.store.registerContinuation(card.cardId,card.revision,'preparation',
+      record.preparationId,ticket.id).conflict) throw Error('PREPARATION_CONTINUATION_CONFLICT');
+    this.manager.companionContinuation?.wake({schema_version:1,card_store_id:this.store.storeId,
+      card_id:card.cardId,revision:card.revision});
     const cp = checkpoint(worktree.path,ticketKey,worktree.branch,worktree.oid,issue.url);
     const snapshot = initialWorkflow(ticket,issue,worktree,cp,card);
     let workflow;
@@ -511,6 +521,11 @@ export class CompanionPreparationService {
       expected:{workflow_revision:workflow.workflow_revision,subject_ref:snapshot.subject.subject_id,
         subject_identity:null,content_identity:contentIdentity,policy:{policy_id:policy.policy_id,
           revision:policy.revision,digest:policy.digest}},references:[issue.url],current_delta:[]};
+    const resultIdentity=companionResultIdentity(worktree.path,card.cardId,card.revision,
+      'ticket-design',launcherInput.request_id,workflow.workflow_revision,
+      snapshot.subject.subject_id,null);
+    if (existsSync(path.dirname(resultIdentity.result_path))) throw Error('PREPARATION_RESULT_PATH_OCCUPIED');
+    mkdirSync(path.dirname(resultIdentity.result_path),{recursive:true});
     record = this.update(record,value => ({...value,
       stepReceipts:{...value.stepReceipts,launch:{state:'attempted',requestId:launcherInput.request_id}},
       unknownSideEffects:['ticket-design-launch']}));
@@ -610,7 +625,15 @@ export class CompanionPreparationService {
           revision:card.revision,dispatch_id:record.preparationId,content_digest:record.payloadDigest,
           confirmation_at:record.confirmationAt,ticket_scope_digest:hash(`${issue.id}:${issue.body}`),
           product_endpoint:card.content.endpoint,action:'ticket-design',policy_digest:policy.digest},
-        confirmed_request:card.content.original};
+        confirmed_request:card.content.original,
+        companion_result_path:companionResultIdentity(current.bindings.worktree.path,
+          card.cardId,card.revision,'ticket-design',
+          `companion-prep:${record.preparationId}:ticket-design`,
+          current.bindings.workflow.revision,snapshot.subject.subject_id,null).result_path,
+        companion_result_identity:companionResultIdentity(current.bindings.worktree.path,
+          card.cardId,card.revision,'ticket-design',
+          `companion-prep:${record.preparationId}:ticket-design`,
+          current.bindings.workflow.revision,snapshot.subject.subject_id,null)};
     }};
   }
 }

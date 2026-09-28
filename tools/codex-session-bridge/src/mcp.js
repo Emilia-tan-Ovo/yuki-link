@@ -179,6 +179,17 @@ export function createMcpServer(manager, computer) {
     }, true);
   const preparationInput = z.object({card_store_id:z.string().uuid(),card_id:z.string().uuid(),
     revision:z.number().int().positive()}).strict();
+  const continuationInput = preparationInput.extend({schema_version:z.literal(1)}).strict();
+  register('manage-existing', 'advance_companion_engineering', 'Advance only a previously registered confirmed Companion continuation from its durable facts.',
+    continuationInput,input=>{
+      if (!manager.companionContinuation) throw new HarnessError('COMPANION_CONTINUATION_UNAVAILABLE');
+      return manager.companionContinuation.advance(input);
+    });
+  register('observe', 'get_companion_continuation_receipt', 'Read one registered Companion continuation without new work.',
+    continuationInput,input=>{
+      if (!manager.companionContinuation) throw new HarnessError('COMPANION_CONTINUATION_UNAVAILABLE');
+      return manager.companionContinuation.get(input);
+    },true);
   register('manage-existing', 'prepare_companion_new_requirement', 'Prepare a confirmed no-ticket card within its explicit Issue/worktree authorization, reconcile prior side effects, then launch ticket-design through Harness.',
     preparationInput, input => {
       if (!manager.companionPreparation) throw new HarnessError('COMPANION_PREPARATION_UNAVAILABLE');
@@ -268,7 +279,8 @@ export function createCompanionMcpServer(manager) {
   const server = new McpServer({ name: 'yuki-companion-engineering', version: '1.0.0' });
   const preparationInput = z.object({card_store_id:z.string().uuid(),card_id:z.string().uuid(),
     revision:z.number().int().positive()}).strict();
-  const register = (name, readOnly, action, schema = companionDispatchInputSchema, preparation = false) => server.registerTool(name, {
+  const continuationInput = preparationInput.extend({schema_version:z.literal(1)}).strict();
+  const register = (name, readOnly, action, schema = companionDispatchInputSchema, preparation = false, continuation = false) => server.registerTool(name, {
     inputSchema: schema,
     description: preparation ? readOnly ? 'Read the typed preparation receipt.'
       : 'Prepare one confirmed no-ticket card within its explicit authorization.'
@@ -277,17 +289,20 @@ export function createCompanionMcpServer(manager) {
     annotations: { readOnlyHint: readOnly, idempotentHint: true, destructiveHint: false },
   }, async input => {
     try {
-      if (preparation ? !manager.companionPreparation : !manager.companionDispatch)
-        throw new HarnessError(preparation ? 'COMPANION_PREPARATION_UNAVAILABLE' : 'COMPANION_DISPATCH_UNAVAILABLE');
+      if (continuation ? !manager.companionContinuation
+        : preparation ? !manager.companionPreparation : !manager.companionDispatch)
+        throw new HarnessError(continuation ? 'COMPANION_CONTINUATION_UNAVAILABLE'
+          : preparation ? 'COMPANION_PREPARATION_UNAVAILABLE' : 'COMPANION_DISPATCH_UNAVAILABLE');
       const result = await action(input);
       return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
     } catch (error) {
       const safeCode = preparation && error instanceof Error && publicPreparationConflicts.has(error.message)
         ? error.message : null;
-      const result = { error: preparation
-        ? safeCode ? { code: safeCode, message: safeCode }
+      const result = { error: error instanceof HarnessError
+        ? {code:error.code,message:error.message,details:error.details}
+        : preparation ? safeCode ? { code: safeCode, message: safeCode }
           : { code: 'INTERNAL_ERROR', message: 'Preparation failed' }
-        : error instanceof HarnessError ? { code: error.code, message: error.message, details: error.details } : publicError(error) };
+          : publicError(error) };
       return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
     }
   });
@@ -295,5 +310,7 @@ export function createCompanionMcpServer(manager) {
   register('get_companion_engineering_receipt', true, input => manager.companionDispatch.get(input));
   register('prepare_companion_new_requirement', false, input => manager.companionPreparation.prepare(input),preparationInput,true);
   register('get_companion_preparation_receipt', true, input => manager.companionPreparation.get(input),preparationInput,true);
+  register('advance_companion_engineering', false, input => manager.companionContinuation.advance(input),continuationInput,false,true);
+  register('get_companion_continuation_receipt', true, input => manager.companionContinuation.get(input),continuationInput,false,true);
   return server;
 }

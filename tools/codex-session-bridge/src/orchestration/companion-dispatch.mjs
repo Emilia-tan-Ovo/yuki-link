@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { EngineeringCardStore } from '../../../companion-desktop/backend/engineering-card-store.mjs';
 import { githubIssueSource } from '../../../companion-desktop/backend/github-issue-source.mjs';
@@ -8,6 +8,7 @@ import { ContextAssembler } from './context-assembler.ts';
 import { HarnessContextFactsSource } from './harness-context-source.ts';
 import { WorkflowAgentLauncher } from './workflow-agent-launcher.ts';
 import { reviewContractDigest } from './review-launcher.ts';
+import { companionResultIdentity } from './companion-evidence.mjs';
 
 import { companionDispatchInputSchema } from './companion-contract.mjs';
 export { companionDispatchInputSchema };
@@ -143,7 +144,16 @@ export class CompanionDispatchService {
       return { policy: claim.policy, authorization: claim.authorization,
         source: { schema_version: 1, kind: 'adapter', reference: claim.authorization_ref,
           canonical_path: null, sha256: sha({ claim: claim.claim_digest, policy: claim.policy, authorization: claim.authorization }) },
-        companion: claim.provenance, confirmed_request: card.content.original };
+        companion: claim.provenance, confirmed_request: card.content.original,
+        ...(['ticket-design','implementation','review'].includes(claim.action)
+          && service.manager.harness.tickets?.get?.(claim.ticket_id)?.expected_worktree
+          ? (()=>{ const result=companionResultIdentity(
+            service.manager.harness.tickets.get(claim.ticket_id).expected_worktree,
+            claim.card_id,claim.revision,claim.action==='review' ? 'primary-review':claim.action,
+            claim.request_id,claim.launcher_input.expected.workflow_revision,
+            claim.launcher_input.expected.subject_ref,
+            claim.launcher_input.expected.subject_identity ?? null);
+            return {companion_result_path:result.result_path,companion_result_identity:result}; })() : {}) };
     } };
   }
   policy(action,ticketKey,reviewId) {
@@ -253,7 +263,35 @@ export class CompanionDispatchService {
     // The short transaction rechecks revision, confirmation and immutable envelope after every await.
     const claimed = this.store.claim(input.card_id,input.revision,input.dispatch_id,proposed);
     if (claimed.conflict) fail('COMPANION_DISPATCH_CONFLICT');
+    const continuation = this.store.registerContinuation(input.card_id,input.revision,'dispatch',
+      input.dispatch_id,claimed.claim.ticket_id);
+    if (continuation.conflict) fail('COMPANION_CONTINUATION_CONFLICT');
+    if (proposed.action === 'implementation' || proposed.action === 'review') {
+      const slot=proposed.action === 'review' ? 'primary-review':'implementation';
+      const worktree=this.manager.harness.tickets?.get?.(proposed.ticket_id)?.expected_worktree;
+      const resultIdentity=worktree && companionResultIdentity(worktree,input.card_id,input.revision,
+        slot,proposed.request_id,proposed.launcher_input.expected.workflow_revision,
+        proposed.launcher_input.expected.subject_ref,
+        proposed.launcher_input.expected.subject_identity ?? null);
+      const accepted=this.store.claimContinuationAction(input.card_id,input.revision,slot,
+        {schema_version:1,action:proposed.action,request_id:proposed.request_id,
+          initial_dispatch_id:input.dispatch_id,workflow_revision:proposed.launcher_input.expected.workflow_revision,
+          result_identity:resultIdentity ?? null});
+      if (accepted.conflict) fail('COMPANION_CONTINUATION_CONFLICT');
+    }
+    this.manager.companionContinuation?.wake({schema_version:1,card_store_id:input.card_store_id,
+      card_id:input.card_id,revision:input.revision});
     if (claimed.deduplicated) return this.receipt(input,claimed.claim,true);
+    const expectedWorktree=this.manager.harness.tickets?.get?.(proposed.ticket_id)?.expected_worktree;
+    if (expectedWorktree) {
+      const result=companionResultIdentity(expectedWorktree,input.card_id,input.revision,
+        proposed.action === 'review' ? 'primary-review':proposed.action,proposed.request_id,
+        proposed.launcher_input.expected.workflow_revision,
+        proposed.launcher_input.expected.subject_ref,
+        proposed.launcher_input.expected.subject_identity ?? null);
+      if (existsSync(path.dirname(result.result_path))) fail('COMPANION_RESULT_PATH_OCCUPIED');
+      mkdirSync(path.dirname(result.result_path),{recursive:true});
+    }
     try { await this.launch(proposed); }
     catch { return this.receipt(input,proposed,false); }
     return this.receipt(input,proposed,false);

@@ -74,6 +74,7 @@ if (values.help) {
     if (failures.length) throw new BridgeError('STOP_FAILED', 'Execution sources could not all close; retain the runtime writer and observation.', { failures });
     manager?.companionDispatch?.close();
     manager?.companionPreparation?.close();
+    manager?.companionContinuation?.close();
     if (manager) await manager.close(); // Final capture/recheck, then writer release.
     else store?.close();
   };
@@ -109,6 +110,7 @@ if (values.help) {
     manager.harness = createHarnessRuntime(manager, values['control-root'], computer.tasks);
     manager.companionDispatch = null;
     manager.companionPreparation = null;
+    manager.companionContinuation = null;
     if (values['companion-card-store']) {
       const { CompanionDispatchService } = await import('./orchestration/companion-dispatch.mjs');
       const { CompanionPreparationService } = await import('./orchestration/companion-preparation.mjs');
@@ -129,6 +131,12 @@ if (values.help) {
       }
       manager.companionPreparation = new CompanionPreparationService({ manager,
         directory: values['companion-card-store'], projects });
+      const { CompanionContinuationService } = await import('./orchestration/companion-continuation.mjs');
+      manager.companionContinuation = new CompanionContinuationService({manager,
+        directory:values['companion-card-store'],computer,projects,
+        preparation:manager.companionPreparation,
+        dispatch:manager.companionDispatch});
+      manager.companionContinuation.start();
     }
     let server;
     const observation = { active: 0 };

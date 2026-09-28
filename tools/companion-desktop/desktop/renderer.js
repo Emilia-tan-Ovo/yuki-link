@@ -137,6 +137,9 @@ function renderEngineeringStatus(card) {
       `设计产物：${design?.state ?? '未观察到'} · ${(design?.blockers ?? []).join('、') || '无阻碍'}`,
       `下一动作：${receipt?.next_action_readiness?.action ?? '未知'} · ${receipt?.next_action_readiness?.state ?? '未知'}`,
       `未知副作用：${(receipt?.unknown_side_effects ?? []).join('、') || '无'}`,
+      `连续推进：${status?.continuation?.next_action?.action ?? '尚未接收'} · ${status?.continuation?.next_action?.state ?? '未知'}`,
+      `Acceptance：${status?.acceptance?.accepted ? '已接受' : status?.acceptance?.status ?? '未接受'}`,
+      `PR 交付：${status?.pr_delivery?.state ?? '未知'}`,
     ]) { const p = document.createElement('p'); p.textContent = line; target.append(p); }
     return;
   }
@@ -149,7 +152,9 @@ function renderEngineeringStatus(card) {
     `YCA operation：${status?.engineering_operation?.id ?? '暂无'} · ${status?.engineering_operation?.state ?? '未知'}`,
     `Sylvia run：${status?.receipt?.run_id ?? '暂无'} · ${status?.run?.status ?? '未知'}`,
     `Sylvia 实际回复：${result}`,
-    `Workflow / Acceptance：${status?.workflow?.current?.phase ?? '未知'} / ${status?.acceptance?.status ?? '未知'}`,
+    `Workflow：${status?.workflow?.phase ?? status?.workflow?.current?.phase ?? '未知'}`,
+    `Acceptance：${status?.acceptance?.accepted ? '已接受' : status?.acceptance?.status ?? '未知'}`,
+    `下一动作：${status?.next_action?.action ?? '未知'} · ${status?.next_action?.state ?? '未知'}${status?.next_action?.reason ? ' · ' + status.next_action.reason : ''}`,
     `PR 交付：${status?.pr_delivery?.state ?? '未知'}${status?.pr_delivery?.reference ? ' · ' + status.pr_delivery.reference : ''}`,
   ];
   for (const line of lines) { const p = document.createElement('p'); p.textContent = line; target.append(p); }
@@ -186,7 +191,7 @@ function renderCard(card) {
   $('card-workflow').textContent = workflow ? `Workflow 观察：${workflow.phase || '未知'} · revision ${workflow.revision ?? '未知'} · ${workflow.assessment || 'unknown'} · ${workflow.observedAt || '时间未知'}` : 'Workflow 观察：暂无；这不影响 Ticket 目标核验状态。';
   const authorization = ['merge','deploy'].map(kind => `${kind}：${content.extraAuthorization?.[kind]?.requested ? content.extraAuthorization[kind].target ? '显式请求 ' + content.extraAuthorization[kind].target : '已请求，对象待澄清' : '未请求'}`).join('；');
   const preparation = content.resolution.status === 'explicit_new_requirement' ? `准备授权：Issue ${content.preparationAuthorization?.issue ? '允许' : '未允许'}；worktree ${content.preparationAuthorization?.worktree ? '允许' : '未允许'}；${card.preparationStatus === 'authorized' ? '已确认，可按准备回执推进' : '缺少具体准备授权或确认'}。仅设计禁止实施、PR、合并和部署。` : '';
-  $('card-state').textContent = `${card.state === 'confirmed' ? `已确认 revision ${card.confirmation.revision}` : card.state === 'revoked' ? '已撤销' : '待确认'}；交接 ${card.dispatchStatus || (card.dispatchId ? '未知' : '尚未派发')}。${preparation}${authorization}。to-PR 后续连续推进尚未接入；合并与部署需独立授权。`;
+  $('card-state').textContent = `${card.state === 'confirmed' ? `已确认 revision ${card.confirmation.revision}` : card.state === 'revoked' ? '已撤销' : '待确认'}；交接 ${card.dispatchStatus || (card.dispatchId ? '未知' : '尚未派发')}。${preparation}${authorization}。终点：${card.content.endpoint === 'design-only' ? '设计' : 'PR'}；合并与部署需独立授权。`;
   renderEngineeringStatus(card);
   updateCardConfirm();
   $('card-edit').disabled = card.state === 'revoked' || card.dispatchStatus === 'engineering-received' || !!card.preparationId;

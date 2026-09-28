@@ -40,9 +40,10 @@ const genericInput = z.object({ schema_version: z.literal(1), action: workflowAg
   references: z.array(text).max(32),
   current_delta: z.array(z.object({ ref: text, value: z.string().max(2048).nullable() }).strict()).max(32),
 }).strict();
+const findingSchema = z.object({ origin_review_id: text, finding_id: text, report_ref: text,
+  fix_baseline: text }).strict();
 const findingInput = genericInput.omit({ references: true, current_delta: true }).extend({
-  finding: z.object({ origin_review_id: text, finding_id: text, report_ref: text,
-    fix_baseline: text }).strict(),
+  finding: findingSchema.optional(), finding_batch: z.array(findingSchema).min(2).max(32).optional(),
 }).strict();
 export const startWorkflowAgentInputSchema = z.discriminatedUnion('action', [
   startTicketImplementationInputSchema.extend({ action: z.literal('implementation') }).strict(),
@@ -118,6 +119,9 @@ export class WorkflowAgentLauncher {
     const parsed = startWorkflowAgentInputSchema.safeParse(raw);
     if (!parsed.success) throw new HarnessError('INVALID_WORKFLOW_AGENT_REQUEST', { issues: parsed.error.issues });
     const input = parsed.data;
+    if ((input.action === 'finding-fix' || input.action === 'focused-review')
+      && Boolean(input.finding) === Boolean(input.finding_batch))
+      throw new HarnessError('INVALID_WORKFLOW_AGENT_REQUEST');
     const { manager, harness } = this.dependencies;
     if (input.action === 'implementation') {
       const { action, ...legacy } = input;
@@ -154,7 +158,8 @@ export class WorkflowAgentLauncher {
       || authorization.subject_identity !== input.expected.subject_identity
       || !authorization.authority_refs.length) throw new HarnessError('WORKFLOW_AGENT_NOT_AUTHORIZED');
     if ((input.action === 'finding-fix' || input.action === 'focused-review')
-      && !same(authorization.finding, input.finding)) throw new HarnessError('WORKFLOW_AGENT_NOT_AUTHORIZED');
+      && (!same(authorization.finding, input.finding) || !same(authorization.finding_batch, input.finding_batch)))
+      throw new HarnessError('WORKFLOW_AGENT_NOT_AUTHORIZED');
     if (input.action === 'focused-review' && authorization.review_id !== input.review_id) {
       throw new HarnessError('WORKFLOW_AGENT_NOT_AUTHORIZED');
     }
@@ -191,22 +196,27 @@ export class WorkflowAgentLauncher {
     const snapshot = workflow.snapshot;
     if (input.action === 'ticket-design' && snapshot.findings?.length) throw new HarnessError('WORKFLOW_AGENT_PHASE_CONFLICT');
     if (input.action === 'finding-fix') {
-      const finding = input.finding;
-      const observed = snapshot.findings?.find((value: any) => value.origin_review_id === finding?.origin_review_id
-        && value.finding_id === finding?.finding_id);
-      if (!finding || !observed || !['open', 'fixed-unverified'].includes(observed.status)
-        || !finding.fix_baseline || !finding.report_ref) throw new HarnessError('WORKFLOW_AGENT_FINDING_CONFLICT');
+      const batch = input.finding_batch ?? (input.finding ? [input.finding] : []);
+      const origin = batch[0]?.origin_review_id;
+      if (!origin || new Set(batch.map(value => value.finding_id)).size !== batch.length
+        || batch.some(finding => finding.origin_review_id !== origin
+          || !snapshot.findings?.some((value: any) => value.origin_review_id === origin
+            && value.finding_id === finding.finding_id && ['open','fixed-unverified'].includes(value.status))))
+        throw new HarnessError('WORKFLOW_AGENT_FINDING_CONFLICT');
     }
     if (input.action === 'focused-review') {
       const review = snapshot.reviews?.find((value: any) => value.review_id === input.review_id);
-      const finding = snapshot.findings?.find((value: any) => value.origin_review_id === input.finding?.origin_review_id
-        && value.finding_id === input.finding?.finding_id);
+      const batch = input.finding_batch ?? (input.finding ? [input.finding] : []);
+      const origin = batch[0]?.origin_review_id;
       if (!review || review.mode !== 'focused' || review.status !== 'pending'
         || review.subject_ref !== input.expected.subject_ref
         || review.subject_identity !== input.expected.subject_identity
-        || !finding || !['fixed', 'fixed-unverified'].includes(finding.status)
-        || !input.finding || !review.finding_refs?.some((value: any) =>
-          value.origin_review_id === input.finding?.origin_review_id && value.finding_id === input.finding?.finding_id)) {
+        || !origin || batch.some(finding => finding.origin_review_id !== origin
+          || !snapshot.findings?.some((value: any) => value.origin_review_id === origin
+            && value.finding_id === finding.finding_id && ['fixed','fixed-unverified'].includes(value.status))
+          || !review.finding_refs?.some((value: any) => value.origin_review_id === origin
+            && value.finding_id === finding.finding_id))
+        || review.finding_refs?.length !== batch.length) {
         throw new HarnessError('WORKFLOW_AGENT_REVIEW_CONFLICT');
       }
     }
@@ -242,18 +252,22 @@ export class WorkflowAgentLauncher {
     const narrow = input.action === 'finding-fix' || input.action === 'focused-review';
     const confirmedRequest = narrow ? undefined : companionRequest(snapshot.authority);
     const references = [...new Set([snapshot.ticket.reference,
-      ...(narrow ? [input.finding.report_ref, ...(snapshot.authorization.finding_context_refs ?? [])]
+      ...(narrow ? [...new Set((input.finding_batch ?? (input.finding ? [input.finding] : []))
+        .map(value => value.report_ref)), ...(snapshot.authorization.finding_context_refs ?? [])]
         : [...input.references, ...snapshot.packet.retrieval.references.map((value: any) => value.location)])]
       .filter(Boolean))].slice(0, 64);
     const finding = input.action === 'finding-fix' || input.action === 'focused-review'
-      ? [`原 finding：${input.finding.origin_review_id}/${input.finding.finding_id}`,
-        `报告：${input.finding.report_ref}`, `修复基线：${input.finding.fix_baseline}`] : [];
+      ? (input.finding_batch ?? (input.finding ? [input.finding] : [])).flatMap(value => [
+        `原 finding：${value.origin_review_id}/${value.finding_id}`,
+        `报告：${value.report_ref}`, `修复基线：${value.fix_baseline}`]) : [];
     const instruction = input.action === 'ticket-design' ? '只完成 Ticket implementation design、Implementation Notes 与 Context Plan；不要修改实现代码。'
-      : input.action === 'finding-fix' ? '只修复原 finding，做最小定向测试、commit 与 handoff 后停止。'
+      : input.action === 'finding-fix' ? (snapshot.authority as any).companion_result_path
+        ? '只修复原 finding，做最小定向测试与 handoff 后停止。Git commit、push、full suite 和 PR 由 Emilia/YCA 执行。'
+        : '只修复原 finding，做最小定向测试、commit 与 handoff 后停止。'
       : input.action === 'focused-review' ? '只复核原 finding 与 fix delta，报告证据后停止；不要实现。'
       : '只核验明确要求 Agent/session 行为的验收项；不要执行 deterministic Acceptance 的其他工作。';
     const currentDelta = input.action === 'finding-fix' || input.action === 'focused-review'
-      ? [{ ref: 'fix_baseline', value: input.finding.fix_baseline },
+      ? [{ ref: 'fix_baseline', value: (input.finding_batch ?? (input.finding ? [input.finding] : []))[0]?.fix_baseline ?? null },
         { ref: 'subject_head', value: snapshot.workflow.snapshot.subject.head }]
       : input.current_delta;
     const criterion = input.action === 'acceptance-agent'
@@ -262,6 +276,8 @@ export class WorkflowAgentLauncher {
       ...(confirmedRequest ? [companionRequestPrompt(confirmedRequest)] : []),
       ...references.map(value => `- ${value}`), ...finding,
       ...criterion, '当前 delta：', ...currentDelta.map(value => `- ${value.ref}: ${value.value ?? 'null'}`),
+      ...( (snapshot.authority as any).companion_result_path
+        ? [`Companion 结果产物：写 ${(snapshot.authority as any).companion_result_path}，UTF-8 JSON，字段 schema_version=1、action="${input.action}"、status="completed"|"blocked"|"incomplete"、report_ref、blockers 字符串数组；身份字段 request_id、subject_ref、subject_identity 按 ${JSON.stringify((snapshot.authority as any).companion_result_identity)} 写入；operation_id、run_id 由 Harness 根据真实运行回执绑定，无需写入结果文件。报告文件须置于结果文件同目录。ticket-design 必须先在 canonical docs/implementation-notes/<ticket.key>.md 写 ## Acceptance Evidence Plan，紧随一个 json fence：schema_version=1、issue_ref=当前 Ticket Issue URL、criteria_sha256=按 Issue checklist 顺序排列的 {criteria_ref,text} JSON 的 SHA-256、criteria=全部 checklist 的有序数组（每项只含 criteria_ref=AC1...、与 Issue 完全一致的 text、source_kind=repository-test/git-subject/harness-run/review/external-observation/agent-session）。不得使用 pr-delivery 或猜测来源；不确定则报告 incomplete。design 另填 product_decision_required 布尔值、product_decisions 数组与 acceptance_plan（每项 criteria_ref、source_kind，仅候选，可与 Notes 相同或增加 external-observation 要求，不写 passed）；finding-fix 另填 files 路径数组且仅可报告 fixed-unverified；focused-review 另填 axes:{standards,spec} 与 verified_finding_ids 数组。`] : []),
       `结构化 contract：session=fresh；destination=${phase.destination}；Owner native permissions。`, instruction].join('\n');
     const destination = phase.destination === 'main' ? { kind: 'main' }
       : input.action === 'focused-review' ? { kind: 'child', relation: { kind: 'review',

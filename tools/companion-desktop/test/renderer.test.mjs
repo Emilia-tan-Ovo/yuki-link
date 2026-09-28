@@ -61,7 +61,8 @@ test('engineering status shows observed run and its short final response without
     dsh_turn:'turn-completed',dsh_receipt:{exit_code:0},receipt:{run_id:'run-1'},
     run:{status:'completed',final_response:'已完成实际修改'},acceptance:{status:'pending'},pr_delivery:{state:'unknown'}}});
   assert.equal(lines().find(line => line.startsWith('Sylvia 实际回复：')), 'Sylvia 实际回复：已完成实际修改');
-  assert.match(lines().find(line => line.startsWith('Workflow / Acceptance：')), /未知 \/ pending/);
+  assert.equal(lines().find(line => line.startsWith('Workflow：')), 'Workflow：未知');
+  assert.equal(lines().find(line => line.startsWith('Acceptance：')), 'Acceptance：pending');
 });
 
 test('ordinary engineering text creates a card candidate while everyday chat remains dialogue', () => {
