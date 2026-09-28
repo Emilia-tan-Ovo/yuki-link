@@ -383,8 +383,9 @@ test('real WorkflowSource permits only the bound implementation delta through CA
     }};
   const service=Object.create(CompanionContinuationService.prototype) as any;
   service.manager={harness}; service.store=store; service.mechanical=mechanical;
-  service.initialOperation=()=>({receipt:{runtime:{run_id:'run-1'}}});
-  service.manager.status=()=>({run:{id:'run-1',created_at:'2026-09-28T01:00:00Z',
+  service.initialOperation=()=>({receipt:{runtime:{session_id:'session-1',run_id:'run-1'}}});
+  service.manager.status=()=>({run:{id:'run-1',session_id:'session-1',
+    created_at:'2026-09-28T01:00:00Z',
     status:'completed',model:'gpt-6-sol',reasoning:'medium',usage:{input_tokens:42,
       cached_input_tokens:12,output_tokens:3}}});
   service.actionEvidence=()=>({state:'completed',sha256:'d'.repeat(64),value:{files:['feature.txt']}});
@@ -571,6 +572,15 @@ test('mechanical commit rejects stale suite bytes and resumes the one reserved i
   assert.equal(mechanical.reconcileCommit(locator,ticket,'implementation').state,'unknown');
   assert.equal(git('rev-parse','HEAD'),head);
   writeFileSync(join(dir,'feature.txt'),'after\n','utf8');
+  writeFileSync(join(dir,'feature.txt'),'different staged bytes\n','utf8');
+  git('add','--','feature.txt');
+  writeFileSync(join(dir,'feature.txt'),'after\n','utf8');
+  const rejected=mechanical.reconcileCommit(locator,ticket,'implementation');
+  assert.deepEqual(rejected,{state:'unknown',reason:'COMPANION_COMMIT_INDEX_CONFLICT'});
+  assert.equal(git('show',':feature.txt'),'different staged bytes',
+    'recovery must not overwrite a drifted index before rejecting it');
+  assert.equal(git('rev-parse','HEAD'),head);
+  git('add','--','feature.txt');
   assert.equal(mechanical.reconcileCommit(locator,ticket,'implementation').state,'committed');
   assert.equal(claims,0,'recovery reuses the frozen intent');
   assert.equal(git('rev-parse','HEAD^'),head);
@@ -583,26 +593,46 @@ test('model usage checkpoint uses durable terminal run status and blocks stale l
   const filename=join(dir,'checkpoint.md');
   const service=Object.create(CompanionContinuationService.prototype) as any;
   const context:any={card:{cardId:'card-1',revision:1},ticket:{id:'ticket-1'}};
-  const run:any={id:'run-1',created_at:'2026-09-28T01:00:00Z',status:'completed',
+  const run:any={id:'run-1',session_id:'session-1',created_at:'2026-09-28T01:00:00Z',status:'completed',
     model:'gpt-6-sol',reasoning:'medium',usage:{input_tokens:120,cached_input_tokens:20,
       output_tokens:10}};
-  service.initialOperation=()=>({receipt:{runtime:{run_id:'run-1'}}});
+  let observedRun:any=run;
+  service.initialOperation=()=>({receipt:{runtime:{session_id:'session-1',run_id:'run-1'}}});
   service.store={continuationActions:()=>[]};
-  service.manager={status:()=>({run}),harness:{workflowHistory:{current:{get:()=>({
+  service.manager={status:()=>({run:observedRun}),harness:{workflowHistory:{current:{get:()=>({
     snapshot:{checkpoint:{artifact_id:'checkpoint'},artifacts:[{artifact_id:'checkpoint',
       location:filename,revision:digest(readFileSync(filename))}]}})}}}};
   writeFileSync(filename,'---\nphase: review\n---\n','utf8');
   const usage=service.modelUsage(context);
-  assert.deepEqual(usage,{runs:1,input_tokens:120,cached_input_tokens:20,output_tokens:10,
+  assert.deepEqual(usage,{observation:'complete',runs:1,input_tokens:120,
+    cached_input_tokens:20,output_tokens:10,
     current_model:'gpt-6-sol',current_reasoning:'medium',anomaly:false});
   assert.throws(()=>service.requireUsageCheckpoint(context),
     {code:'COMPANION_MODEL_USAGE_CHECKPOINT_UNKNOWN'});
   writeFileSync(filename,service.usageBytes(readFileSync(filename,'utf8'),usage),'utf8');
   service.requireUsageCheckpoint(context);
-  run.usage=null;
+  delete run.usage.cached_input_tokens;
   assert.throws(()=>service.requireUsageCheckpoint(context),
     {code:'COMPANION_MODEL_USAGE_CHECKPOINT_UNKNOWN'});
   const unknown=service.modelUsage(context);
-  assert.equal(unknown.input_tokens,null);
+  assert.equal(unknown.observation,'complete');
+  assert.equal(unknown.cached_input_tokens,null);
   assert.equal(unknown.runs,1);
+  writeFileSync(filename,service.usageBytes(readFileSync(filename,'utf8'),unknown),'utf8');
+  service.requireUsageCheckpoint(context);
+  for (const missing of [null,{...run,status:'running'},{...run,id:'other-run'},
+    {...run,session_id:'other-session'}]) {
+    observedRun=missing;
+    const incomplete=service.modelUsage(context);
+    assert.equal(incomplete.observation,'incomplete');
+    assert.equal(incomplete.runs,1);
+    assert.equal(incomplete.input_tokens,null);
+    writeFileSync(filename,service.usageBytes(readFileSync(filename,'utf8'),incomplete),'utf8');
+    assert.throws(()=>service.requireUsageCheckpoint(context),
+      {code:'COMPANION_MODEL_USAGE_CHECKPOINT_UNKNOWN'});
+  }
+  service.manager.status=()=>{throw Error('runtime unavailable');};
+  assert.equal(service.modelUsage(context).observation,'incomplete');
+  assert.throws(()=>service.requireUsageCheckpoint(context),
+    {code:'COMPANION_MODEL_USAGE_CHECKPOINT_UNKNOWN'});
 });

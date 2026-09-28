@@ -775,39 +775,54 @@ export class CompanionContinuationService {
   modelUsage(context) {
     const ids=new Map();
     const initial=this.initialOperation(context);
-    if (initial.receipt?.runtime?.run_id) ids.set(initial.receipt.runtime.run_id,
-      context.link?.binding_kind==='dispatch' ? context.binding.action:'ticket-design');
+    let incomplete=!initial.receipt?.runtime?.run_id || !initial.receipt.runtime.session_id;
+    if (initial.receipt?.runtime?.run_id) ids.set(initial.receipt.runtime.run_id,{
+      action:context.link?.binding_kind==='dispatch' ? context.binding.action:'ticket-design',
+      session_id:initial.receipt.runtime.session_id});
     for (const action of this.store.continuationActions(context.card.cardId,context.card.revision)) {
       if (!['implementation','review','finding-fix','focused-review'].includes(action.intent.action)) continue;
       const operation=this.manager.harness.executionOperations.findByRequest(context.ticket.id,
         action.intent.request_id);
-      if (operation?.runtime?.run_id) ids.set(operation.runtime.run_id,action.intent.action);
+      if (operation?.runtime?.run_id) {
+        const previous=ids.get(operation.runtime.run_id);
+        if (!operation.runtime.session_id || previous
+          && previous.session_id!==operation.runtime.session_id) incomplete=true;
+        ids.set(operation.runtime.run_id,{action:action.intent.action,
+          session_id:operation.runtime.session_id});
+      }
     }
-    const runs=[...ids].map(([id,action])=>{
-      try { return {run:this.manager.status({run_id:id})?.run ?? null,action}; }
+    const runs=[...ids].map(([id,expected])=>{
+      try { return {run:this.manager.status({run_id:id})?.run ?? null,
+        action:expected.action,id,session_id:expected.session_id}; }
       catch { return null; }
-    }).filter(value=>value?.run && finalRuns.has(value.run.status))
-      .sort((a,b)=>a.run.created_at.localeCompare(b.run.created_at)
+    });
+    if (runs.some(value=>!value?.run || value.run.id!==value.id
+      || value.run.session_id!==value.session_id || !finalRuns.has(value.run.status)))
+      incomplete=true;
+    const observed=runs.filter(value=>value?.run && value.run.id===value.id
+      && value.run.session_id===value.session_id && finalRuns.has(value.run.status))
+      .sort((a,b)=>String(a.run.created_at).localeCompare(String(b.run.created_at))
         || a.run.id.localeCompare(b.run.id));
     const token=value=>Number.isSafeInteger(value) && value>=0 ? value:null;
-    const total=key=>runs.every(value=>token(value.run.usage?.[key])!==null)
-      ? runs.reduce((sum,value)=>sum+value.run.usage[key],0):null;
-    const latest=runs.at(-1),input=total('input_tokens');
+    const total=key=>!incomplete && observed.every(value=>token(value.run.usage?.[key])!==null)
+      ? observed.reduce((sum,value)=>sum+value.run.usage[key],0):null;
+    const latest=observed.at(-1),input=total('input_tokens');
     const targets={'ticket-design':1_500_000,implementation:3_000_000,review:2_000_000,
       'finding-fix':1_000_000,'focused-review':700_000};
     const stageInput=new Map();
-    for (const {run,action} of runs) {
+    for (const {run,action} of observed) {
       if (token(run.usage?.input_tokens)===null) continue;
       stageInput.set(action,(stageInput.get(action) ?? 0)+run.usage.input_tokens);
     }
-    return {runs:runs.length,input_tokens:input,cached_input_tokens:total('cached_input_tokens'),
-      output_tokens:total('output_tokens'),current_model:latest?.run.model ?? null,
-      current_reasoning:latest?.run.reasoning ?? null,
+    return {observation:incomplete ? 'incomplete':'complete',runs:ids.size,
+      input_tokens:input,cached_input_tokens:total('cached_input_tokens'),
+      output_tokens:total('output_tokens'),current_model:incomplete ? null:latest?.run.model ?? null,
+      current_reasoning:incomplete ? null:latest?.run.reasoning ?? null,
       anomaly:input!==null && input>6_000_000
         || [...stageInput].some(([action,value])=>value>targets[action])};
   }
   usageBytes(old,usage) {
-    if (!usage.runs && !/^model_usage:/mu.test(old)) return old;
+    if (!usage.runs && usage.observation==='complete' && !/^model_usage:/mu.test(old)) return old;
     const anomaly=usage.anomaly || /^  anomaly: true\s*$/mu.test(old);
     const block=`model_usage:\n  runs: ${usage.runs}\n  input_tokens: ${usage.input_tokens ?? 'null'}`
       +`\n  cached_input_tokens: ${usage.cached_input_tokens ?? 'null'}`
@@ -825,7 +840,9 @@ export class CompanionContinuationService {
       value.artifact_id===current.snapshot.checkpoint.artifact_id);
     if (!artifact) fail('COMPANION_MODEL_USAGE_CHECKPOINT_UNKNOWN');
     const bytes=readFileSync(artifact.location,'utf8');
-    if (hash(bytes)!==artifact.revision || this.usageBytes(bytes,this.modelUsage(context))!==bytes)
+    const usage=this.modelUsage(context);
+    if (usage.observation!=='complete' || hash(bytes)!==artifact.revision
+      || this.usageBytes(bytes,usage)!==bytes)
       fail('COMPANION_MODEL_USAGE_CHECKPOINT_UNKNOWN');
   }
   async retryImplementation(raw,context,existing,workflow) {

@@ -106,6 +106,15 @@ export class CompanionMechanicalAdapter {
       throw fail('COMPANION_TEST_SUBJECT_CHANGED');
     return suite;
   }
+  indexMatches(cwd,file,expected) {
+    if (expected===undefined) return false;
+    try {
+      if (expected===null) return git(cwd,'ls-files','--stage','--',file)==='';
+      const bytes=execFileSync('git',['--no-optional-locks','show',`:${file}`],
+        {cwd,windowsHide:true,shell:false,timeout:30_000,maxBuffer:10*1024*1024});
+      return hash(bytes)===expected;
+    } catch { return false; }
+  }
   commit(locator,ticket,subjectKey,files,tests) {
     const slot=`commit:${subjectKey}`,cwd=ticket.expected_worktree;
     if (tests?.state!=='passed' || !Array.isArray(files) || !files.length
@@ -149,16 +158,16 @@ export class CompanionMechanicalAdapter {
     const stagedBefore=git(cwd,'diff','--cached','--name-only').split(/\r?\n/u).filter(Boolean).sort();
     if (stagedBefore.some(file=>!intent.files.includes(file)))
       return {state:'unknown',reason:'COMPANION_COMMIT_INDEX_CONFLICT'};
+    for (const file of stagedBefore) {
+      if (!this.indexMatches(cwd,file,intent.content.find(value=>value.path===file)?.sha256))
+        return {state:'unknown',reason:'COMPANION_COMMIT_INDEX_CONFLICT'};
+    }
     git(cwd,'add','--',...intent.files);
     const staged=git(cwd,'diff','--cached','--name-only').split(/\r?\n/u).filter(Boolean).sort();
     if (JSON.stringify(staged)!==JSON.stringify(intent.files))
       return {state:'unknown',reason:'COMPANION_COMMIT_INDEX_CONFLICT'};
     for (const file of intent.files) {
-      const expected=intent.content.find(value=>value.path===file)?.sha256;
-      if (expected===null) continue;
-      const stagedBytes=execFileSync('git',['--no-optional-locks','show',`:${file}`],
-        {cwd,windowsHide:true,shell:false,timeout:30_000,maxBuffer:10*1024*1024});
-      if (hash(stagedBytes)!==expected)
+      if (!this.indexMatches(cwd,file,intent.content.find(value=>value.path===file)?.sha256))
         return {state:'unknown',reason:'COMPANION_COMMIT_INDEX_CONFLICT'};
     }
     const tree=git(cwd,'write-tree');
