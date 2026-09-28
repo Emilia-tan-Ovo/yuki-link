@@ -189,7 +189,7 @@ test('recorded design handoff survives a later Notes handoff update',async t=>{
   t.after(()=>rmSync(dir,{recursive:true,force:true}));
   const notes=join(dir,'docs','implementation-notes','COMPANION-007.md');
   mkdirSync(join(dir,'docs','implementation-notes'),{recursive:true});
-  writeFileSync(notes,'PRODUCT_DECISION_REQUIRED: none\n\n### Context Plan\n\n## Implementation Handoff\nUpdated\n','utf8');
+  writeFileSync(notes,'### Context Plan\n\n## Implementation Handoff\nUpdated\n','utf8');
   const service=Object.create(CompanionContinuationService.prototype) as any;
   const predecessor={run_id:'design-run',result_sha256:'d'.repeat(64),
     notes:{path:'docs/implementation-notes/COMPANION-007.md',sha256:'a'.repeat(64)}};
@@ -320,6 +320,38 @@ test('result identity isolates confirmations and rejects an old run or subject',
   const evidence=new CompanionEvidenceAdapter({manager});
   assert.equal(evidence.operation('ticket-1','request-1','review','primary-review',dir,first).state,'completed');
   assert.equal(evidence.readResult(dir,'primary-review','review',second).state,'unknown');
+  delete result.operation_id; delete result.run_id;
+  writeFileSync(first.result_path,JSON.stringify(result),'utf8');
+  const injected=evidence.operation('ticket-1','request-1','review','primary-review',dir,first);
+  assert.equal(injected.state,'completed');
+  assert.equal(injected.value.operation_id,'operation-1');
+  assert.equal(injected.value.run_id,'run-1');
+  result.status='incomplete'; result.blockers=['无法核实 operation_id 与 run_id'];
+  result.operation_id=null; result.run_id=null;
+  writeFileSync(first.result_path,JSON.stringify(result),'utf8');
+  const legacy=evidence.operation('ticket-1','request-1','review','primary-review',dir,first);
+  assert.equal(legacy.state,'completed');
+  assert.equal(legacy.value.status,'incomplete');
+  assert.equal(legacy.value.operation_id,'operation-1');
+  assert.equal(legacy.value.run_id,'run-1');
+  assert.equal(legacy.legacy_runtime_identity_reconciled,true);
+  result.blockers=['other evidence unavailable'];
+  writeFileSync(first.result_path,JSON.stringify(result),'utf8');
+  assert.equal(evidence.operation('ticket-1','request-1','review','primary-review',dir,first).state,
+    'incomplete');
+  result.status='completed'; result.blockers=[];
+  result.operation_id='operation-1'; result.run_id='run-1';
+  result.request_id='old-request';
+  writeFileSync(first.result_path,JSON.stringify(result),'utf8');
+  assert.equal(evidence.operation('ticket-1','request-1','review','primary-review',dir,first).reason,
+    'COMPANION_RESULT_IDENTITY_CONFLICT');
+  result.request_id='request-1'; result.subject_identity='old-subject';
+  writeFileSync(first.result_path,JSON.stringify(result),'utf8');
+  assert.equal(evidence.operation('ticket-1','request-1','review','primary-review',dir,first).reason,
+    'COMPANION_RESULT_IDENTITY_CONFLICT');
+  result.subject_identity=first.subject_identity;
+  assert.equal(evidence.readResult(dir,'primary-review','review',
+    {...first,result_path:second.result_path}).reason,'COMPANION_RESULT_PATH_CONFLICT');
   result.run_id='old-run'; writeFileSync(first.result_path,JSON.stringify(result),'utf8');
   assert.equal(evidence.operation('ticket-1','request-1','review','primary-review',dir,first).reason,
     'COMPANION_RESULT_IDENTITY_CONFLICT');

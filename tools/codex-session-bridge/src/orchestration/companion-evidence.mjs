@@ -43,7 +43,9 @@ export class CompanionEvidenceAdapter {
         || value.blockers.some(item => typeof item!=='string' || item.length>240))
         return {state:'unknown',reason:'COMPANION_RESULT_INVALID'};
       if (expected && (value.request_id!==expected.request_id
-        || value.operation_id!==expected.operation_id || value.run_id!==expected.run_id
+        || Object.hasOwn(value,'operation_id') && value.operation_id!==null
+          && value.operation_id!==expected.operation_id
+        || Object.hasOwn(value,'run_id') && value.run_id!==null && value.run_id!==expected.run_id
         || value.subject_ref!==expected.subject_ref
         || value.subject_identity!==expected.subject_identity))
         return {state:'unknown',reason:'COMPANION_RESULT_IDENTITY_CONFLICT'};
@@ -77,7 +79,14 @@ export class CompanionEvidenceAdapter {
         || reportStat.size>64*1024 || !realpathSync(report).startsWith(
           realpathSync(expected ? path.dirname(filename):worktree)+path.sep))
         return {state:'unknown',reason:'COMPANION_REPORT_UNTRUSTED'};
-      return {state:value.status,sha256:hash(bytes),value,filename,
+      const legacyRuntimeIdentityOnly=Boolean(expected && value.status==='incomplete'
+        && Object.hasOwn(value,'operation_id') && value.operation_id===null
+        && Object.hasOwn(value,'run_id') && value.run_id===null
+        && value.blockers.length===1 && /\boperation_id\b/u.test(value.blockers[0])
+        && /\brun_id\b/u.test(value.blockers[0]));
+      return {state:legacyRuntimeIdentityOnly ? 'completed':value.status,sha256:hash(bytes),
+        value:expected ? {...value,operation_id:expected.operation_id,run_id:expected.run_id}:value,filename,
+        legacy_runtime_identity_reconciled:legacyRuntimeIdentityOnly,
         report:{path:report,sha256:hash(readFileSync(report))}};
     } catch { return {state:'unknown',reason:'COMPANION_RESULT_MISSING'}; }
   }

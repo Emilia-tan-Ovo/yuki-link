@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GitHubPreparationIssues, CompanionPreparationService } from '../src/orchestration/companion-preparation.mjs';
+import { CompanionContinuationService } from '../src/orchestration/companion-continuation.mjs';
 import { GitPreparationWorktree } from '../src/orchestration/companion-preparation.mjs';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -178,7 +179,9 @@ test('confirmed no-ticket card bootstraps real Harness Workflow and ExecutionOpe
   const service = new CompanionPreparationService({directory:cards,manager,issues,
     projects:[{projectKey:'yuki-link',repository:'Emilia-tan-Ovo/yuki-link',repositoryRoot:repo,
       baseRef:'refs/heads/main',worktreeRoot:path.join(repo,'.local','worktrees')}]});
+  let continuation: CompanionContinuationService | null = null;
   t.after(() => {
+    continuation?.close();
     service.close(); harness.close();
     const registered = git('worktree','list','--porcelain').split(/\r?\n/u)
       .filter(line => line.startsWith('worktree ')).map(line => line.slice(9));
@@ -204,8 +207,17 @@ test('confirmed no-ticket card bootstraps real Harness Workflow and ExecutionOpe
   runs.get(runId)!.status = 'completed';
   const notesPath = path.join(receipt.bindings.worktree.path,'docs','implementation-notes','ISSUE-42.md');
   mkdirSync(path.dirname(notesPath),{recursive:true});
-  writeFileSync(notesPath,'# ISSUE-42 Implementation Notes\n\nSource Spec: https://github.com/Emilia-tan-Ovo/yuki-link/issues/42\n\n### Context Plan\n\n- **Core:** Issue #42\n- **Related:** AGENTS.md\n- **Retrieval:** confirmed card\n- **Expansion triggers:** scope change\n','utf8');
-  const unknown = await service.prepare(input);
+  writeFileSync(notesPath,'# ISSUE-42 Implementation Notes\n\nSource Spec: https://github.com/Emilia-tan-Ovo/yuki-link/issues/42\n\nPRODUCT_DECISION_REQUIRED: none\n\n### Context Plan\n\n- **Core:** Issue #42\n- **Related:** AGENTS.md\n- **Retrieval:** confirmed card\n- **Expansion triggers:** scope change\n','utf8');
+  continuation = new CompanionContinuationService({manager,directory:cards,preparation:service,
+    issueSource:{details:async()=>remote} as any});
+  (continuation as any).acceptanceAuthority=async()=>({state:'completed',plan:{criteria:[]}});
+  (continuation as any).designResult=()=>({state:'completed',sha256:'a'.repeat(64),
+    value:{acceptance_plan:[],product_decision_required:false,product_decisions:[]}});
+  const locator={schema_version:1,...input};
+  assert.equal((await continuation.get(locator)).design.reason,'COMPANION_DESIGN_BINDING_INCOMPLETE');
+  const firstAdvance=await continuation.advance(locator);
+  assert.equal(firstAdvance.design.reason,'COMPANION_DESIGN_BINDING_INCOMPLETE');
+  const unknown = await service.get(input);
   assert.deepEqual(unknown.unknown_side_effects,['github-issue-mirror']);
   assert.equal(unknown.ticket_design_artifact.state,'unknown');
   assert.equal(unknown.next_action_readiness.state,'unknown');
@@ -219,7 +231,10 @@ test('confirmed no-ticket card bootstraps real Harness Workflow and ExecutionOpe
   harness.recordWorkflow({ticket_id:receipt.bindings.harness.ticketId,
     request_id:`companion-prep:${receipt.preparation_id}:design-workflow`,
     expected_revision:originalWorkflow.workflow_revision,schema_version:1,snapshot:recoveredSnapshot});
-  const finished = await service.prepare(input);
+  const finishedAdvance = await continuation.advance(locator);
+  assert.equal(finishedAdvance.next_action.action,'endpoint-reached');
+  assert.equal((await continuation.advance(locator)).next_action.action,'endpoint-reached');
+  const finished = await service.get(input);
   assert.equal(finished.ticket_design_artifact.state,'ready',JSON.stringify(finished));
   assert.equal(finished.next_action_readiness.state,'unsupported');
   assert.equal(created,1); assert.equal(mirrorWrites,1); assert.equal(spawned,1);

@@ -206,8 +206,7 @@ export class CompanionContinuationService {
       return {state:'blocked',reason:'COMPANION_ACCEPTANCE_PLAN_SCOPE_CONFLICT'};
     if (candidate.value.product_decision_required || candidate.value.product_decisions.length)
       return {state:'blocked',reason:'PRODUCT_DECISION_REQUIRED'};
-    if (!/^### Context Plan|^## Context Plan/mu.test(content)
-      || !/PRODUCT_DECISION_REQUIRED:\s*none\b/iu.test(content))
+    if (!/^### Context Plan|^## Context Plan/mu.test(content))
       return {state:'blocked',reason:'COMPANION_DESIGN_UNRESOLVED'};
     const workflow=this.manager.harness.workflowHistory.current.get(ticket.id);
     if (workflow?.snapshot.phase!=='ticket-design') {
@@ -397,7 +396,14 @@ export class CompanionContinuationService {
     this.reconcileBoundaries(before);
     this.reconcileModelActions(before);
     await this.delivery.reconcile(raw);
-    const receipt=await this.get(raw);
+    let receipt=await this.get(raw);
+    if (before.link.binding_kind==='preparation' && !before.binding.bindings?.design
+      && receipt.initial_run?.status==='completed'
+      && this.preparation) {
+      await this.preparation.prepare({card_store_id:raw.card_store_id,
+        card_id:raw.card_id,revision:raw.revision}).catch(()=>null);
+      receipt=await this.get(raw);
+    }
     if (receipt.design?.reason==='COMPANION_DESIGN_MIRROR_UNVERIFIED') {
       const context=this.locator(raw);
       if (context.link.binding_kind==='dispatch' && receipt.initial_run?.status==='completed') {
