@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { EngineeringCardStore, preparationAuthorized } from '../../../companion-desktop/backend/engineering-card-store.mjs';
 import { WorkflowAgentLauncher } from './workflow-agent-launcher.ts';
+import { companionResultIdentity } from './companion-evidence.mjs';
 import { MarkdownContextDocumentAdapter } from './document-adapter.ts';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -515,7 +516,11 @@ export class CompanionPreparationService {
       expected:{workflow_revision:workflow.workflow_revision,subject_ref:snapshot.subject.subject_id,
         subject_identity:null,content_identity:contentIdentity,policy:{policy_id:policy.policy_id,
           revision:policy.revision,digest:policy.digest}},references:[issue.url],current_delta:[]};
-    mkdirSync(path.join(worktree.path,'.local','workflow-artifacts','ticket-design'),{recursive:true});
+    const resultIdentity=companionResultIdentity(worktree.path,card.cardId,card.revision,
+      'ticket-design',launcherInput.request_id,workflow.workflow_revision,
+      snapshot.subject.subject_id,null);
+    if (existsSync(path.dirname(resultIdentity.result_path))) throw Error('PREPARATION_RESULT_PATH_OCCUPIED');
+    mkdirSync(path.dirname(resultIdentity.result_path),{recursive:true});
     record = this.update(record,value => ({...value,
       stepReceipts:{...value.stepReceipts,launch:{state:'attempted',requestId:launcherInput.request_id}},
       unknownSideEffects:['ticket-design-launch']}));
@@ -616,8 +621,14 @@ export class CompanionPreparationService {
           confirmation_at:record.confirmationAt,ticket_scope_digest:hash(`${issue.id}:${issue.body}`),
           product_endpoint:card.content.endpoint,action:'ticket-design',policy_digest:policy.digest},
         confirmed_request:card.content.original,
-        companion_result_path:path.join(current.bindings.worktree.path,'.local','workflow-artifacts',
-          'ticket-design','result.json')};
+        companion_result_path:companionResultIdentity(current.bindings.worktree.path,
+          card.cardId,card.revision,'ticket-design',
+          `companion-prep:${record.preparationId}:ticket-design`,
+          current.bindings.workflow.revision,snapshot.subject.subject_id,null).result_path,
+        companion_result_identity:companionResultIdentity(current.bindings.worktree.path,
+          card.cardId,card.revision,'ticket-design',
+          `companion-prep:${record.preparationId}:ticket-design`,
+          current.bindings.workflow.revision,snapshot.subject.subject_id,null)};
     }};
   }
 }

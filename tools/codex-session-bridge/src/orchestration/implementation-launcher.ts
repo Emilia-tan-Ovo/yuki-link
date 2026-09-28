@@ -321,7 +321,7 @@ export class ImplementationLauncher {
       '当前 delta：', ...input.current_delta.map(value => `- ${value.ref}: ${value.value ?? 'null'}`),
       '结构化 workflow contract：review_policy=delegated；destination=Ticket Main；session=fresh。',
       (snapshot.authority as any).companion_result_path
-        ? `Companion 结果产物：写 ${(snapshot.authority as any).companion_result_path}，UTF-8 JSON，字段 schema_version=1、action="implementation"、status="completed"|"blocked"|"incomplete"、report_ref、blockers 字符串数组、files（本票修改的 repo-relative 路径数组）。完成最小定向测试与 Implementation Handoff 后停止。Git commit、push、full suite 和 PR 由 Emilia/YCA 执行；不要执行 Review。`
+        ? `Companion 结果产物：写 ${(snapshot.authority as any).companion_result_path}，UTF-8 JSON，字段 schema_version=1、action="implementation"、status="completed"|"blocked"|"incomplete"、report_ref、blockers 字符串数组、files（本票修改的 repo-relative 路径数组）。身份字段 request_id、subject_ref、subject_identity 按 ${JSON.stringify((snapshot.authority as any).companion_result_identity)} 写入；另填当前真实 operation_id、run_id，不知道时报告 incomplete。报告文件须置于结果文件同目录。完成最小定向测试与 Implementation Handoff 后停止。Git commit、push、full suite 和 PR 由 Emilia/YCA 执行；不要执行 Review。`
         : '完成实现、最小定向测试、commit 与 Implementation Handoff 后停止；不要执行 Review。',
     ].join('\n');
   }

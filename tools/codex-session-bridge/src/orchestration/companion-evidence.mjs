@@ -5,15 +5,30 @@ import path from 'node:path';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const actions = new Set(['ticket-design','implementation','review','finding-fix','focused-review']);
 const safe = /^[A-Za-z0-9._/-]{1,240}$/u;
+export const companionResultIdentity = (worktree,cardId,revision,slot,requestId,
+  workflowRevision,subjectRef,subjectIdentity) => {
+  if (!safe.test(slot) || slot.includes('..') || typeof cardId!=='string'
+    || !Number.isSafeInteger(revision) || revision<1 || typeof requestId!=='string')
+    throw Error('COMPANION_RESULT_IDENTITY_INVALID');
+  return {card_id:cardId,revision,request_id:requestId,workflow_revision:workflowRevision,
+    subject_ref:subjectRef,subject_identity:subjectIdentity,
+    result_path:path.join(worktree,'.local','workflow-artifacts','companion',
+      hash(`${cardId}:${revision}:${slot}:${requestId}`),slot,'result.json')};
+};
 
 export class CompanionEvidenceAdapter {
   constructor({manager}) { this.manager=manager; }
-  resultPath(worktree,slot) {
+  resultPath(worktree,slot,cardId=null,revision=null,requestId=null) {
     if (!safe.test(slot) || slot.includes('..')) throw Error('COMPANION_RESULT_PATH_INVALID');
-    return path.join(worktree,'.local','workflow-artifacts',slot,'result.json');
+    if (cardId===null) return path.join(worktree,'.local','workflow-artifacts',slot,'result.json');
+    return companionResultIdentity(worktree,cardId,revision,slot,requestId,
+      null,null,null).result_path;
   }
-  readResult(worktree,slot,action) {
-    const filename=this.resultPath(worktree,slot);
+  readResult(worktree,slot,action,expected=null) {
+    const filename=expected?.result_path ?? this.resultPath(worktree,slot);
+    if (expected && filename!==this.resultPath(worktree,slot,expected.card_id,
+      expected.revision,expected.request_id))
+      return {state:'unknown',reason:'COMPANION_RESULT_PATH_CONFLICT'};
     try {
       const stat=lstatSync(filename);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink!==1 || stat.size>64*1024
@@ -27,6 +42,11 @@ export class CompanionEvidenceAdapter {
         || !Array.isArray(value.blockers) || value.blockers.length>32
         || value.blockers.some(item => typeof item!=='string' || item.length>240))
         return {state:'unknown',reason:'COMPANION_RESULT_INVALID'};
+      if (expected && (value.request_id!==expected.request_id
+        || value.operation_id!==expected.operation_id || value.run_id!==expected.run_id
+        || value.subject_ref!==expected.subject_ref
+        || value.subject_identity!==expected.subject_identity))
+        return {state:'unknown',reason:'COMPANION_RESULT_IDENTITY_CONFLICT'};
       if (action==='ticket-design' && (typeof value.product_decision_required!=='boolean'
         || !Array.isArray(value.product_decisions)
         || !Array.isArray(value.acceptance_plan) || value.acceptance_plan.length>32
@@ -54,17 +74,29 @@ export class CompanionEvidenceAdapter {
         : path.join(worktree,value.report_ref);
       const reportStat=lstatSync(report);
       if (!reportStat.isFile() || reportStat.isSymbolicLink() || reportStat.nlink!==1
-        || reportStat.size>64*1024 || !realpathSync(report).startsWith(realpathSync(worktree)+path.sep))
+        || reportStat.size>64*1024 || !realpathSync(report).startsWith(
+          realpathSync(expected ? path.dirname(filename):worktree)+path.sep))
         return {state:'unknown',reason:'COMPANION_REPORT_UNTRUSTED'};
       return {state:value.status,sha256:hash(bytes),value,filename,
         report:{path:report,sha256:hash(readFileSync(report))}};
     } catch { return {state:'unknown',reason:'COMPANION_RESULT_MISSING'}; }
   }
-  operation(ticketId,requestId,action,slot,worktree) {
+  operation(ticketId,requestId,action,slot,worktree,expected=null) {
     const operations=this.manager.harness.executionOperations;
     const operation=operations.findByRequest(ticketId,requestId);
-    if (!operation || operation.workflow_agent?.action && operation.workflow_agent.action!==action)
+    const protectedAction=action==='implementation' ? 'implementation'
+      : action==='review' ? 'review':'workflow_agent';
+    if (!operation || operation.request_id!==requestId
+      || !operation.protected_intent?.[protectedAction]
+      || protectedAction==='workflow_agent'
+        && operation.protected_intent.workflow_agent.action!==action)
       return {state:'unknown',reason:'COMPANION_OPERATION_UNKNOWN'};
+    if (expected && (operation.protected_intent?.subject_ref!==expected.subject_ref
+      || operation.protected_intent?.expected_workflow_revision!==expected.workflow_revision))
+      return {state:'unknown',reason:'COMPANION_OPERATION_SUBJECT_CONFLICT'};
+    if (['ticket-design','implementation','finding-fix'].includes(action)
+      && operation.destination?.kind!=='main')
+      return {state:'unknown',reason:'COMPANION_MAIN_DESTINATION_UNKNOWN'};
     if ((action==='review' || action==='focused-review')
       && (operation.destination?.kind!=='child' || operation.destination?.relation?.kind!=='review'))
       return {state:'unknown',reason:'COMPANION_REVIEW_ISOLATION_UNKNOWN'};
@@ -79,7 +111,8 @@ export class CompanionEvidenceAdapter {
     if (!run) return {state:'unknown',reason:'COMPANION_RUN_OBSERVATION_UNKNOWN',receipt};
     if (run.status!=='completed') return {state:['failed','stopped','timed_out','interrupted'].includes(run.status)
       ? 'blocked':'waiting',reason:`COMPANION_RUN_${run.status.toUpperCase()}`,receipt};
-    const result=this.readResult(worktree,slot,action);
+    const result=this.readResult(worktree,slot,action,expected && {
+      ...expected,operation_id:operation.operation_id,run_id:run.id});
     return {...result,operation_id:operation.operation_id,run_id:run.id,
       session_id:receipt.runtime.session_id,receipt};
   }

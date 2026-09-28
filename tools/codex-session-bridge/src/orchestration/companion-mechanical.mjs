@@ -16,7 +16,10 @@ const pathAllowed=value=>typeof value==='string' && /^[A-Za-z0-9_./-]{1,240}$/u.
 export class CompanionMechanicalAdapter {
   constructor({store,computer}) { this.store=store; this.computer=computer; }
   changed(cwd) {
-    const records=git(cwd,'status','--porcelain=v1','-z','--untracked-files=all').split('\0');
+    // Porcelain's first leading space is status data; the trimmed git helper loses it.
+    const records=execFileSync('git',['--no-optional-locks','-c','core.hooksPath=',
+      'status','--porcelain=v1','-z','--untracked-files=all'],
+    {cwd,encoding:'utf8',windowsHide:true,shell:false,timeout:30_000,maxBuffer:1024*1024}).split('\0');
     const files=[];
     for (let i=0;i<records.length;i++) {
       const row=records[i]; if (!row) continue;

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { EngineeringCardStore, digestCardContent } from '../../../companion-desktop/backend/engineering-card-store.mjs';
-import { CompanionEvidenceAdapter } from './companion-evidence.mjs';
+import { CompanionEvidenceAdapter, companionResultIdentity } from './companion-evidence.mjs';
 import { CompanionDeliveryAdapter } from './companion-delivery.mjs';
 import { CompanionMechanicalAdapter } from './companion-mechanical.mjs';
 import { WorkflowAgentLauncher } from './workflow-agent-launcher.ts';
@@ -27,6 +27,16 @@ const identity = subject => {
   }
   return null;
 };
+// #132 Acceptance criteria, version 1. Exact Issue text is the authority for this
+// bounded producer; a design result may request more evidence but cannot weaken it.
+const acceptance132 = Object.freeze({version:1,issue:'https://github.com/Emilia-tan-Ovo/yuki-link/issues/132',
+  criteria:[
+    {text:'确认目标与终点后常规阶段连续推进；只设计样例不实现，授权到 PR 样例交付真实 PR，不擅自合并/部署。',source_kind:'external-observation'},
+    {text:'沿用 006 的准备及授权交接，不退回 ChatGPT 人工预制工程状态；每一步根据既有事实选择对应能力，不另存一套竞争工程 phase。',source_kind:'harness-run'},
+    {text:'fresh 实现/Review 及必要修复遵守既有协作规则，原 Harness Main/Review 分离、运行归属、diff 与结果继续可查。',source_kind:'agent-session'},
+    {text:'产品/范围实质变化或无法确认的状态才说明具体阻碍；常规准备和核对不制造新的逐阶段 Owner 批准点。',source_kind:'external-observation'},
+    {text:'一条受控代表性任务从确认到终点可复核，正确区分 run 完成、验收完成和 PR 交付。修复路径用必要确定性样例覆盖，不为凑流程特意制造一次真实 finding。',source_kind:'external-observation'},
+  ]});
 
 export class CompanionContinuationService {
   constructor({manager,directory,computer=null,projects=[],preparation=null,dispatch=null,issueSource=githubIssueSource(),
@@ -125,6 +135,20 @@ export class CompanionContinuationService {
       reason:run.status==='completed' ? null : `COMPANION_INITIAL_RUN_${run.status.toUpperCase()}`,
       receipt,run};
   }
+  designResult(context) {
+    const {link,binding,ticket,card}=context;
+    if (link.binding_kind==='dispatch' && binding.action!=='ticket-design') return null;
+    const requestId=link.binding_kind==='dispatch' ? binding.request_id
+      : `companion-prep:${binding.preparationId}:ticket-design`;
+    const operation=this.manager.harness.executionOperations.findByRequest(ticket.id,requestId);
+    if (!operation) return {state:'unknown',reason:'COMPANION_DESIGN_OPERATION_UNKNOWN'};
+    const expected=companionResultIdentity(ticket.expected_worktree,card.cardId,card.revision,
+      'ticket-design',requestId,operation.protected_intent?.expected_workflow_revision,
+      operation.protected_intent?.subject_ref,
+      operation.protected_intent?.workflow_agent?.preflight?.subject_identity ?? null);
+    return this.evidence.operation(ticket.id,requestId,'ticket-design','ticket-design',
+      ticket.expected_worktree,expected);
+  }
   async designEvidence(raw,context,initial) {
     if (initial.state!=='completed') return initial;
     const {link,binding,ticket,card}=context;
@@ -146,10 +170,7 @@ export class CompanionContinuationService {
       return {state:'completed',notes:{path:notesRelative,sha256:hash(bytes)},
         workflow_revision:workflow.workflow_revision};
     }
-    const designRequest=link.binding_kind==='dispatch' ? binding.request_id
-      : `companion-prep:${binding.preparationId}:ticket-design`;
-    const candidate=this.evidence.operation(ticket.id,designRequest,'ticket-design',
-      'ticket-design',ticket.expected_worktree);
+    const candidate=this.designResult(context);
     if (candidate.state!=='completed') return candidate;
     if (candidate.value.product_decision_required || candidate.value.product_decisions.length)
       return {state:'blocked',reason:'PRODUCT_DECISION_REQUIRED'};
@@ -196,9 +217,74 @@ export class CompanionContinuationService {
     const saved=this.store.continuationAction(context.card.cardId,context.card.revision,slot);
     if (!saved) return null;
     if (saved.attempt_state==='unknown') return {state:'unknown',reason:'COMPANION_ACTION_RECEIPT_UNKNOWN'};
+    if (!saved.intent.result_identity) return {state:'unknown',reason:'COMPANION_RESULT_IDENTITY_MISSING'};
     const result=this.evidence.operation(context.ticket.id,saved.intent.request_id,action,
-      slot,context.ticket.expected_worktree);
+      slot,context.ticket.expected_worktree,saved.intent.result_identity);
     return {...result,slot,attempt_state:saved.attempt_state};
+  }
+  resultIdentity(context,slot,requestId,workflow) {
+    const {card,ticket}=context;
+    const result=companionResultIdentity(ticket.expected_worktree,card.cardId,card.revision,
+      slot,requestId,workflow.workflow_revision,workflow.snapshot.subject.subject_id,
+      identity(workflow.snapshot.subject));
+    if (existsSync(path.dirname(result.result_path))) fail('COMPANION_RESULT_PATH_OCCUPIED');
+    return result;
+  }
+  controlledImplementation(context,actions,workflow) {
+    if (!workflow || workflow.snapshot.phase!=='implementation') return null;
+    const fix=actions.find(value=>value.slot.startsWith('finding-fix-'));
+    const action=fix ?? actions.find(value=>value.slot==='implementation');
+    if (!action) return null;
+    const result=this.actionEvidence(context,action.slot,fix ? 'finding-fix':'implementation');
+    if (result?.state!=='completed') return null;
+    const {ticket}=context,snapshot=workflow.snapshot;
+    if (action.intent.workflow_revision!==workflow.workflow_revision
+      || action.intent.result_identity?.subject_ref!==snapshot.subject.subject_id
+      || action.intent.result_identity?.subject_identity!==identity(snapshot.subject)
+      || snapshot.subject.staged.length || snapshot.subject.unstaged.length
+      || snapshot.subject.untracked.length) return null;
+    const notes=`docs/implementation-notes/${ticket.key}.md`;
+    if (git(ticket.expected_worktree,'rev-parse','HEAD')!==snapshot.subject.head) {
+      const key=fix ? `fix-${hash(fix.intent.origin_review_id).slice(0,32)}`:'implementation';
+      const commit=this.store.continuationAction(context.card.cardId,context.card.revision,`commit:${key}`);
+      const expected=commit?.intent.files;
+      if (!expected || JSON.stringify([...new Set([...result.value.files,
+        ...(expected.includes(notes) ? [notes]:[])])].sort())!==JSON.stringify(expected)) return null;
+      const handoff={result,action,notes,expected,committed:true};
+      return this.verifyControlledCommit(context,workflow,handoff) ? handoff:null;
+    }
+    const expected=[...new Set([...result.value.files,
+      ...(this.mechanical.changed(ticket.expected_worktree).includes(notes) ? [notes]:[])])].sort();
+    if (JSON.stringify(this.mechanical.changed(ticket.expected_worktree))!==JSON.stringify(expected))
+      return null;
+    const assessment=this.manager.harness.workflowHistory.source.assess(ticket,snapshot);
+    const noteArtifact=snapshot.artifacts.find(value=>value.role==='implementation-notes'
+      && path.relative(ticket.expected_worktree,value.location).replaceAll('\\','/')===notes);
+    if (!noteArtifact || assessment.artifacts.some(value=>value.state!=='verified'
+      && (value.artifact_id!==noteArtifact.artifact_id || value.state!=='stale'))
+      || assessment.reasons.some(value=>value.state!=='verified'
+        && !['ARTIFACT_STALE','SUBJECT_CONTENT_CHANGED'].includes(value.code))) return null;
+    return {result,action,notes,expected,committed:false};
+  }
+  verifyControlledCommit(context,workflow,handoff) {
+    const {ticket,card}=context;
+    const key=handoff.action.slot==='implementation' ? 'implementation'
+      : `fix-${hash(handoff.action.intent.origin_review_id).slice(0,32)}`;
+    const committed=this.mechanical.reconcileCommit({card_id:card.cardId,revision:card.revision},ticket,key);
+    const action=this.store.continuationAction(card.cardId,card.revision,`commit:${key}`);
+    if (committed.state!=='committed' || !action || committed.parent!==workflow.snapshot.subject.head
+      || committed.oid!==git(ticket.expected_worktree,'rev-parse','HEAD')
+      || JSON.stringify(action.intent.files)!==JSON.stringify(handoff.expected)
+      || this.mechanical.changed(ticket.expected_worktree).length) return false;
+    const delta=git(ticket.expected_worktree,'diff-tree','--no-commit-id','--name-only','-r',committed.oid)
+      .split(/\r?\n/u).filter(Boolean).sort();
+    if (JSON.stringify(delta)!==JSON.stringify(handoff.expected)) return false;
+    const assessment=this.manager.harness.workflowHistory.source.assess(ticket,workflow.snapshot);
+    const noteArtifact=workflow.snapshot.artifacts.find(value=>value.role==='implementation-notes');
+    return Boolean(noteArtifact && assessment.artifacts.every(value=>value.state==='verified'
+      || value.artifact_id===noteArtifact.artifact_id && value.state==='stale')
+      && assessment.reasons.every(value=>value.state==='verified'
+        || ['ARTIFACT_STALE','HEAD_CHANGED','CHECKPOINT_HEAD_STALE'].includes(value.code)));
   }
   async get(raw) {
     const context=this.locator(raw);
@@ -207,6 +293,8 @@ export class CompanionContinuationService {
     const initial=this.initialOperation(context);
     const design=await this.designEvidence(raw,context,initial);
     const actions=this.store.continuationActions(raw.card_id,raw.revision);
+    const controlled=workflow?.snapshot.phase==='implementation'
+      ? this.controlledImplementation(context,actions,workflow):null;
     const pr=await this.delivery.reconcile(raw,{persist:false});
     const prIntent=actions.find(item=>item.slot==='pr-delivery')?.intent;
     const prCurrent=prIntent && workflow
@@ -225,13 +313,14 @@ export class CompanionContinuationService {
     else if (pr.state==='unknown') next={action:'reconcile-pr',state:'unknown',reason:pr.reason};
     else if (pr.state==='observed-closed')
       next={action:'pr-delivery',state:'blocked',reason:'COMPANION_PR_ALREADY_CLOSED'};
-    else if (!workflow || summary.assessment?.state!=='verified')
+    else if (!workflow || summary.assessment?.state!=='verified' && !controlled)
       next={action:'refresh-workflow',state:'blocked',reason:'COMPANION_WORKFLOW_UNVERIFIED'};
     else if (workflow.snapshot.phase==='ticket-design') next={action:'implementation',state:'ready',reason:null};
     else if (workflow.snapshot.phase==='implementation') {
       const fix=actions.find(item => item.slot.startsWith('finding-fix-'));
       const slot=fix?.slot ?? 'implementation';
-      const result=this.actionEvidence(context,slot,fix ? 'finding-fix':'implementation');
+      const result=controlled?.result ?? this.actionEvidence(context,slot,
+        fix ? 'finding-fix':'implementation');
       next=result ? {action:'verify-implementation',state:result.state==='completed' ? 'ready':result.state,
         reason:result.reason ?? null}
         : {action:fix || workflow.snapshot.findings.some(value=>value.status==='open')
@@ -300,14 +389,21 @@ export class CompanionContinuationService {
       const slot=fix?.slot ?? 'implementation';
       const result=this.actionEvidence(context,slot,fix ? 'finding-fix':'implementation');
       if (result?.state!=='completed') return this.get(raw);
+      const workflow=this.manager.harness.workflowHistory.current.get(context.ticket.id);
+      const handoff=this.controlledImplementation(context,
+        this.store.continuationActions(raw.card_id,raw.revision),workflow);
+      if (!handoff || handoff.result.sha256!==result.sha256)
+        return {...receipt,next_action:{action:'verify-implementation',state:'blocked',
+          reason:'COMPANION_CONTROLLED_HANDOFF_UNVERIFIED'}};
       const subjectKey=fix ? `fix-${hash(fix.intent.origin_review_id).slice(0,32)}`:'implementation';
-      const tests=await this.mechanical.fullSuite(raw,context.ticket,subjectKey);
+      const tests=handoff.committed ? this.mechanical.suiteReceipt(raw,subjectKey)
+        : await this.mechanical.fullSuite(raw,context.ticket,subjectKey);
       if (tests.state!=='passed') return {...await this.get(raw),mechanical:tests,
         next_action:{action:'full-suite',state:tests.state,reason:tests.reason ?? null}};
-      const files=[...new Set([...result.value.files,
-        ...(this.mechanical.changed(context.ticket.expected_worktree).includes(receipt.design.notes.path)
-          ? [receipt.design.notes.path] : [])])];
-      const committed=this.mechanical.commit(raw,context.ticket,subjectKey,files,tests);
+      const files=handoff.expected;
+      const committed=handoff.committed
+        ? this.mechanical.reconcileCommit(raw,context.ticket,subjectKey)
+        : this.mechanical.commit(raw,context.ticket,subjectKey,files,tests);
       if (committed.state!=='committed') return {...await this.get(raw),mechanical:committed,
         next_action:{action:'commit',state:committed.state,reason:committed.reason ?? null}};
       if (fix) {
@@ -326,7 +422,7 @@ export class CompanionContinuationService {
               spec:{status:'pending',evidence:[],reason:null},
               finding_refs:fix.intent.batch.map(value=>({origin_review_id:origin,
                 finding_id:value.finding_id})),isolated:'unknown',applicability:'not-applicable',reason:null});
-          });
+          },handoff);
         this.recordModelResult(context,slot,result);
         return this.startFocusedReview(raw,context,focusedId,fix,committed,result);
       }
@@ -339,7 +435,7 @@ export class CompanionContinuationService {
           artifact_refs:[],standards:{status:'pending',evidence:[],reason:null},
           spec:{status:'pending',evidence:[],reason:null},finding_refs:[],isolated:'unknown',
           applicability:'not-applicable',reason:null});
-      });
+      },handoff);
       this.recordModelResult(context,slot,result);
       return this.startPrimaryReview(raw,context,reviewId,committed,result);
     }
@@ -461,14 +557,16 @@ export class CompanionContinuationService {
     }
     return receipt;
   }
-  movePhase(context,phase,slot,predecessor,decorate=null) {
+  movePhase(context,phase,slot,predecessor,decorate=null,handoff=null) {
     const {ticket,card}=context;
     const harness=this.manager.harness;
     const current=harness.workflowHistory.current.get(ticket.id);
     const requestId=`companion-boundary:${hash(`${card.cardId}:${card.revision}:${slot}`).slice(0,56)}`;
     const already=harness.workflowHistory.requests.get(`${ticket.id}:${requestId}`);
     if (already) return already;
-    if (!current || harness.workflowHistory.source.assess(ticket,current.snapshot).state!=='verified')
+    if (!current || (handoff
+      ? !this.verifyControlledCommit(context,current,handoff)
+      : harness.workflowHistory.source.assess(ticket,current.snapshot).state!=='verified'))
       fail('COMPANION_WORKFLOW_UNVERIFIED');
     const checkpointArtifact=current.snapshot.artifacts.find(value => value.artifact_id===current.snapshot.checkpoint.artifact_id);
     if (!checkpointArtifact || checkpointArtifact.kind!=='file') fail('COMPANION_CHECKPOINT_MISSING');
@@ -501,7 +599,11 @@ export class CompanionContinuationService {
     snapshot.subject.untracked=status.untracked;
     snapshot.subject.subject_id=`companion-subject:${hash(JSON.stringify({head,status})).slice(0,48)}`;
     snapshot.artifacts=snapshot.artifacts.map(value => value.artifact_id===checkpointArtifact.artifact_id
-      ? {...value,revision:hash(changed),observed_at:new Date().toISOString()} : value);
+      ? {...value,revision:hash(changed),observed_at:new Date().toISOString()}
+      : handoff && value.role==='implementation-notes'
+        && path.relative(ticket.expected_worktree,value.location).replaceAll('\\','/')===handoff.notes
+        ? {...value,revision:hash(readFileSync(value.location)),observed_at:new Date().toISOString()}
+        : value);
     decorate?.(snapshot);
     const intent={schema_version:1,request_id:requestId,predecessor,expected_revision:current.workflow_revision,
       old_checkpoint_digest:hash(old),checkpoint_bytes:changed,snapshot};
@@ -592,7 +694,8 @@ export class CompanionContinuationService {
       scope:rawIdentity.scope,completeness:rawIdentity.completeness,digest:rawIdentity.digest};
     const authorizationRef=`companion-continuation:${card.cardId}:${card.revision}:${slot}`;
     const requestId=`companion:${hash(`${card.cardId}:${card.revision}:${slot}`).slice(0,64)}`;
-    const resultPath=this.evidence.resultPath(ticket.expected_worktree,slot);
+    const resultIdentity=this.resultIdentity(context,slot,requestId,workflow);
+    const resultPath=resultIdentity.result_path;
     const authorization={schema_version:1,authorization_id:authorizationRef,ticket_key:ticket.key,
       action:'ticket-implementation',endpoint:'implementation',contract_version:1,
       authorization_ref:authorizationRef,notes,authority_refs:[ticket.reference,authorizationRef]};
@@ -601,7 +704,8 @@ export class CompanionContinuationService {
         subject_ref:workflow.snapshot.subject.subject_id,content_identity:contentIdentity,
         notes,policy:policyId(active)},current_delta:[]};
     const intent={schema_version:1,action,request_id:requestId,workflow_revision:workflow.workflow_revision,
-      predecessor,authorization,policy:active,result_path:resultPath,launcher_input:input};
+      predecessor,authorization,policy:active,result_path:resultPath,result_identity:resultIdentity,
+      launcher_input:input};
     const claimed=this.store.claimContinuationAction(card.cardId,card.revision,slot,intent);
     if (claimed.conflict) fail('COMPANION_ACTION_INTENT_CONFLICT');
     if (claimed.deduplicated) return this.get(raw);
@@ -618,7 +722,7 @@ export class CompanionContinuationService {
         fail('COMPANION_ACTION_AUTHORITY_CONFLICT');
       return {policy:active,authorization,source:{schema_version:1,kind:'adapter',
         reference:authorizationRef,canonical_path:null,sha256:hash(JSON.stringify(intent))},
-        companion_result_path:resultPath};
+        companion_result_path:resultPath,companion_result_identity:resultIdentity};
     }};
     const attempted=this.store.updateContinuationAction(card.cardId,card.revision,slot,'reserved','attempted');
     if (attempted.conflict) return this.get(raw);
@@ -648,7 +752,8 @@ export class CompanionContinuationService {
       scope:rawIdentity.scope,completeness:rawIdentity.completeness,digest:rawIdentity.digest};
     const authorizationRef=`companion-continuation:${card.cardId}:${card.revision}:${slot}`;
     const requestId=`companion:${hash(`${card.cardId}:${card.revision}:${slot}`).slice(0,64)}`;
-    const resultPath=this.evidence.resultPath(ticket.expected_worktree,slot);
+    const resultIdentity=this.resultIdentity(context,slot,requestId,workflow);
+    const resultPath=resultIdentity.result_path;
     const authorization={schema_version:1,authorization_id:authorizationRef,ticket_key:ticket.key,
       review_id:reviewId,action:'ticket-review',endpoint:'review',contract_version:1,
       contract_digest:reviewContractDigest,authorization_ref:authorizationRef,
@@ -662,7 +767,8 @@ export class CompanionContinuationService {
       references:[ticket.reference,implementationResult.report.path],current_delta:[]};
     const intent={schema_version:1,action:'review',request_id:requestId,
       predecessor:{commit_oid:commit.oid,result_sha256:implementationResult.sha256},
-      policy:active,authorization,result_path:resultPath,launcher_input:input};
+      policy:active,authorization,result_path:resultPath,result_identity:resultIdentity,
+      launcher_input:input};
     const claimed=this.store.claimContinuationAction(card.cardId,card.revision,slot,intent);
     if (claimed.conflict) fail('COMPANION_REVIEW_INTENT_CONFLICT');
     if (claimed.deduplicated) return this.get(raw);
@@ -679,7 +785,7 @@ export class CompanionContinuationService {
         fail('COMPANION_REVIEW_AUTHORITY_CONFLICT');
       return {policy:active,authorization,source:{schema_version:1,kind:'adapter',
         reference:authorizationRef,canonical_path:null,sha256:hash(JSON.stringify(intent))},
-        companion_result_path:resultPath};
+        companion_result_path:resultPath,companion_result_identity:resultIdentity};
     }};
     this.store.updateContinuationAction(card.cardId,card.revision,slot,'reserved','attempted');
     try { await new WorkflowAgentLauncher({manager:this.manager,harness,
@@ -712,7 +818,8 @@ export class CompanionContinuationService {
     const contentIdentity={scheme:rawIdentity.scheme,version:rawIdentity.version,
       scope:rawIdentity.scope,completeness:rawIdentity.completeness,digest:rawIdentity.digest};
     const requestId=`companion:${hash(`${card.cardId}:${card.revision}:${slot}`).slice(0,64)}`;
-    const resultPath=this.evidence.resultPath(ticket.expected_worktree,slot);
+    const resultIdentity=this.resultIdentity(context,slot,requestId,workflow);
+    const resultPath=resultIdentity.result_path;
     const authorization={schema_version:1,authorization_id:authorizationRef,ticket_key:ticket.key,
       action:'finding-fix',authorization_ref:authorizationRef,
       subject_ref:workflow.snapshot.subject.subject_id,subject_identity:identity(workflow.snapshot.subject),
@@ -725,7 +832,8 @@ export class CompanionContinuationService {
         policy:policyId(active)},finding_batch:batch};
     const intent={schema_version:1,action:'finding-fix',request_id:requestId,
       origin_review_id:origin,batch,policy:active,authorization,
-      workflow_revision:workflow.workflow_revision,result_path:resultPath,launcher_input:input};
+      workflow_revision:workflow.workflow_revision,result_path:resultPath,
+      result_identity:resultIdentity,launcher_input:input};
     const claimed=this.store.claimContinuationAction(card.cardId,card.revision,slot,intent);
     if (claimed.conflict) fail('COMPANION_FIX_INTENT_CONFLICT');
     if (claimed.deduplicated) return this.get(raw);
@@ -742,7 +850,7 @@ export class CompanionContinuationService {
         fail('COMPANION_FIX_AUTHORITY_CONFLICT');
       return {policy:active,authorization,source:{schema_version:1,kind:'adapter',
         reference:authorizationRef,canonical_path:null,sha256:hash(JSON.stringify(intent))},
-        companion_result_path:resultPath};
+        companion_result_path:resultPath,companion_result_identity:resultIdentity};
     }};
     this.store.updateContinuationAction(card.cardId,card.revision,slot,'reserved','attempted');
     try { await new WorkflowAgentLauncher({manager:this.manager,harness,
@@ -770,7 +878,8 @@ export class CompanionContinuationService {
     const contentIdentity={scheme:rawIdentity.scheme,version:rawIdentity.version,
       scope:rawIdentity.scope,completeness:rawIdentity.completeness,digest:rawIdentity.digest};
     const requestId=`companion:${hash(`${card.cardId}:${card.revision}:${slot}`).slice(0,64)}`;
-    const resultPath=this.evidence.resultPath(ticket.expected_worktree,slot);
+    const resultIdentity=this.resultIdentity(context,slot,requestId,workflow);
+    const resultPath=resultIdentity.result_path;
     const authorization={schema_version:1,authorization_id:authorizationRef,ticket_key:ticket.key,
       action:'focused-review',authorization_ref:authorizationRef,
       subject_ref:workflow.snapshot.subject.subject_id,subject_identity:subjectIdentity,
@@ -783,7 +892,8 @@ export class CompanionContinuationService {
         content_identity:contentIdentity,policy:policyId(active)},finding_batch:fix.intent.batch};
     const intent={schema_version:1,action:'focused-review',request_id:requestId,
       origin_review_id:origin,predecessor:{commit_oid:commit.oid,fix_result_sha256:fixResult.sha256},
-      policy:active,authorization,result_path:resultPath,launcher_input:input};
+      policy:active,authorization,result_path:resultPath,result_identity:resultIdentity,
+      launcher_input:input};
     const claimed=this.store.claimContinuationAction(card.cardId,card.revision,slot,intent);
     if (claimed.conflict) fail('COMPANION_FOCUSED_INTENT_CONFLICT');
     if (claimed.deduplicated) return this.get(raw);
@@ -800,7 +910,7 @@ export class CompanionContinuationService {
         fail('COMPANION_FOCUSED_AUTHORITY_CONFLICT');
       return {policy:active,authorization,source:{schema_version:1,kind:'adapter',
         reference:authorizationRef,canonical_path:null,sha256:hash(JSON.stringify(intent))},
-        companion_result_path:resultPath};
+        companion_result_path:resultPath,companion_result_identity:resultIdentity};
     }};
     this.store.updateContinuationAction(card.cardId,card.revision,slot,'reserved','attempted');
     try { await new WorkflowAgentLauncher({manager:this.manager,harness,
@@ -814,9 +924,9 @@ export class CompanionContinuationService {
     if (!workflow || workflow.snapshot.phase!=='acceptance'
       || harness.workflowHistory.source.assess(ticket,workflow.snapshot).state!=='verified')
       fail('COMPANION_ACCEPTANCE_SUBJECT_UNVERIFIED');
-    const design=this.evidence.readResult(ticket.expected_worktree,'ticket-design','ticket-design');
-    const plan=design.state==='completed' ? design.value.acceptance_plan:null;
-    if (!plan?.length) return {...receipt,next_action:{action:'collect-acceptance',state:'blocked',
+    const design=this.designResult(context);
+    const plan=design?.state==='completed' ? design.value.acceptance_plan:null;
+    if (design && !plan?.length) return {...receipt,next_action:{action:'collect-acceptance',state:'blocked',
       reason:'COMPANION_ACCEPTANCE_PLAN_MISSING'}};
     const issueNumber=link.binding_kind==='dispatch' ? card.content.ticket.number:binding.bindings.issue.number;
     const issue=await this.issueSource.details(card.content.repository,issueNumber).catch(()=>null);
@@ -827,11 +937,24 @@ export class CompanionContinuationService {
     const section=/^## Acceptance criteria[ \t]*\r?\n([\s\S]*?)(?=^## |$(?![\s\S]))/imu.exec(issue.body)?.[1] ?? '';
     const checklist=section.split(/\r?\n/u).filter(value=>/^\s*- \[[ xX]\] /u.test(value));
     const required=checklist.map((_,index)=>`AC${index+1}`);
-    if (!required.length || plan.some(value=>value.source_kind==='pr-delivery')
-      || new Set(plan.map(value=>value.criteria_ref)).size!==plan.length
-      || plan.some(value=>!/^AC[1-9][0-9]{0,2}$/u.test(value.criteria_ref))
-      || required.length!==plan.length
-      || required.some(value=>!plan.some(item=>item.criteria_ref===value)))
+    const obligation=ticket.reference===acceptance132.issue
+      && checklist.length===acceptance132.criteria.length
+      && checklist.every((line,index)=>line.replace(/^\s*- \[[ xX]\] /u,'').trim()
+        ===acceptance132.criteria[index].text)
+      ? acceptance132.criteria.map((value,index)=>({criteria_ref:`AC${index+1}`,
+        source_kind:value.source_kind})) : null;
+    if (!obligation) return {...receipt,next_action:{action:'collect-acceptance',state:'blocked',
+      reason:'COMPANION_ACCEPTANCE_AUTHORITY_CONFLICT'}};
+    if (!required.length || plan?.some(value=>value.source_kind==='pr-delivery')
+      || plan && new Set(plan.map(value=>value.criteria_ref)).size!==plan.length
+      || plan?.some(value=>!/^AC[1-9][0-9]{0,2}$/u.test(value.criteria_ref))
+      || plan && required.length!==plan.length
+      || plan && required.some(value=>!plan.some(item=>item.criteria_ref===value))
+      || plan && obligation.some(value=>{
+        const proposed=plan.find(item=>item.criteria_ref===value.criteria_ref)?.source_kind;
+        return proposed!==value.source_kind
+          && !(value.source_kind==='harness-run' && proposed==='external-observation');
+      }))
       return {...receipt,next_action:{action:'collect-acceptance',state:'blocked',
         reason:'COMPANION_ACCEPTANCE_PLAN_SCOPE_CONFLICT'}};
     const snapshot=workflow.snapshot;
@@ -849,7 +972,31 @@ export class CompanionContinuationService {
         : snapshot.reviews.some(value=>value.mode==='focused' && value.status==='passed'
           && value.applicability==='verified' && value.subject_ref===snapshot.subject.subject_id)));
     const implementation=this.actionEvidence(context,'implementation','implementation');
-    const criteria=plan.map(item=>{
+    const externalEvidence=item=>{
+      const artifact=snapshot.artifacts.find(value=>value.artifact_id===`acceptance:${item.criteria_ref}`
+        && value.role==='acceptance-report' && value.integrity==='observed'
+        && value.source.startsWith('external-observation:'));
+      if (!artifact || !harness.workflowHistory.source.assess(ticket,snapshot).artifacts
+        .some(value=>value.artifact_id===artifact.artifact_id && value.state==='verified')) return [];
+      try {
+        const observed=JSON.parse(readFileSync(artifact.location,'utf8'));
+        const sourceRef=artifact.source.slice('external-observation:'.length);
+        const sourceReceipt=this.store.continuationAction(card.cardId,card.revision,
+          `observation:${item.criteria_ref}`);
+        if (sourceRef && sourceReceipt?.attempt_state==='verified'
+          && sourceReceipt.intent?.ticket_ref===ticket.reference
+          && sourceReceipt.intent?.subject_identity===identity(snapshot.subject)
+          && sourceReceipt.receipt?.source_ref===sourceRef
+          && sourceReceipt.receipt?.artifact_sha256===artifact.revision
+          && observed.schema_version===1 && observed.criteria_ref===item.criteria_ref
+          && observed.ticket_ref===ticket.reference && observed.subject_head===snapshot.subject.head
+          && observed.subject_identity===identity(snapshot.subject)
+          && observed.source_ref===sourceRef && observed.observed===true)
+          return [`artifact:${artifact.artifact_id}:${artifact.revision}`,`source:${sourceRef}`];
+      } catch { /* A missing or malformed observation is not verified. */ }
+      return [];
+    };
+    const criteria=obligation.map(item=>{
       let evidence=[];
       if (item.source_kind==='repository-test' && tests.state==='passed'
         && commit.state==='committed' && tests.head===commit.parent)
@@ -861,12 +1008,21 @@ export class CompanionContinuationService {
       else if (item.source_kind==='review' && reviewReady)
         evidence=[`review:${full.review_id}`,
           ...snapshot.reviews.filter(value=>value.mode==='focused').map(value=>`review:${value.review_id}`)];
-      else if (item.source_kind==='external-observation') {
-        const artifact=snapshot.artifacts.find(value=>value.artifact_id===`acceptance:${item.criteria_ref}`
-          && value.role==='acceptance-report' && value.integrity==='observed');
-        if (artifact && harness.workflowHistory.source.assess(ticket,snapshot).artifacts
-          .some(value=>value.artifact_id===artifact.artifact_id && value.state==='verified'))
-          evidence=[`artifact:${artifact.artifact_id}:${artifact.revision}`];
+      else if (item.source_kind==='agent-session' && implementation?.state==='completed'
+        && reviewReady && commit.state==='committed' && snapshot.subject.head===commit.oid) {
+        const assessment=harness.workflowHistory.source.assess(ticket,snapshot);
+        const fullRun=full?.execution_refs?.map(id=>snapshot.runtime_refs.find(value=>value.runtime_ref_id===id))
+          .find(value=>value?.kind==='codex-run' && value.session_id!==implementation.session_id
+            && assessment.runtime.some(item=>item.runtime_ref_id===value.runtime_ref_id
+              && item.state==='verified'));
+        if (fullRun) evidence=[`run:${implementation.run_id}`,`run:${fullRun.run_id}`,
+          `review:${full.review_id}`,`git:${commit.oid}`];
+      }
+      else if (item.source_kind==='external-observation') evidence=externalEvidence(item);
+      if (plan?.find(value=>value.criteria_ref===item.criteria_ref)?.source_kind==='external-observation'
+        && item.source_kind!=='external-observation') {
+        const extra=externalEvidence(item);
+        evidence=evidence.length && extra.length ? [...evidence,...extra]:[];
       }
       return {criteria_ref:item.criteria_ref,status:evidence.length ? 'pass':'not-verified',
         evidence,notes:evidence.length ? null:`${item.source_kind} evidence missing`};
@@ -878,7 +1034,8 @@ export class CompanionContinuationService {
       next_action:{action:'collect-acceptance',state:'blocked',
         reason:'COMPANION_ACCEPTANCE_EVIDENCE_PENDING'}};
     this.movePhase(context,'acceptance','acceptance-collection',
-      {plan_sha256:design.sha256,subject_head:snapshot.subject.head},next=>{
+      {plan_sha256:design?.sha256 ?? null,obligation_version:acceptance132.version,
+        obligation_sha256:hash(JSON.stringify(acceptance132)),subject_head:snapshot.subject.head},next=>{
         next.acceptance={acceptance_id:`companion-acceptance:${card.cardId}:${card.revision}`,
           status:'passed',actor:{name:'Emilia',method:'deterministic'},
           subject_ref:next.subject.subject_id,criteria,
