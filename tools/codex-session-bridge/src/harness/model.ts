@@ -116,6 +116,9 @@ export interface Source {
   session(id: string): SourceSession;
   runs(sessionId: string): SourceRun[];
   events(run: SourceRun): SourceEvent[];
+  // Optional freshness evidence for append-only source history. Changes or read
+  // failures must invalidate it; implementations without this keep full scanning.
+  eventsRevision?(run: SourceRun): string;
   attribution(ticket: Ticket, session?: SourceSession): unknown;
   status?(sessionId: string, runId: string): { run: SourceRun | null; session_status: string };
   lookupRequest?(requestId: string): { request_id: string; fingerprint: string; session_id: string; run_id: string; status: string } | null;

@@ -56,6 +56,7 @@ test('prepare follows remote HEAD beside a dirty developer branch and reuses one
   assert.equal(readFileSync(first.entry, 'utf8').trim(), '// merged entry');
   const second = await prepareDeployment(f.options);
   assert.equal(second.entry, first.entry); assert.equal(second.dependencies, 'reused');
+  await assert.rejects(prepareDeployment({ ...f.options, expectedCommit: 'f'.repeat(40) }), { code: 'DEPLOYMENT_SOURCE_CHANGED' });
   assert.equal((await readDeployment(f.root)).commit, commit);
   assert.equal(git(f.repo, 'branch', '--show-current'), 'unfinished');
   assert.equal(git(f.repo, 'status', '--porcelain'), before);
@@ -98,6 +99,15 @@ test('selected release records launcher flag support and rejects a changed claim
   writeFileSync(manifestFile, JSON.stringify(legacy));
   assert.equal((await verifyDeployment(f.root)).launcherFlags.reviewLaunchAuthority, false,
     'an older manifest cannot infer review support from the release');
+  delete legacy.launcherFlags.executionAuthority;
+  writeFileSync(manifestFile, JSON.stringify(legacy));
+  const refreshed = await prepareDeployment(f.options);
+  assert.equal(refreshed.dependencies, 'reused');
+  assert.equal(refreshed.commit, supported.commit);
+  assert.equal(refreshed.launcherFlags.reviewLaunchAuthority, true);
+  assert.equal(refreshed.launcherFlags.executionAuthority, true,
+    'explicit prepare re-probes missing metadata after validating the immutable release');
+  assert.equal((await verifyDeployment(f.root)).launcherFlags.executionAuthority, true);
   writeFileSync(manifestFile, originalManifest);
   const changed = JSON.parse(originalManifest);
   changed.launcherFlags.reviewLaunchAuthority = false;

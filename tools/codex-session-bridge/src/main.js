@@ -163,7 +163,10 @@ if (values.help) {
         if (controlServer) { controlServer.close(); controlServer.closeIdleConnections(); controlServer.closeAllConnections(); }
         if (harnessServer) { harnessServer.close(); harnessServer.closeAllConnections(); }
         if (server) await server.close();
-        process.exitCode = 0;
+        // All execution sources have stopped and their terminal results are durable.
+        // A leftover library/transport handle must not strand a listenerless process
+        // after releasing the writer. Failed cleanup stays observable in the catch path.
+        process.exit(0);
       } catch (error) { console.error(JSON.stringify(publicError(error))); process.exitCode = 1; }
     };
     process.on('SIGINT', shutdown);

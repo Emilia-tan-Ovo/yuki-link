@@ -28,6 +28,13 @@ function loadPublicScript(name, names) {
   return context.__test;
 }
 
+test('stop evidence explains a listenerless old process and the dependent tunnel blockage', () => {
+  const { unitExplanation } = loadPublicScript('app.js', ['unitExplanation']);
+  const yca = { running: true, code: 'ACTIVITY_UNKNOWN', blocked: 'ACTIVITY_UNKNOWN', lastStop: { state: 'unknown', code: 'STOP_TIMEOUT' } };
+  assert.match(unitExplanation(yca, 'yca'), /已接受停止请求.*未在期限内退出/);
+  assert.match(unitExplanation({ blocked: 'YCA_NOT_READY' }, 'tunnel', yca), /Tunnel 等待本地 YCA 恢复.*已接受停止请求/);
+});
+
 test('daily and advanced callers reject missing or mismatched operation receipts as unknown', async () => {
   const daily = loadPublicScript('services.js', ['operationOutcome', 'requestOperation']);
   const advanced = loadPublicScript('app.js', ['operationOutcome', 'post']);

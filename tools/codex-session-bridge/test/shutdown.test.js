@@ -30,14 +30,16 @@ async function ready(url) {
   throw new Error('isolated YCA did not become ready');
 }
 
-test('service shutdown closes raw idle HTTP sockets that are not counted as active requests', { timeout: 20_000 }, async t => {
+test('service shutdown exits after durable cleanup even with a non-execution handle still referenced', { timeout: 20_000 }, async t => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'yca-shutdown-'));
   const runtime = path.join(root, 'runtime'), workspace = path.join(root, 'workspace');
   mkdirSync(runtime); mkdirSync(workspace);
   const mcpPort = await port(), controlPort = await port(), harnessPort = await port();
   const token = randomBytes(32).toString('hex'), instance = randomUUID();
   const entry = fileURLToPath(new URL('../src/main.js', import.meta.url));
-  const child = spawn(process.execPath, [entry, '--transport', 'http', '--port', String(mcpPort), '--allow-cwd', workspace,
+  // A transport/library handle must not leave an already drained service alive forever.
+  const lingeringHandle = 'data:text/javascript,' + encodeURIComponent('setInterval(() => {}, 60_000);');
+  const child = spawn(process.execPath, ['--import', lingeringHandle, entry, '--transport', 'http', '--port', String(mcpPort), '--allow-cwd', workspace,
     '--runtime', runtime, '--pwsh-bin', process.execPath, '--control-port', String(controlPort), '--control-instance', instance,
     '--harness-port', String(harnessPort)], {
     env: { ...process.env, YUKI_CONTROL_TOKEN: token }, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'],
@@ -83,6 +85,32 @@ test('service shutdown closes raw idle HTTP sockets that are not counted as acti
   assert.deepEqual(await stop.json(), { stopping: true });
   const result = await Promise.race([exited, new Promise((_, reject) => setTimeout(() => reject(new Error('YCA did not exit after accepted shutdown')), 3000))]);
   assert.equal(result.code, 0);
+});
+
+test('failed execution cleanup retains the writer and authenticated observation instead of exiting', { timeout: 10000 }, async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'yca-shutdown-failure-'));
+  const runtime = path.join(root, 'runtime'), workspace = path.join(root, 'workspace'); mkdirSync(workspace);
+  const mcpPort = await port(), controlPort = await port(), token = randomBytes(32).toString('hex');
+  const preload = `import { ComputerTools } from ${JSON.stringify(new URL('../src/computer/tools.js', import.meta.url).href)};
+    ComputerTools.prototype.close = async function () { throw Object.assign(new Error('fixture'), { code: 'STOP_FAILED' }); };`;
+  const child = spawn(process.execPath, ['--import', 'data:text/javascript,' + encodeURIComponent(preload),
+    fileURLToPath(new URL('../src/main.js', import.meta.url)), '--transport', 'http', '--port', String(mcpPort),
+    '--runtime', runtime, '--allow-cwd', workspace, '--control-port', String(controlPort), '--control-instance', randomUUID()],
+  { env: { ...process.env, YUKI_CONTROL_TOKEN: token }, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+  const exited = new Promise(resolve => child.once('exit', resolve));
+  let diagnostics = ''; child.stderr.on('data', chunk => { diagnostics += chunk; });
+  t.after(async () => { if (child.exitCode === null) child.kill('SIGKILL'); await exited; rmSync(root, { recursive: true, force: true }); });
+  await ready(`http://127.0.0.1:${mcpPort}/healthz`);
+  const headers = { Authorization: `Bearer ${token}` }, base = `http://127.0.0.1:${controlPort}`;
+  const stop = await fetch(base + '/stop', { method: 'POST', headers });
+  assert.equal(stop.status, 202); await stop.text();
+  const deadline = Date.now() + 2000;
+  while (!diagnostics.includes('STOP_FAILED') && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+  assert.match(diagnostics, /STOP_FAILED/);
+  const status = await (await fetch(base + '/status', { headers })).json();
+  assert.equal(status.closing, true);
+  assert.equal(existsSync(path.join(runtime, 'bridge.lock')), true);
+  assert.equal(child.exitCode, null);
 });
 
 test('computer STOP_FAILED still stops Codex while retaining writer and read-only observation', { timeout: 15000 }, async t => {

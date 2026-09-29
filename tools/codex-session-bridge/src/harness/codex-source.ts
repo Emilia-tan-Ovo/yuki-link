@@ -77,6 +77,14 @@ export class CodexSource implements Source {
     }
     return directory;
   }
+  eventsRevision(run: SourceRun) {
+    const file = this.manager.store.eventFile(run.id);
+    const stat = statSync(file, { bigint: true });
+    if (!stat.isFile()) throw new Error('Source event file unavailable');
+    // Refreshed on every scan: append, rewrite, truncation and replacement all
+    // invalidate this process-local hint. It is never persisted as source truth.
+    return [file, stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs, stat.birthtimeNs].join(':');
+  }
   events(run: SourceRun) {
     const file = this.manager.store.eventFile(run.id);
     const text = readFileSync(file, 'utf8');

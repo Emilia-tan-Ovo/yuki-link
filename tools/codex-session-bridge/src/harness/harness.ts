@@ -56,6 +56,7 @@ export class Harness {
   bindings = new Map<string, Binding>();
   imported = new Set<string>();
   observations = new Map<string, string>();
+  eventRevisions = new Map<string, string>();
   threads = new Map<string, string>();
   attributions = new Map<string, unknown>();
   sourceFailure: string | null = null;
@@ -264,6 +265,9 @@ export class Harness {
           const snapshot = safe({ run, permissions: session.permissions, attribution: this.attributions.get(binding.id) });
           const key = binding.id + ':' + run.id;
           if (this.observations.get(key) !== JSON.stringify(snapshot)) this.event(binding, { kind: 'source.snapshot', run_id: run.id, payload: snapshot });
+          const revision = this.source.eventsRevision?.(run);
+          if (!refresh && revision !== undefined && this.eventRevisions.get(key) === revision) continue;
+          this.eventRevisions.delete(key);
           for (const event of this.source.events(run)) {
             if (this.imported.has(run.id + ':' + event.seq)) continue;
             const data = event.data as { type?: string; thread_id?: string; error?: { code?: string } } | null;
@@ -276,6 +280,8 @@ export class Harness {
               source_seq: event.seq, source_at: event.at, payload: event.data,
               integrity: { ...integrity(), truncated: data?.error?.code === 'OUTPUT_LIMIT' ? 'source-output-limit' : 'unknown' } });
           }
+          // Do not cache a file that changed during capture, or an unsuccessful import.
+          if (revision !== undefined && this.source.eventsRevision?.(run) === revision) this.eventRevisions.set(key, revision);
         }
       } catch { failure = true; }
     }
