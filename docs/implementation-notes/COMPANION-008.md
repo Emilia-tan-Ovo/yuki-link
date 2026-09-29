@@ -106,3 +106,11 @@ Deferred：DTO/错误码、表名、现有布局内按钮位置、轮询间隔�
 - Review policy：`delegated`，接收方为 Ticket Main 上层 workflow；Review 尚未执行，不给 Standards/Spec 通过结论。没有已知 Review finding。
 - 验收级别：代码与定向 fixture 已验证；尚未执行 #133 要求的一条已授权真实运行的断线重连与停止验收，因此真实链路、日常稳定性均 pending。未知 stop 回执保持未知；自然完成不宣称被停止。未 push、未开 PR、未部署。
 - 下一步：上层核对本提交内容、测试适用性和 checkpoint 后，将 fixed point、此 handoff、#133/#125 交给独立 Review。Review 后再按 Ticket 验收；不从本 implementation session 直接推进。
+
+## Finding Fix Handoff — 2026-09-29
+
+- 来源：GitHub #133、本 Notes、`.local/workflow-state/companion-008-primary-review-1-review.md`；修复基线 `799cdd23921785a86844c0f7a9e0106cd054563e`，分支 `codex/companion-008-control-resume`。修复 commit 的精确 SHA 见本 worktree `.local/workflow-state/COMPANION-008.md`。
+- 范围：F1 在 implementation launch authority 的最终检查读取 card stop；F2 将 preparation 在途副作用投影为 unknown；F3 按冻结目标核对 stop attempt、Harness journal、失败与证据缺口，并在 Desktop 显示请求状态；F4 将 full-suite 仅按 owned task 关联且保留 service epoch；F5 停止前核对 operation 的受管 work item、generation 与 session 归属。其余行为未扩展。
+- 验证：`node --test test/companion-controls.test.ts test/companion-continuation.test.ts`（在 `tools/codex-session-bridge`，20/20 通过）；`node --test test/renderer.test.mjs`（在 `tools/companion-desktop`，36/36 通过）；bridge `npm run typecheck`、Desktop `npm run check`、`git diff --check` 均 exit 0。最终 journal 匹配逻辑调整后另跑 `node --test test/companion-controls.test.ts`，5/5 通过。preparation 测试 fixture 首次缺完整授权结构而失败，修正 fixture 后通过。未运行两包完整测试套件。
+- Review policy：delegated，交 Ticket Main workflow 做一次独立 focused re-review；F1–F5 为 fixed、未 verified，原 Standards 无 finding 的结论保留。真实断线重连与停止验收仍 pending；本修复未做真实模型派发、push、PR 或部署。
+- 下一步：以修复 commit 与本 handoff 为内容身份复核 F1–F5；复核通过后才进入 #133 的真实链路验收。

@@ -946,6 +946,7 @@ export class CompanionContinuationService {
     mkdirSync(path.dirname(resultPath),{recursive:true});
     const service=this;
     const authority={snapshot(ticketKey,authorizationRefObserved) {
+      service.store.assertWorkAllowed?.(card.cardId,card.revision);
       const current=service.locator(raw);
       const activePolicy=service.manager.implementationLaunchAuthority?.snapshot(ticketKey,'')?.policy;
       const observed=service.manager.harness.workflowHistory.current.get(ticket.id);

@@ -140,6 +140,8 @@ function renderEngineeringStatus(card) {
     `当前工程观察：${current?.observation?.state ?? '待查询'} · ${current?.observed_at ?? '时间未知'}`,
     ...((current?.operations ?? []).map(value=>`关联运行 ${value.run?.run_id ?? value.request_id ?? '未知'}：${value.run?.status ?? value.observation?.state ?? '未知'}`)),
     ...((current?.tasks ?? []).map(value=>`关联任务 ${value.task_id ?? value.request_id ?? '未知'}：${value.status ?? value.observation?.state ?? '未知'}`)),
+    ...((current?.card?.preparation_unknown_side_effects ?? []).map(value=>`准备副作用待核实：${value}`)),
+    ...((current?.control?.targets ?? []).map(value=>`停止请求 ${value.target_key}：${value.request?.state ?? 'unknown'}${value.request?.detail ? ` · ${value.request.detail}` : ''}`)),
     `停止控制：${control?.state ?? '未请求'}${control?.state === 'blocked-further-work' ? '；后续推进已阻止，当前无活动运行' : ''}`,
     '当前不支持无损暂停；接续需依据已有记录和授权核对。',
   ];

@@ -2,6 +2,9 @@ import { EngineeringCardStore, digestCardContent } from '../../../companion-desk
 
 const terminal = new Set(['completed','failed','stopped','timed_out','interrupted']);
 const observed = (state,source,detail=null) => ({state,source,observed_at:new Date().toISOString(),detail});
+const sameTarget = (left,right) => left?.binding_id===right?.binding_id
+  && (left?.run_id ? left.run_id===right?.run_id && left.session_id===right?.session_id
+    : left?.task_id===right?.task_id && left.service_epoch===right?.service_epoch);
 
 // The card database owns intent; Harness and Workflow remain the sources of execution state.
 export class CompanionWorkControlService {
@@ -48,13 +51,49 @@ export class CompanionWorkControlService {
           && value.conversation_id===receipt.destination?.conversation_id
           && (!receipt.binding_id || value.id===receipt.binding_id)
           && (value.scope==='session' || value.run_id===runtime.run_id));
-      const verified=!!binding && receipt.effective_state!=='reconciliation-required';
+      const item=receipt.work_item;
+      const managed=item?.work_item_id ? operations.workItems?.get(item.work_item_id):null;
+      const generation=managed?.generations?.find(value=>value.generation===item.generation);
+      const verified=!!binding && receipt.effective_state!=='reconciliation-required'
+        && !!managed && managed.delivery_item_id===ticketId
+        && managed.generation===item.generation && !!generation && generation.state==='usable'
+        && generation.session_id===runtime.session_id
+        && item.generations?.some(value=>value.generation===item.generation
+          && value.session_id===runtime.session_id);
       return {request_id:requestId,operation_id:original.operation_id,operation:receipt,
         run:{session_id:runtime.session_id,run_id:runtime.run_id,status:run.status,
-          binding_id:binding?.id ?? null,manageable:verified && !terminal.has(run.status)},
+          binding_id:binding?.id ?? null,work_item_id:item?.work_item_id ?? null,
+          generation:item?.generation ?? null,manageable:verified && !terminal.has(run.status)},
         observation:observed(verified?'current':'unknown','codex-manager',verified?null:'BINDING_OR_OPERATION_UNVERIFIED')};
     } catch { return {request_id:requestId,operation_id:original.operation_id,operation:receipt,
       observation:observed('unknown','codex-manager','RUN_UNAVAILABLE')}; }
+  }
+  targetStatus(target) {
+    const attempt=target.attempt;
+    const receipt=attempt?.receipt;
+    let requestState=attempt ? 'unknown':'persisted';
+    let detail=attempt?.state ?? null;
+    const journal=this.manager.harness.journal;
+    const entries=attempt && journal?.records?.filter(entry=>entry.data.kind==='control_action'
+      && entry.data.control.ticket_id===target.target.ticket_id
+      && entry.data.control.action===(target.target.kind==='run'?'run.stop':'task.stop')
+      && sameTarget(entry.data.control.target,target.target)
+      && (!attempt?.started_at || entry.data.control.occurred_at>=attempt.started_at));
+    const matching=receipt?.control_id ? entries?.filter(entry=>
+      entry.data.control.control_id===receipt.control_id) : entries;
+    const ids=new Set(matching?.map(entry=>entry.data.control.control_id));
+    const result=ids.size===1 ? matching?.find(entry=>entry.data.control.stage==='result'):null;
+    if (receipt || result) {
+      const journalGap=!!receipt?.evidence_gap || !!journal?.failure
+        || (!!journal && !result);
+      if (!journalGap) {
+        const outcome=result?.data.control.outcome ?? receipt?.outcome;
+        requestState=outcome==='request_failed' ? 'request_failed'
+          : ['requested','already_terminal'].includes(outcome) ? 'requested':'unknown';
+        detail=outcome;
+      } else detail='CONTROL_JOURNAL_GAP';
+    }
+    return {...target,request:observed(requestState,'harness-control-journal',detail)};
   }
   async get(input) {
     const card=this.locator(input), stop=this.store.workStop(card.cardId,card.revision);
@@ -67,7 +106,8 @@ export class CompanionWorkControlService {
     if (claim?.request_id) requests.add(claim.request_id);
     if (preparation?.preparationId && ticketId) requests.add(`companion-prep:${preparation.preparationId}:ticket-design`);
     const actions=this.store.continuationActions(card.cardId,card.revision);
-    for (const action of actions) if (action.intent?.request_id && !action.slot.startsWith('boundary:'))
+    for (const action of actions) if (action.intent?.request_id
+      && !action.slot.startsWith('boundary:') && !action.slot.startsWith('full-suite:'))
       requests.add(action.intent.request_id);
     const operations=[...requests].map(requestId=>this.operation(ticketId,requestId));
     const tasks=[];
@@ -77,10 +117,11 @@ export class CompanionWorkControlService {
       try {
         const task=this.computer?.tasks?.status({task_id:taskId});
         const binding=this.manager.harness.taskHistory?.target(ticketId,taskId)?.binding;
+        const epoch=action.receipt.service_epoch ?? task?.service_epoch;
         if (!binding || binding.request_id!==action.intent.request_id
-          || binding.service_epoch!==action.receipt.service_epoch)
+          || !epoch || binding.service_epoch!==epoch)
           throw Error('TASK_BINDING_CONFLICT');
-        tasks.push({request_id:action.intent.request_id,task_id:taskId,service_epoch:action.receipt.service_epoch,
+        tasks.push({request_id:action.intent.request_id,task_id:taskId,service_epoch:epoch,
           status:task?.status ?? 'unknown',manageable:!!task && !terminal.has(task.status),
           observation:observed(task?'current':'unknown','yca-owned-task')});
       } catch { tasks.push({request_id:action.intent.request_id,task_id:taskId,
@@ -94,17 +135,23 @@ export class CompanionWorkControlService {
       try { if (link) prDelivery=await this.manager.companionContinuation?.delivery?.reconcile(input,{persist:false}); }
       catch { prDelivery={state:'unknown',observation:observed('unavailable','github')}; }
     }
-    const unresolved=operations.some(value=>value.observation.state!=='current' || value.operation?.effective_state==='reconciliation-required')
-      || tasks.some(value=>value.observation.state!=='current');
+    const targets=stop ? this.store.workStopTargets(card.cardId,card.revision).map(value=>this.targetStatus(value)) : [];
+    const preparationUnknown=(preparation?.unknownSideEffects?.length ?? 0)>0;
+    const unresolved=preparationUnknown
+      || operations.some(value=>value.observation.state!=='current' || value.operation?.effective_state==='reconciliation-required')
+      || tasks.some(value=>value.observation.state!=='current')
+      || targets.some(value=>value.request.state==='unknown' || value.request.state==='request_failed');
     const active=operations.some(value=>value.run?.manageable) || tasks.some(value=>value.manageable);
     return {schema_version:1,card_store_id:this.store.storeId,card_id:card.cardId,revision:card.revision,
       card:{state:card.state,confirmation:card.confirmation,dispatch_status:card.dispatchStatus,
-        preparation_id:preparation?.preparationId ?? null,observation:observed('current','card-sqlite')},
+        preparation_id:preparation?.preparationId ?? null,
+        preparation_unknown_side_effects:preparation?.unknownSideEffects ?? [],
+        observation:observed('current','card-sqlite')},
       ticket_id:ticketId,initial_operation:operations[0] ?? null,operations,tasks,
       workflow,acceptance,pr_delivery:prDelivery,
       control:stop ? {control_id:stop.control_id,requested_at:stop.requested_at,
         state:unresolved?'unknown':active?'requested':'blocked-further-work',
-        targets:this.store.workStopTargets(card.cardId,card.revision)}:null,
+        targets}:null,
       observation:observed(unresolved?'unknown':'current','companion-control'),
       observed_at:new Date().toISOString()};
   }
@@ -119,7 +166,8 @@ export class CompanionWorkControlService {
       if (!operation.run?.manageable || operation.observation.state!=='current') continue;
       const target={kind:'run',ticket_id:status.ticket_id,request_id:operation.request_id,
         operation_id:operation.operation_id,session_id:operation.run.session_id,
-        run_id:operation.run.run_id,binding_id:operation.run.binding_id};
+        run_id:operation.run.run_id,binding_id:operation.run.binding_id,
+        work_item_id:operation.run.work_item_id,generation:operation.run.generation};
       const key=`run:${operation.operation_id}:${operation.run.run_id}`;
       const claimed=this.store.claimWorkStopTarget(card.cardId,card.revision,key,target);
       if (claimed.conflict || claimed.deduplicated) continue;

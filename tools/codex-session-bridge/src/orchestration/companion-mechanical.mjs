@@ -88,7 +88,8 @@ export class CompanionMechanicalAdapter {
         exit_code:task.exit_code};
     if (git(cwd,'rev-parse','HEAD')!==head || JSON.stringify(this.content(cwd,files))!==JSON.stringify(content))
       return {state:'blocked',reason:'COMPANION_TEST_SUBJECT_CHANGED'};
-    const receipt={task_id:task.task_id,exit_code:0,head,content_digest:hash(JSON.stringify(content))};
+    const receipt={task_id:task.task_id,service_epoch:current.receipt.service_epoch,
+      exit_code:0,head,content_digest:hash(JSON.stringify(content))};
     this.store.updateContinuationAction(locator.card_id,locator.revision,slot,'attempted','verified',receipt);
     return {state:'passed',...receipt};
   }
