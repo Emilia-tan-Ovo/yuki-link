@@ -78,6 +78,7 @@ if (values.help) {
     manager?.companionDispatch?.close();
     manager?.companionPreparation?.close();
     manager?.companionContinuation?.close();
+    manager?.companionControls?.close();
     if (manager) await manager.close(); // Final capture/recheck, then writer release.
     else store?.close();
   };
@@ -117,6 +118,7 @@ if (values.help) {
     manager.companionDispatch = null;
     manager.companionPreparation = null;
     manager.companionContinuation = null;
+    manager.companionControls = null;
     if (values['companion-card-store']) {
       const { CompanionDispatchService } = await import('./orchestration/companion-dispatch.mjs');
       const { CompanionPreparationService } = await import('./orchestration/companion-preparation.mjs');
@@ -142,6 +144,10 @@ if (values.help) {
         directory:values['companion-card-store'],computer,projects,
         preparation:manager.companionPreparation,
         dispatch:manager.companionDispatch});
+      const { CompanionWorkControlService } = await import('./orchestration/companion-controls.mjs');
+      manager.companionControls = new CompanionWorkControlService({manager,
+        directory:values['companion-card-store'],computer});
+      manager.companionControls.start();
       manager.companionContinuation.start();
     }
     let server;

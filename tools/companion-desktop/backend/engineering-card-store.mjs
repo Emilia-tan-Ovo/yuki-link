@@ -38,6 +38,17 @@ CREATE TABLE IF NOT EXISTS card_continuation_actions (
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
  PRIMARY KEY(card_id,revision,slot),
  FOREIGN KEY(card_id,revision) REFERENCES card_continuations(card_id,revision));`;
+const controlSchema = `CREATE TABLE IF NOT EXISTS card_work_stops (
+ card_id TEXT NOT NULL REFERENCES cards(card_id), revision INTEGER NOT NULL,
+ control_id TEXT NOT NULL UNIQUE, confirmation_digest TEXT NOT NULL,
+ action_source TEXT NOT NULL, requested_at TEXT NOT NULL,
+ frozen_refs TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1,
+ PRIMARY KEY(card_id,revision));
+CREATE TABLE IF NOT EXISTS card_work_stop_targets (
+ card_id TEXT NOT NULL, revision INTEGER NOT NULL, target_key TEXT NOT NULL,
+ version INTEGER NOT NULL DEFAULT 1, target TEXT NOT NULL, attempt TEXT,
+ PRIMARY KEY(card_id,revision,target_key),
+ FOREIGN KEY(card_id,revision) REFERENCES card_work_stops(card_id,revision));`;
 const targetIdentity = content => content?.ticket?.url ?? (content?.resolution?.status === 'explicit_new_requirement' ? `${content.repository}/new-requirement` : null);
 const authorizationValid = (kind, value, repository) => {
   if (value === false) return true;
@@ -68,7 +79,7 @@ export class EngineeringCardStore {
     try {
       this.db.exec('PRAGMA foreign_keys=ON');
       const version = this.db.prepare('PRAGMA user_version').get().user_version;
-      if (version > 4) throw Error('工程卡片数据库版本过高。');
+      if (version > 5) throw Error('工程卡片数据库版本过高。');
       if (version === 0) { this.db.exec('BEGIN IMMEDIATE'); try { this.db.exec(schema + ' PRAGMA user_version=1; COMMIT'); } catch (error) { this.db.exec('ROLLBACK'); throw error; } }
       if (version < 2) { this.db.exec('BEGIN IMMEDIATE'); try {
         this.db.exec(dispatchSchema);
@@ -81,7 +92,10 @@ export class EngineeringCardStore {
       if (version < 4) { this.db.exec('BEGIN IMMEDIATE'); try {
         this.db.exec(continuationSchema + ' PRAGMA user_version=4; COMMIT');
       } catch (error) { this.db.exec('ROLLBACK'); throw error; } }
-      for (const table of ['cards','card_revisions','card_confirmations','card_observations','card_store_identity','card_dispatches','card_preparations','card_continuations','card_continuation_actions']) if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) throw Error('工程卡片数据库结构不完整。');
+      if (version < 5) { this.db.exec('BEGIN IMMEDIATE'); try {
+        this.db.exec(controlSchema + ' PRAGMA user_version=5; COMMIT');
+      } catch (error) { this.db.exec('ROLLBACK'); throw error; } }
+      for (const table of ['cards','card_revisions','card_confirmations','card_observations','card_store_identity','card_dispatches','card_preparations','card_continuations','card_continuation_actions','card_work_stops','card_work_stop_targets']) if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) throw Error('工程卡片数据库结构不完整。');
       this.storeId = this.db.prepare('SELECT store_id FROM card_store_identity').get()?.store_id;
       if (!this.storeId) throw Error('工程卡片数据库身份缺失。');
     } catch (error) { this.db.close(); throw error; }
@@ -95,7 +109,7 @@ export class EngineeringCardStore {
     const observation = this.db.prepare('SELECT workflow FROM card_observations WHERE card_id=?').get(cardId);
     const dispatch = this.dispatch(cardId,row.revision);
     const value = parse(content.content);
-    return { cardId, revision: row.revision, state: row.state, content: value, confirmation: confirmation ? { ...confirmation, content: parse(confirmation.content) } : null, observedWorkflow: parse(observation?.workflow), dispatchStatus: dispatch?.claimed_at ? 'engineering-received' : dispatch ? dispatch.producer_state : 'not-dispatched', dispatchId: dispatch?.dispatch_id ?? null, preparationStatus: row.state === 'confirmed' && confirmation?.revision === row.revision && preparationAuthorized(value) ? 'authorized' : 'not-authorized', preparationId:this.preparation(cardId,row.revision)?.preparationId ?? null, createdAt: row.created_at, updatedAt: row.updated_at };
+    return { cardId, revision: row.revision, state: row.state, content: value, confirmation: confirmation ? { ...confirmation, content: parse(confirmation.content) } : null, observedWorkflow: parse(observation?.workflow), dispatchStatus: dispatch?.claimed_at ? 'engineering-received' : dispatch ? dispatch.producer_state : 'not-dispatched', dispatchId: dispatch?.dispatch_id ?? null, preparationStatus: row.state === 'confirmed' && confirmation?.revision === row.revision && preparationAuthorized(value) ? 'authorized' : 'not-authorized', preparationId:this.preparation(cardId,row.revision)?.preparationId ?? null, workStop:this.workStop(cardId,row.revision), createdAt: row.created_at, updatedAt: row.updated_at };
   }
   revision(cardId, revision) { const row = this.db.prepare('SELECT content,created_at AS createdAt FROM card_revisions WHERE card_id=? AND revision=?').get(cardId,revision); return row ? { cardId, revision, content: parse(row.content), createdAt: row.createdAt } : null; }
   list() { return this.db.prepare('SELECT card_id FROM cards ORDER BY updated_at DESC LIMIT 30').all().map(row => this.get(row.card_id)); }
@@ -106,7 +120,7 @@ export class EngineeringCardStore {
   }
   edit(cardId, expectedRevision, content) {
     if (!content || typeof content.original !== 'string' || !content.original.trim() || content.original.length > 20000) throw Error('工程要求无效。');
-    return this.transaction(() => { const current = this.get(cardId); if (!current) throw Error('工程卡片不存在。'); if (current.revision !== expectedRevision || current.state === 'revoked' || this.dispatch(cardId,expectedRevision)?.claimed_at || this.preparation(cardId,expectedRevision)) return { conflict: true, card: current }; const revision = expectedRevision + 1, time = now(); this.db.prepare('INSERT INTO card_revisions VALUES (?,?,?,?)').run(cardId,revision,JSON.stringify(content),time); this.db.prepare("UPDATE cards SET revision=?,state='pending',updated_at=? WHERE card_id=?").run(revision,time,cardId); if (targetIdentity(current.content) !== targetIdentity(content)) this.db.prepare('DELETE FROM card_observations WHERE card_id=?').run(cardId); return this.get(cardId); });
+    return this.transaction(() => { const current = this.get(cardId); if (!current) throw Error('工程卡片不存在。'); if (current.revision !== expectedRevision || current.state === 'revoked' || this.dispatch(cardId,expectedRevision)?.claimed_at || this.preparation(cardId,expectedRevision) || this.workStop(cardId,expectedRevision)) return { conflict: true, card: current }; const revision = expectedRevision + 1, time = now(); this.db.prepare('INSERT INTO card_revisions VALUES (?,?,?,?)').run(cardId,revision,JSON.stringify(content),time); this.db.prepare("UPDATE cards SET revision=?,state='pending',updated_at=? WHERE card_id=?").run(revision,time,cardId); if (targetIdentity(current.content) !== targetIdentity(content)) this.db.prepare('DELETE FROM card_observations WHERE card_id=?').run(cardId); return this.get(cardId); });
   }
   confirm(cardId, expectedRevision, actionSource, expectedDigest = null) {
     if (actionSource !== 'desktop-user-action') throw Error('工程卡片确认来源无效。');
@@ -120,13 +134,14 @@ export class EngineeringCardStore {
       }
       const card = this.get(cardId); return { card, confirmation: card.confirmation }; });
   }
-  revoke(cardId, expectedRevision) { return this.transaction(() => { const current = this.get(cardId); if (!current) throw Error('工程卡片不存在。'); if (current.revision !== expectedRevision || current.state === 'revoked' || this.dispatch(cardId,expectedRevision)?.claimed_at || this.preparation(cardId,expectedRevision)) return { conflict: true, card: current }; this.db.prepare("UPDATE cards SET state='revoked',updated_at=? WHERE card_id=?").run(now(),cardId); return { card: this.get(cardId) }; }); }
+  revoke(cardId, expectedRevision) { return this.transaction(() => { const current = this.get(cardId); if (!current) throw Error('工程卡片不存在。'); if (current.revision !== expectedRevision || current.state === 'revoked' || this.dispatch(cardId,expectedRevision)?.claimed_at || this.preparation(cardId,expectedRevision) || this.workStop(cardId,expectedRevision)) return { conflict: true, card: current }; this.db.prepare("UPDATE cards SET state='revoked',updated_at=? WHERE card_id=?").run(now(),cardId); return { card: this.get(cardId) }; }); }
   dispatch(cardId, revision) { return this.db.prepare("SELECT * FROM card_dispatches WHERE card_id=? AND revision=? AND slot='initial-dispatch'").get(cardId,revision) ?? null; }
   envelope(cardId, revision) { const row = this.dispatch(cardId,revision); return row ? parse(row.envelope) : null; }
   claim(cardId, revision, dispatchId, claim) { return this.transaction(() => {
     const row = this.dispatch(cardId,revision), card = this.get(cardId);
     if (!row || !card || card.state !== 'confirmed' || card.revision !== revision || row.dispatch_id !== dispatchId) return { conflict: true };
     if (row.claimed_at) return row.claim_digest === digest(claim) ? { deduplicated: true, claim: parse(row.claim) } : { conflict: true };
+    if (this.workStop(cardId,revision)) return { conflict:true, stopped:true };
     const envelope = parse(row.envelope);
     if (row.envelope_digest !== digest(envelope) || envelope.content_digest !== digest(card.content)
       || card.confirmation?.revision !== revision || card.confirmation?.confirmedAt !== envelope.confirmation.confirmed_at
@@ -136,7 +151,7 @@ export class EngineeringCardStore {
     return { deduplicated: false, claim };
   }); }
   received(cardId, revision, dispatchId) { const row = this.dispatch(cardId,revision); return row?.dispatch_id === dispatchId && row.claimed_at ? parse(row.claim) : null; }
-  producerAttempt(cardId,revision,dispatchId) { return this.transaction(() => { const row = this.dispatch(cardId,revision), card = this.get(cardId); if (!row || row.dispatch_id !== dispatchId || card?.state !== 'confirmed' || card.revision !== revision) return { conflict: true }; if (row.producer_state !== 'not-dispatched') return { deduplicated: true, state: row.producer_state }; this.db.prepare("UPDATE card_dispatches SET producer_state='turn-starting' WHERE card_id=? AND revision=? AND slot='initial-dispatch'").run(cardId,revision); return { deduplicated: false, state: 'turn-starting' }; }); }
+  producerAttempt(cardId,revision,dispatchId) { return this.transaction(() => { const row = this.dispatch(cardId,revision), card = this.get(cardId); if (!row || row.dispatch_id !== dispatchId || card?.state !== 'confirmed' || card.revision !== revision || this.workStop(cardId,revision)) return { conflict: true }; if (row.producer_state !== 'not-dispatched') return { deduplicated: true, state: row.producer_state }; this.db.prepare("UPDATE card_dispatches SET producer_state='turn-starting' WHERE card_id=? AND revision=? AND slot='initial-dispatch'").run(cardId,revision); return { deduplicated: false, state: 'turn-starting' }; }); }
   producerOutcome(cardId,revision,dispatchId,state,receipt = null) { if (!['turn-completed','turn-unknown','turn-failed'].includes(state)) throw Error('派发状态无效。'); return this.transaction(() => { const row = this.dispatch(cardId,revision); if (!row || row.dispatch_id !== dispatchId) return { conflict: true }; this.db.prepare("UPDATE card_dispatches SET producer_state=?,producer_receipt=? WHERE card_id=? AND revision=? AND slot='initial-dispatch'").run(state,receipt ? JSON.stringify(receipt) : null,cardId,revision); return { state }; }); }
   observe(cardId, workflow, expectedTarget) { return this.transaction(() => { const card = this.get(cardId); if (!card) throw Error('工程卡片不存在。'); if (expectedTarget !== targetIdentity(card.content)) return card; this.db.prepare('INSERT INTO card_observations VALUES (?,?,?) ON CONFLICT(card_id) DO UPDATE SET workflow=excluded.workflow,updated_at=excluded.updated_at').run(cardId,workflow ? JSON.stringify(workflow) : null,now()); return this.get(cardId); }); }
   preparation(cardId, revision) {
@@ -150,6 +165,7 @@ export class EngineeringCardStore {
       return { conflict: true };
     const prior = this.preparation(cardId,revision);
     if (prior) return prior.marker === marker && prior.payloadDigest === digest(card.content) ? prior : { conflict: true };
+    if (this.workStop(cardId,revision)) return {conflict:true,stopped:true};
     if (typeof marker !== 'string' || !/^yuki-preparation:[0-9a-f-]{36}$/u.test(marker)) return { conflict: true };
     const record = { schemaVersion:1, preparationId:randomUUID(), cardStoreId:this.storeId,
       cardId, revision, confirmationAt:card.confirmation.confirmedAt, payloadDigest:digest(card.content),
@@ -206,7 +222,8 @@ export class EngineeringCardStore {
       .map(row => this.continuationAction(cardId,revision,row.slot));
   }
   claimContinuationAction(cardId,revision,slot,intent) { return this.transaction(() => {
-    if (!this.continuation(cardId,revision) || typeof slot !== 'string' || !/^[a-z0-9:._-]{1,180}$/u.test(slot))
+    if (!this.continuation(cardId,revision) || this.workStop(cardId,revision)
+      || typeof slot !== 'string' || !/^[a-z0-9:._-]{1,180}$/u.test(slot))
       return {conflict:true};
     const prior = this.continuationAction(cardId,revision,slot);
     if (prior) return prior.intent_digest === digest(intent) ? {action:prior,deduplicated:true} : {conflict:true};
@@ -222,6 +239,45 @@ export class EngineeringCardStore {
     this.db.prepare('UPDATE card_continuation_actions SET attempt_state=?,receipt=?,updated_at=? WHERE card_id=? AND revision=? AND slot=?')
       .run(state,receipt === null ? null : JSON.stringify(receipt),now(),cardId,revision,slot);
     return {action:this.continuationAction(cardId,revision,slot)};
+  }); }
+  workStop(cardId,revision) {
+    const row=this.db.prepare('SELECT * FROM card_work_stops WHERE card_id=? AND revision=?').get(cardId,revision);
+    return row ? {...row,frozen_refs:parse(row.frozen_refs)}:null;
+  }
+  workStops() { return this.db.prepare('SELECT card_id AS cardId,revision,control_id AS controlId FROM card_work_stops').all(); }
+  assertWorkAllowed(cardId,revision) {
+    if (this.workStop(cardId,revision)) throw Error('COMPANION_WORK_STOPPED');
+  }
+  requestWorkStop(cardId,revision,controlId,actionSource='desktop-user-action') { return this.transaction(() => {
+    const card=this.get(cardId);
+    if (!card || card.revision!==revision || card.state!=='confirmed'
+      || card.confirmation?.revision!==revision || actionSource!=='desktop-user-action'
+      || typeof controlId!=='string' || !/^[0-9a-f-]{36}$/iu.test(controlId)) return {conflict:true};
+    const existing=this.workStop(cardId,revision);
+    if (existing) return {stop:existing,deduplicated:true};
+    if (this.db.prepare('SELECT 1 FROM card_work_stops WHERE control_id=?').get(controlId)) return {conflict:true};
+    const refs={dispatch:this.dispatch(cardId,revision)?.dispatch_id ?? null,
+      preparation:this.preparation(cardId,revision)?.preparationId ?? null,
+      continuation:this.continuation(cardId,revision)?.binding_id ?? null,
+      actions:this.continuationActions(cardId,revision).map(value=>({slot:value.slot,
+        request_id:value.intent?.request_id ?? null,attempt_state:value.attempt_state}))};
+    this.db.prepare('INSERT INTO card_work_stops VALUES (?,?,?,?,?,?,?,1)').run(
+      cardId,revision,controlId,digest(card.confirmation.content),actionSource,now(),JSON.stringify(refs));
+    return {stop:this.workStop(cardId,revision),deduplicated:false};
+  }); }
+  workStopTargets(cardId,revision) { return this.db.prepare('SELECT * FROM card_work_stop_targets WHERE card_id=? AND revision=?').all(cardId,revision)
+    .map(row=>({...row,target:parse(row.target),attempt:parse(row.attempt)})); }
+  claimWorkStopTarget(cardId,revision,key,target) { return this.transaction(() => {
+    if (!this.workStop(cardId,revision)) return {conflict:true};
+    const prior=this.db.prepare('SELECT * FROM card_work_stop_targets WHERE card_id=? AND revision=? AND target_key=?').get(cardId,revision,key);
+    if (prior) return digest(parse(prior.target))===digest(target) ? {target:parse(prior.target),attempt:parse(prior.attempt),deduplicated:true}:{conflict:true};
+    this.db.prepare('INSERT INTO card_work_stop_targets VALUES (?,?,?,1,?,NULL)').run(cardId,revision,key,JSON.stringify(target));
+    return {target,deduplicated:false};
+  }); }
+  recordWorkStopAttempt(cardId,revision,key,expectedVersion,attempt) { return this.transaction(() => {
+    const result=this.db.prepare('UPDATE card_work_stop_targets SET version=version+1,attempt=? WHERE card_id=? AND revision=? AND target_key=? AND version=?')
+      .run(JSON.stringify(attempt),cardId,revision,key,expectedVersion);
+    return result.changes===1 ? {recorded:true}:{conflict:true};
   }); }
   close() { this.db.close(); }
 }

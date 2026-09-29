@@ -338,5 +338,30 @@ export function createCompanionMcpServer(manager) {
   register('get_companion_preparation_receipt', true, input => manager.companionPreparation.get(input),preparationInput,true);
   register('advance_companion_engineering', false, input => manager.companionContinuation.advance(input),continuationInput,false,true);
   register('get_companion_continuation_receipt', true, input => manager.companionContinuation.get(input),continuationInput,false,true);
+  server.registerTool('get_companion_work_status', {
+    inputSchema:continuationInput,
+    description:'Read the confirmed card and its associated engineering execution without advancing it.',
+    annotations:{readOnlyHint:true,idempotentHint:true,destructiveHint:false},
+  }, async input => {
+    try {
+      if (!manager.companionControls) throw new HarnessError('COMPANION_CONTROL_UNAVAILABLE');
+      const result=await manager.companionControls.get(input);
+      return {content:[{type:'text',text:JSON.stringify(result)}],structuredContent:result};
+    } catch (error) { const result={error:publicError(error)};
+      return {isError:true,content:[{type:'text',text:JSON.stringify(result)}],structuredContent:result}; }
+  });
+  const stopInput=continuationInput.extend({control_id:z.string().uuid()}).strict();
+  server.registerTool('request_companion_work_stop', {
+    inputSchema:stopInput,
+    description:'Reconcile and precisely stop only targets of an already persisted Desktop user intent.',
+    annotations:{readOnlyHint:false,idempotentHint:true,destructiveHint:false},
+  }, async input => {
+    try {
+      if (!manager.companionControls) throw new HarnessError('COMPANION_CONTROL_UNAVAILABLE');
+      const result=await manager.companionControls.requestStop(input);
+      return {content:[{type:'text',text:JSON.stringify(result)}],structuredContent:result};
+    } catch (error) { const result={error:publicError(error)};
+      return {isError:true,content:[{type:'text',text:JSON.stringify(result)}],structuredContent:result}; }
+  });
   return server;
 }

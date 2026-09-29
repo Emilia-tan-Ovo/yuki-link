@@ -15,6 +15,8 @@ test('coordinator keeps DSH turn and typed engineering facts separate and never 
   const confirmed = store.confirm(card.cardId,1,'desktop-user-action').card;
   let turns=0, reads=0;
   const coordinator = new EngineeringCoordinator({store,config:{ycaUrl:'http://127.0.0.1:7391/companion-mcp'},
+    workStatus:async()=>({schema_version:1,observation:{state:'current'}}),
+    continuationReceipt:async()=>null,
     runTurn:async()=>{turns++;return {state:'turn-completed',exit_code:0,summary:'我完成了'};},
     receipt:async()=>{reads++;return {schema_version:1,operation_id:'operation-1',operation_state:'started',
       run_id:'run-1',run:{status:'completed',final_response:'已完成实际修改'},workflow:{current:{phase:'implementation'}},

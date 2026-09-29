@@ -68,6 +68,11 @@ export class CompanionContinuationService {
     this.subscriptions.clear(); this.store.close();
   }
   wake(raw) {
+    if (this.store.workStop(raw.card_id,raw.revision)) {
+      void this.manager.companionControls?.requestStop({...raw,
+        control_id:this.store.workStop(raw.card_id,raw.revision).control_id}).catch(()=>{});
+      return;
+    }
     void this.advance(raw).then(receipt=>{
       const runs=[receipt.initial_operation?.runtime?.run_id,
         ...this.store.continuationActions(raw.card_id,raw.revision).map(value =>
@@ -402,16 +407,19 @@ export class CompanionContinuationService {
     return work;
   }
   async advanceOne(raw) {
+    if (this.store.workStop(raw.card_id,raw.revision)) return this.get(raw);
     const before=this.locator(raw);
     this.reconcileBoundaries(before);
     this.reconcileModelActions(before);
     await this.delivery.reconcile(raw);
+    if (this.store.workStop(raw.card_id,raw.revision)) return this.get(raw);
     let receipt=await this.get(raw);
     if (before.link.binding_kind==='preparation' && !before.binding.bindings?.design
       && receipt.initial_run?.status==='completed'
       && this.preparation) {
       await this.preparation.prepare({card_store_id:raw.card_store_id,
         card_id:raw.card_id,revision:raw.revision}).catch(()=>null);
+      if (this.store.workStop(raw.card_id,raw.revision)) return this.get(raw);
       receipt=await this.get(raw);
     }
     if (receipt.design?.reason==='COMPANION_DESIGN_MIRROR_UNVERIFIED') {
@@ -422,6 +430,7 @@ export class CompanionContinuationService {
       }
     }
     if (receipt.next_action.state!=='ready' || receipt.next_action.action==='endpoint-reached') return receipt;
+    if (this.store.workStop(raw.card_id,raw.revision)) return this.get(raw);
     const context=this.locator(raw);
     if (receipt.next_action.action==='implementation') {
       const workflow=this.manager.harness.workflowHistory.current.get(context.ticket.id);
@@ -610,6 +619,7 @@ export class CompanionContinuationService {
     return receipt;
   }
   movePhase(context,phase,slot,predecessor,decorate=null,handoff=null) {
+    this.store.assertWorkAllowed?.(context.card.cardId,context.card.revision);
     const {ticket,card}=context;
     const harness=this.manager.harness;
     const current=harness.workflowHistory.current.get(ticket.id);
@@ -846,6 +856,7 @@ export class CompanionContinuationService {
       fail('COMPANION_MODEL_USAGE_CHECKPOINT_UNKNOWN');
   }
   async retryImplementation(raw,context,existing,workflow) {
+    this.store.assertWorkAllowed?.(context.card.cardId,context.card.revision);
     this.requireUsageCheckpoint(context);
     const {ticket,card}=context,harness=this.manager.harness;
     const intent=existing.intent;
@@ -874,6 +885,7 @@ export class CompanionContinuationService {
       const activePolicy=service.manager.implementationLaunchAuthority?.snapshot(ticketKey,'')?.policy;
       const observed=service.manager.harness.workflowHistory.current.get(ticket.id);
       if (current.card.content.endpoint!=='to-pr' || ticketKey!==ticket.key
+        || service.store.workStop(card.cardId,card.revision)
         || authorizationRefObserved!==authorizationRef || !activePolicy
         || activePolicy.digest!==active.digest || observed?.workflow_revision!==workflow.workflow_revision
         || identity(observed.snapshot.subject)!==subjectIdentity
@@ -894,6 +906,7 @@ export class CompanionContinuationService {
     return this.get(raw);
   }
   async startModel(raw,context,action,slot,predecessor) {
+    this.store.assertWorkAllowed?.(context.card.cardId,context.card.revision);
     const {ticket,card}=context;
     const harness=this.manager.harness;
     const workflow=harness.workflowHistory.current.get(ticket.id);
@@ -955,6 +968,7 @@ export class CompanionContinuationService {
     return this.get(raw);
   }
   async startPrimaryReview(raw,context,reviewId,commit,implementationResult) {
+    this.store.assertWorkAllowed?.(context.card.cardId,context.card.revision);
     const {card,ticket}=context,harness=this.manager.harness;
     const slot='primary-review';
     if (this.store.continuationAction(card.cardId,card.revision,slot)) return this.get(raw);
@@ -998,6 +1012,7 @@ export class CompanionContinuationService {
     const service=this;
     const authority={snapshot(ticketKey,observedReview,observedRef) {
       const current=service.locator(raw);
+      service.store.assertWorkAllowed?.(card.cardId,card.revision);
       const activePolicy=service.manager.reviewLaunchAuthority?.snapshot(ticketKey,observedReview,'')?.policy;
       const nowWorkflow=harness.workflowHistory.current.get(ticket.id);
       if (current.card.content.endpoint!=='to-pr' || ticketKey!==ticket.key
@@ -1016,6 +1031,7 @@ export class CompanionContinuationService {
     return this.get(raw);
   }
   async startFindingFix(raw,context) {
+    this.store.assertWorkAllowed?.(context.card.cardId,context.card.revision);
     const {card,ticket}=context,harness=this.manager.harness;
     const workflow=harness.workflowHistory.current.get(ticket.id);
     const open=workflow?.snapshot.findings.filter(value=>value.status==='open') ?? [];
@@ -1064,6 +1080,7 @@ export class CompanionContinuationService {
     const service=this;
     const authority={snapshot(ticketKey,action,observedRef) {
       const current=service.locator(raw);
+      service.store.assertWorkAllowed?.(card.cardId,card.revision);
       const activePolicy=service.manager.workflowAgentAuthority?.snapshot(ticketKey,action,observedRef)?.policy;
       const nowWorkflow=harness.workflowHistory.current.get(ticket.id);
       if (current.card.content.endpoint!=='to-pr' || ticketKey!==ticket.key || action!=='finding-fix'
@@ -1082,6 +1099,7 @@ export class CompanionContinuationService {
     return this.get(raw);
   }
   async startFocusedReview(raw,context,reviewId,fix,commit,fixResult) {
+    this.store.assertWorkAllowed?.(context.card.cardId,context.card.revision);
     const {card,ticket}=context,harness=this.manager.harness;
     const origin=fix.intent.origin_review_id;
     const slot=`focused-review-${hash(origin).slice(0,32)}`;
@@ -1125,6 +1143,7 @@ export class CompanionContinuationService {
     const service=this;
     const authority={snapshot(ticketKey,action,observedRef) {
       const current=service.locator(raw);
+      service.store.assertWorkAllowed?.(card.cardId,card.revision);
       const activePolicy=service.manager.workflowAgentAuthority?.snapshot(ticketKey,action,observedRef)?.policy;
       const nowWorkflow=harness.workflowHistory.current.get(ticket.id);
       if (current.card.content.endpoint!=='to-pr' || ticketKey!==ticket.key || action!=='focused-review'
@@ -1143,6 +1162,7 @@ export class CompanionContinuationService {
     return this.get(raw);
   }
   async collectAcceptance(raw,context,receipt) {
+    this.store.assertWorkAllowed?.(context.card.cardId,context.card.revision);
     const {card,ticket,link,binding}=context,harness=this.manager.harness;
     const workflow=harness.workflowHistory.current.get(ticket.id);
     if (!workflow || workflow.snapshot.phase!=='acceptance'
@@ -1252,6 +1272,7 @@ export class CompanionContinuationService {
     return this.get(raw);
   }
   async deliverPr(raw,context) {
+    this.store.assertWorkAllowed?.(context.card.cardId,context.card.revision);
     const {card,ticket}=context;
     const prior=this.store.continuationAction(card.cardId,card.revision,'pr-delivery');
     if (prior) {
@@ -1260,6 +1281,7 @@ export class CompanionContinuationService {
         const suffix=`\n\n${marker}`;
         if (!payload.body.endsWith(suffix)) fail('COMPANION_PR_INTENT_CONFLICT');
         payload.body=payload.body.slice(0,-suffix.length);
+        this.store.assertWorkAllowed?.(card.cardId,card.revision);
         await this.delivery.deliver(raw,payload);
       }
       return this.get(raw);
@@ -1301,11 +1323,13 @@ export class CompanionContinuationService {
       acceptance_ref:`workflow:${ticket.id}:${workflow.workflow_revision}`,
       title:`${ticket.key}: ${issue.title}`,
       body:`Closes ${ticket.reference}\n\nAcceptance: workflow revision ${workflow.workflow_revision}\nReviewed head: ${commit.oid}`};
+    this.store.assertWorkAllowed?.(card.cardId,card.revision);
     const delivery=await this.delivery.deliver(raw,payload);
     return {...await this.get(raw),pr_delivery:delivery};
   }
   async deliveryAuthority(raw,intent) {
     const context=this.locator(raw);
+    this.store.assertWorkAllowed?.(context.card.cardId,context.card.revision);
     if (context.card.content.endpoint!=='to-pr' || context.card.content.repository!==intent.repository)
       fail('COMPANION_PR_NOT_AUTHORIZED');
     const summary=this.manager.harness.workflowHistory.summary(context.ticket.id);
@@ -1342,6 +1366,7 @@ export class CompanionContinuationService {
     } catch { return false; }
   }
   async mirrorExisting(raw,context) {
+    this.store.assertWorkAllowed?.(context.card.cardId,context.card.revision);
     const {card,ticket}=context;
     const filename=path.join(ticket.expected_worktree,`docs/implementation-notes/${ticket.key}.md`);
     const notes=readFileSync(filename,'utf8'),digest=hash(notes);
@@ -1368,6 +1393,7 @@ export class CompanionContinuationService {
     const attempted=this.store.updateContinuationAction(card.cardId,card.revision,slot,'reserved','attempted');
     if (attempted.conflict) return;
     try {
+      this.store.assertWorkAllowed?.(card.cardId,card.revision);
       await this.issueTransport.update(card.content.repository,issue.number,body);
       if (await this.verifyExistingMirror(card.content,notes,digest))
         this.store.updateContinuationAction(card.cardId,card.revision,slot,'attempted','verified',

@@ -66,3 +66,15 @@ export async function getContinuationReceipt(url,input) {
     return result.structuredContent;
   } finally { await client.close().catch(()=>{}); }
 }
+export async function companionControlCall(url,name,input) {
+  const client=new Client({name:'yuki-link-desktop-work-control',version:'1.0.0'});
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(url)));
+    const result=await client.callTool({name,arguments:{schema_version:1,...input}});
+    if (result.isError || result.structuredContent?.schema_version!==1)
+      throw Error(result.structuredContent?.error?.code ?? 'COMPANION_CONTROL_UNAVAILABLE');
+    return result.structuredContent;
+  } finally { await client.close().catch(()=>{}); }
+}
+export const getCompanionWorkStatus=(url,input)=>companionControlCall(url,'get_companion_work_status',input);
+export const requestCompanionWorkStop=(url,input)=>companionControlCall(url,'request_companion_work_stop',input);
