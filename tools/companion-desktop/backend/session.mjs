@@ -72,8 +72,9 @@ export class BackendSession {
   }
   memoryMutation(fn) { if (this.busy) throw Error('上一条消息尚未完成，请稍后再管理记忆。'); return fn(); }
   remember(value) { return this.memoryMutation(() => this.memory.remember(value)); }
-  correctMemory(id, text) { return this.memoryMutation(() => this.memory.correct(id, text)); }
-  forgetMemory(id) { return this.memoryMutation(() => this.memory.forget(id)); }
+  correctMemory(id, text, operation) { return this.memoryMutation(() => this.memory.correct(id, text, operation)); }
+  forgetMemory(id, operation) { return this.memoryMutation(() => this.memory.forget(id, operation)); }
+  operationReceipt(operationId, payloadDigest) { return this.memory.lookupOperation(operationId, payloadDigest); }
   async submit(value, roleCard = DEFAULT_ROLE_CARD, thinking = { schemaVersion: 1, enabled: false, effort: 'high' }, scope = {}) {
     const text = normalizeUserText(value);
     if (!this.provider) throw Error('DeepSeek 凭据未配置；请在设置中配置后再发送。');
@@ -87,8 +88,8 @@ export class BackendSession {
     this.busy = true;
     const isCurrent = () => !this.closed && this.activeTurn === turn && !turn.controller.signal.aborted;
     try {
-      const runtime = this.runtimeCapabilities();
-      const result = await this.pipeline.run(text, { roleCard, thinking, runtime, memory: this.memory.recall(text), requestId, signal: turn.controller.signal, isCurrent,
+      const runtime = scope.operation ? { ...this.runtimeCapabilities(), engineeringCards: { implemented: false, dispatched: false }, voice: false } : this.runtimeCapabilities();
+      const result = await this.pipeline.run(text, { roleCard, thinking, runtime, memory: this.memory.recall(text), requestId, operation: scope.operation, signal: turn.controller.signal, isCurrent,
         onCommitted: messages => { turn.outcome = 'alreadyCommitted'; turn.turnId = messages[0].turnId; },
         onProviderFailure: () => { if (isCurrent() && this.mode === 'real') this.requestState = 'unknown'; },
         onProviderSuccess: () => { if (isCurrent() && this.mode === 'real') this.requestState = 'verified'; } });

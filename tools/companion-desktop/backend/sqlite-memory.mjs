@@ -23,6 +23,7 @@ const memoryTableSql = "CREATE TABLE companion_memories (id TEXT PRIMARY KEY, te
 const activeIndexSql = 'CREATE INDEX companion_memories_active ON companion_memories(state, updated_at, id)';
 const supersedesIndexSql = 'CREATE INDEX companion_memories_supersedes ON companion_memories(supersedes_id)';
 const contextTableSql = 'CREATE TABLE companion_context (singleton INTEGER PRIMARY KEY CHECK(singleton=1), recent_context_after_rowid INTEGER NOT NULL CHECK(recent_context_after_rowid>=0))';
+const receiptTableSql = "CREATE TABLE companion_operations (operation_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('submit','remember','correct','forget')), result_id TEXT NOT NULL, turn_id TEXT, committed_at TEXT NOT NULL)";
 
 const metadataKeys = new Set(['source', 'requestedThinking', 'requestModel', 'responseModel', 'fullResponseMs', 'finishReason', 'reasoningTruncated']);
 function displayMetadata(value) {
@@ -47,7 +48,7 @@ export class SqliteMemoryStore {
     try {
       this.db.exec('PRAGMA foreign_keys = ON');
       const version = this.db.prepare('PRAGMA user_version').get().user_version;
-      if (version > 2) throw Error('对话数据库版本过高，当前版本无法读取。');
+      if (version > 3) throw Error('对话数据库版本过高，当前版本无法读取。');
       const exists = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'").get();
       const columns = exists ? this.db.prepare('PRAGMA table_info(messages)').all().map(row => row.name) : [];
       const base = ['id', 'role', 'text', 'created_at', 'turn_id'];
@@ -56,7 +57,7 @@ export class SqliteMemoryStore {
       if (version === 0 && columns.some(name => ['reasoning_content', 'response_metadata'].includes(name))) throw Error('对话数据库版本与结构不一致。');
       const memoryExists = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='companion_memories'").get();
       const contextExists = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='companion_context'").get();
-      if ((version < 2 && (memoryExists || contextExists)) || (version === 2 && (!memoryExists || !contextExists || !exists))) throw Error('对话数据库版本与结构不一致。');
+      if ((version < 2 && (memoryExists || contextExists)) || (version >= 2 && (!memoryExists || !contextExists || !exists))) throw Error('对话数据库版本与结构不一致。');
       if (version === 0) {
         this.db.exec('BEGIN');
         try {
@@ -71,14 +72,35 @@ export class SqliteMemoryStore {
           this.db.exec(`${memoryTableSql}; ${activeIndexSql}; ${supersedesIndexSql}; ${contextTableSql}; INSERT INTO companion_context VALUES (1,0); PRAGMA user_version = 2; COMMIT`);
         } catch (error) { this.db.exec('ROLLBACK'); throw error; }
       } else {
-        const expectedSql = [memoryTableSql, activeIndexSql, supersedesIndexSql, contextTableSql];
+        const expectedSql = [memoryTableSql, activeIndexSql, supersedesIndexSql, ...(version === 2 ? [contextTableSql] : [])];
         const actualSql = this.db.prepare("SELECT sql FROM sqlite_master WHERE name IN ('companion_memories','companion_memories_active','companion_memories_supersedes','companion_context')").all().map(row => row.sql);
-        if (expectedSql.some(sql => !actualSql.includes(sql)) || actualSql.length !== expectedSql.length || !this.db.prepare('SELECT 1 FROM companion_context WHERE singleton=1').get() || this.db.prepare('SELECT COUNT(*) AS n FROM companion_context').get().n !== 1) throw Error('对话数据库版本与结构不一致。');
+        if (expectedSql.some(sql => !actualSql.includes(sql)) || actualSql.length !== 4 || !this.db.prepare('SELECT 1 FROM companion_context WHERE singleton=1').get() || this.db.prepare('SELECT COUNT(*) AS n FROM companion_context').get().n !== 1) throw Error('对话数据库版本与结构不一致。');
+      }
+      if (version < 3) {
+        this.db.exec('BEGIN');
+        try {
+          this.db.exec(`ALTER TABLE companion_context ADD COLUMN memory_revision INTEGER NOT NULL DEFAULT 0 CHECK(memory_revision>=0); ${receiptTableSql}; PRAGMA user_version = 3; COMMIT`);
+        } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      } else {
+        const columns = this.db.prepare('PRAGMA table_info(companion_context)').all().map(row => row.name);
+        const receipt = this.db.prepare("SELECT sql FROM sqlite_master WHERE name='companion_operations'").get();
+        if (!columns.includes('memory_revision') || receipt?.sql !== receiptTableSql) throw Error('对话数据库版本与结构不一致。');
       }
     } catch (error) { this.db.close(); throw error; }
   }
   history() { return this.db.prepare('SELECT role, text FROM messages WHERE rowid > (SELECT recent_context_after_rowid FROM companion_context WHERE singleton=1) ORDER BY rowid').all().map(row => ({ role: row.role, text: row.text })); }
   listMemories() { return this.db.prepare("SELECT id,text,source_kind AS sourceKind,source_ref AS sourceRef,created_at AS createdAt,updated_at AS updatedAt FROM companion_memories WHERE state='active' ORDER BY updated_at DESC,id").all(); }
+  memoryRevision() { return this.db.prepare('SELECT memory_revision FROM companion_context WHERE singleton=1').get().memory_revision; }
+  lookupOperation(operationId, payloadDigest) {
+    const row = this.db.prepare('SELECT operation_id AS operationId,payload_digest AS payloadDigest,kind,result_id AS resultId,turn_id AS turnId,committed_at AS committedAt FROM companion_operations WHERE operation_id=?').get(operationId);
+    if (row && row.payloadDigest !== payloadDigest) throw Error('Operation identity conflict');
+    return row ?? null;
+  }
+  insertReceipt(operation, kind, resultId, turnId = null) {
+    if (!operation) return;
+    if (!/^[a-f0-9-]{36}$/iu.test(operation.operationId) || !/^[a-f0-9]{64}$/u.test(operation.payloadDigest)) throw Error('Operation identity invalid');
+    this.db.prepare('INSERT INTO companion_operations VALUES (?,?,?,?,?,?)').run(operation.operationId, operation.payloadDigest, kind, resultId, turnId, new Date().toISOString());
+  }
   recall(query) {
     const queryTerms = terms(query);
     if (!queryTerms.size) return { schemaVersion: 1, entries: [] };
@@ -95,16 +117,20 @@ export class SqliteMemoryStore {
     return { schemaVersion: 1, entries };
   }
   transaction(fn) { this.db.exec('BEGIN'); try { const result = fn(); this.db.exec('COMMIT'); return result; } catch (error) { this.db.exec('ROLLBACK'); throw error; } }
-  remember({ text, sourceKind, sourceRef } = {}) {
+  remember({ text, sourceKind, sourceRef, operation } = {}) {
     const clean = memoryText(text);
     if (!['explicit_chat','selected_user_message'].includes(sourceKind)) throw Error('陪伴记忆来源无效。');
     if (sourceKind === 'selected_user_message' && (typeof sourceRef !== 'string' || !this.db.prepare("SELECT 1 FROM messages WHERE id=? AND role='user'").get(sourceRef))) throw Error('请选择已保存的用户消息。');
     const ref = sourceKind === 'explicit_chat' ? randomUUID() : sourceRef;
     const id = randomUUID(), now = new Date().toISOString();
-    this.transaction(() => this.db.prepare("INSERT INTO companion_memories (id,text,topic,state,source_kind,source_ref,created_at,updated_at,supersedes_id) VALUES (?,?,NULL,'active',?,?,?,?,NULL)").run(id,clean,sourceKind,ref,now,now));
+    this.transaction(() => {
+      this.db.prepare("INSERT INTO companion_memories (id,text,topic,state,source_kind,source_ref,created_at,updated_at,supersedes_id) VALUES (?,?,NULL,'active',?,?,?,?,NULL)").run(id,clean,sourceKind,ref,now,now);
+      this.db.prepare('UPDATE companion_context SET memory_revision=memory_revision+1 WHERE singleton=1').run();
+      this.insertReceipt(operation, 'remember', id);
+    });
     return { id, text: clean, sourceKind, sourceRef: ref, createdAt: now, updatedAt: now };
   }
-  change(id, text) {
+  change(id, text, operation) {
     if (typeof id !== 'string') throw Error('请选择有效的陪伴记忆。');
     const clean = text === null ? null : memoryText(text);
     return this.transaction(() => {
@@ -113,18 +139,20 @@ export class SqliteMemoryStore {
       const now = new Date().toISOString(), nextId = clean === null ? null : randomUUID();
       this.db.prepare('UPDATE companion_memories SET text=NULL,topic=NULL,state=?,updated_at=? WHERE id=?').run(clean === null ? 'forgotten' : 'superseded',now,id);
       if (nextId) this.db.prepare("INSERT INTO companion_memories (id,text,topic,state,source_kind,source_ref,created_at,updated_at,supersedes_id) VALUES (?,?,NULL,'active','explicit_chat',?,?,?,?)").run(nextId,clean,randomUUID(),now,now,id);
-      this.db.prepare('UPDATE companion_context SET recent_context_after_rowid=max(recent_context_after_rowid,(SELECT coalesce(max(rowid),0) FROM messages)) WHERE singleton=1').run();
+      this.db.prepare('UPDATE companion_context SET recent_context_after_rowid=max(recent_context_after_rowid,(SELECT coalesce(max(rowid),0) FROM messages)),memory_revision=memory_revision+1 WHERE singleton=1').run();
+      this.insertReceipt(operation, clean === null ? 'forget' : 'correct', nextId ?? id);
       return nextId ? { id: nextId, text: clean, sourceKind: 'explicit_chat', updatedAt: now, supersedesId: id } : { id, state: 'forgotten' };
     });
   }
-  correct(id, text) { return this.change(id, text); }
-  forget(id) { return this.change(id, null); }
+  correct(id, text, operation) { return this.change(id, text, operation); }
+  forget(id, operation) { return this.change(id, null, operation); }
   displayHistory() { return this.db.prepare('SELECT id, role, text, created_at AS createdAt, turn_id AS turnId, reasoning_content AS reasoningContent, response_metadata AS responseMetadata FROM messages ORDER BY rowid').all().map(row => ({ id: row.id, role: row.role, text: row.text, createdAt: row.createdAt, turnId: row.turnId, reasoningContent: row.reasoningContent, metadata: displayMetadata(row.responseMetadata) })); }
-  appendTurn(rows) {
+  appendTurn(rows, operation) {
     this.db.exec('BEGIN');
     try {
       const insert = this.db.prepare('INSERT INTO messages (id,role,text,created_at,turn_id,reasoning_content,response_metadata) VALUES (?,?,?,?,?,?,?)');
       for (const row of rows) insert.run(row.id, row.role, row.text, row.createdAt, row.turnId, row.role === 'assistant' ? row.reasoningContent ?? null : null, row.role === 'assistant' && row.metadata ? JSON.stringify(row.metadata) : null);
+      if (operation) this.insertReceipt(operation, 'submit', rows[1].id, rows[0].turnId);
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }

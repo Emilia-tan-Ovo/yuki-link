@@ -10,7 +10,7 @@ export class LocalPersistenceError extends Error {
 
 export class DialoguePipeline {
   constructor({ memory, dialogue }) { this.memory = memory; this.dialogue = dialogue; }
-  async run(text, { roleCard, thinking, runtime, memory = { schemaVersion: 1, entries: [] }, requestId, signal = new AbortController().signal, isCurrent = () => true, onCommitted = () => {}, onProviderFailure = () => {}, onProviderSuccess = () => {} }) {
+  async run(text, { roleCard, thinking, runtime, memory = { schemaVersion: 1, entries: [] }, requestId, operation, signal = new AbortController().signal, isCurrent = () => true, onCommitted = () => {}, onProviderFailure = () => {}, onProviderSuccess = () => {} }) {
     const checkCurrent = () => { if (signal.aborted || !isCurrent()) throw new TurnCancelledError(); };
     checkCurrent();
     const turnId = randomUUID();
@@ -49,7 +49,7 @@ export class DialoguePipeline {
     const assistant = { id: randomUUID(), role: 'assistant', text: reply.content.trim(), createdAt: new Date().toISOString(), turnId, reasoningContent, metadata };
     // No await between the owner check and the synchronous SQLite transaction.
     checkCurrent();
-    try { this.memory.appendTurn([user, assistant]); }
+    try { this.memory.appendTurn([user, assistant], operation); }
     catch { throw new LocalPersistenceError(); }
     onCommitted([user, assistant]);
     return { text: assistant.text, messages: [user, assistant] };

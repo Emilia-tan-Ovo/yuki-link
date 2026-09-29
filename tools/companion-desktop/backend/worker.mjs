@@ -33,7 +33,37 @@ export function createWorkerHandler({ post, createVoice, createSession = data =>
     const owner = session;
     const identity = { id: data.requestId ?? data.id, requestId: data.requestId ?? data.id, generation, origin: data.origin, voiceScope: data.voiceScope };
   try {
-    if (data?.type === 'submit' && typeof data.text === 'string' && validRequestId(identity.requestId)) {
+    if (data?.type === 'wechat') {
+      const reply = value => { if (session === owner) post({ type: 'wechat-result', id: data.id, ...value }); };
+      const action = data.action;
+      if (action === 'lookup') {
+        const receipt = owner.operationReceipt(data.operationId, data.payloadDigest);
+        reply({ outcome: 'committed', receipt, memoryRevision: owner.memory.memoryRevision() });
+      } else if (action === 'cancel') {
+        const cancelled = owner.cancel(data.requestId);
+        reply({ outcome: cancelled.outcome === 'cancelled' ? 'cancelled' : cancelled.outcome === 'alreadyCommitted' ? 'committed' : 'unknown', receipt: owner.operationReceipt(data.operationId, data.payloadDigest) });
+      } else if (action === 'list') {
+        reply({ outcome: 'committed', entries: owner.listMemories(), memoryRevision: owner.memory.memoryRevision() });
+      } else if (!['submit','remember','correct','forget'].includes(action) || !validRequestId(data.requestId) || !/^[a-f0-9]{64}$/u.test(data.payloadDigest ?? '') || data.operationId !== data.requestId) {
+        reply({ outcome: 'rejected', reason: 'invalid_input' });
+      } else {
+        const operation = { operationId: data.operationId, payloadDigest: data.payloadDigest };
+        const existing = owner.operationReceipt(operation.operationId, operation.payloadDigest);
+        if (existing) { reply({ outcome: 'committed', receipt: existing, memoryRevision: owner.memory.memoryRevision() }); return; }
+        if (owner.busy) { reply({ outcome: 'rejected', reason: 'busy' }); return; }
+        if (action === 'submit') {
+          if (!owner.provider) { reply({ outcome: 'rejected', reason: 'unconfigured' }); return; }
+          const result = await owner.submit(data.text, data.roleCard, data.thinking, { requestId: data.requestId, operation });
+          reply({ outcome: 'committed', finalText: result.text, turnId: result.messages[0].turnId, messageId: result.messages[1].id, memoryRevision: owner.memory.memoryRevision() });
+        } else {
+          let entry;
+          if (action === 'remember') entry = owner.remember({ text: data.text, sourceKind: 'explicit_chat', operation });
+          if (action === 'correct') entry = owner.correctMemory(data.targetId, data.text, operation);
+          if (action === 'forget') entry = owner.forgetMemory(data.targetId, operation);
+          reply({ outcome: 'committed', entryId: entry.id, finalText: action === 'remember' ? '已记住。' : action === 'correct' ? '已更正。' : '已遗忘。', memoryRevision: owner.memory.memoryRevision() });
+        }
+      }
+    } else if (data?.type === 'submit' && typeof data.text === 'string' && validRequestId(identity.requestId)) {
       voice.bindSubmit(data);
       const result = await owner.submit(data.text, data.roleCard, data.thinking, identity);
       if (session === owner) post({ type: 'reply', ...identity, ...result });
@@ -68,7 +98,15 @@ export function createWorkerHandler({ post, createVoice, createSession = data =>
       }
     }
   } catch (error) {
-    if (session !== owner || error instanceof TurnCancelledError) return;
+    if (session !== owner) return;
+    if (data?.type === 'wechat') {
+      let receipt = null;
+      try { if (validRequestId(data.operationId) && /^[a-f0-9]{64}$/u.test(data.payloadDigest ?? '')) receipt = owner.operationReceipt(data.operationId, data.payloadDigest); } catch { /* conflicting identity is a rejection */ }
+      const outcome = receipt ? 'committed' : error instanceof TurnCancelledError ? 'cancelled' : /^(上一条|DeepSeek|对话输入|陪伴记忆|请选择|这条|Operation identity)/u.test(error.message ?? '') ? 'rejected' : 'unknown';
+      post({ type: 'wechat-result', id: data.id, outcome, reason: outcome === 'rejected' ? /上一条/u.test(error.message) ? 'busy' : /DeepSeek/u.test(error.message) ? 'unconfigured' : /Operation identity/u.test(error.message) ? 'identity_conflict' : 'invalid_input' : undefined, receipt });
+      return;
+    }
+    if (error instanceof TurnCancelledError) return;
     // No command bodies or credentials in diagnostics or UI.
     const known = error instanceof LocalPersistenceError || error instanceof Error && /^(请输入|DeepSeek|文字服务|上一条|角色卡|记忆输入|对话输入|陪伴记忆|请选择|这条)/.test(error.message);
     post({ type: data?.type === 'memory' ? 'memory-error' : data?.type === 'engineering-card' ? 'engineering-card-error' : 'error', ...identity, status: owner.status(), message: data?.type === 'engineering-card' ? '工程卡片操作未完成，请检查输入或稍后重试。' : known ? error.message : data?.type === 'memory' ? '陪伴记忆未能保存，请稍后重试。' : '这次文字交流没有完成，请检查网络或稍后重试。' });
