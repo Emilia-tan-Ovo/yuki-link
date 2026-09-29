@@ -501,7 +501,7 @@ test('real MCP HTTP clients reconnect to durable runs; host/origin checks and ex
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 'openai-mcp-discover', method: 'server/discover', params: {} }),
   });
-  assert.equal(discover.status, 200);
+  assert.equal(discover.status, 400);
   assert.deepEqual(await discover.json(), {
     jsonrpc: '2.0', id: 'openai-mcp-discover', error: { code: -32601, message: 'Method not found' },
   });
