@@ -33,11 +33,11 @@ export class Events {
           const e = JSON.parse(line);
           if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(e.operation_id ?? '')
             && ['requested', 'succeeded', 'failed', 'unknown'].includes(e.outcome)
-            && /^[a-z][a-z0-9-]{1,39}$/.test(e.action ?? '') && ['yca', 'tunnel', 'all'].includes(e.target)) {
+            && /^[a-z][a-z0-9-]{1,39}$/.test(e.action ?? '') && ['yca', 'tunnel', 'windowsMcp', 'windowsTunnel', 'all'].includes(e.target)) {
             return [{ at: new Date(e.at).toISOString(), operation_id: e.operation_id, action: e.action, target: e.target,
               outcome: e.outcome, code: /^[A-Z][A-Z0-9_]{1,79}$/.test(e.code ?? '') ? e.code : null }];
           }
-          if (!Number.isFinite(Date.parse(e.at)) || !['yca', 'tunnel', 'supervisor', 'all'].includes(e.component)
+          if (!Number.isFinite(Date.parse(e.at)) || !['yca', 'tunnel', 'windowsMcp', 'windowsTunnel', 'supervisor', 'all'].includes(e.component)
             || !['process-exit', 'native-connect', 'ready', 'check-failed', 'started', 'stopped', 'start', 'stop', 'restart', 'retry', 'recovery-attempt', 'recovery-paused', 'recovery-failed', 'long-check-gap',
               'deployment-checked', 'deployment-check-failed', 'deployment-prepared', 'update-stopped-old', 'deployment-switched', 'deployment-rolled-back', 'deployment-rollback-failed', 'deployment-update-failed',
               'startup-reconciled', 'startup-reconciliation-failed'].includes(e.action)) return [];
@@ -55,7 +55,7 @@ export class Events {
   }
   addOperation(operationId, action, target, outcome, code = null) {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(operationId ?? '')
-      || !/^[a-z][a-z0-9-]{1,39}$/.test(action ?? '') || !['yca', 'tunnel', 'all'].includes(target)
+      || !/^[a-z][a-z0-9-]{1,39}$/.test(action ?? '') || !['yca', 'tunnel', 'windowsMcp', 'windowsTunnel', 'all'].includes(target)
       || !['requested', 'succeeded', 'failed', 'unknown'].includes(outcome)) throw fail('INVALID_OPERATION');
     const entry = { at: new Date().toISOString(), operation_id: operationId, action, target, outcome,
       code: /^[A-Z][A-Z0-9_]{1,79}$/.test(code ?? '') ? code : null };

@@ -1,14 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { fail, saveJson, readJson, sleep } from './common.js';
 
-const ids = ['yca', 'tunnel'];
-const defaults = () => ({ version: 2, autoRecovery: true, confirmedTools: null, units: Object.fromEntries(ids.map(id => [id,
-  { desired: 'stopped', attempts: [], nextAt: null, blocked: null, stableSince: null, lastFailure: null, ownership: {} }])) });
-const recoverable = new Set(['STARTUP_TIMEOUT', 'HEALTH_FAILED', 'YCA_NOT_READY', 'MCP_NOT_READY',
-  'SPAWN_FAILED', 'NATIVE_CONNECT_FAILED', 'ACTIVITY_UNKNOWN', 'ACTIVITY_UNKNOWN_OR_BUSY', 'YCA_RECOVERY_FAILED']);
+const ids = ['yca', 'tunnel', 'windowsMcp', 'windowsTunnel'];
+const tunnelIds = new Set(['tunnel', 'windowsTunnel']);
+const dependencies = { tunnel: 'yca', windowsTunnel: 'windowsMcp' };
+const dependencyCodes = { tunnel: ['YCA_NOT_READY', 'YCA_RECOVERY_FAILED'], windowsTunnel: ['WINDOWS_MCP_NOT_READY', 'WINDOWS_MCP_RECOVERY_FAILED'] };
+const freshUnit = () => ({ desired: 'stopped', attempts: [], nextAt: null, blocked: null, stableSince: null, lastFailure: null, ownership: {} });
+const defaults = () => ({ version: 3, autoRecovery: true, confirmedTools: null, units: Object.fromEntries(ids.map(id => [id, freshUnit()])) });
+const recoverable = new Set(['STARTUP_TIMEOUT', 'HEALTH_FAILED', 'YCA_NOT_READY', 'MCP_NOT_READY', 'WINDOWS_MCP_NOT_READY',
+  'SPAWN_FAILED', 'NATIVE_CONNECT_FAILED', 'ACTIVITY_UNKNOWN', 'ACTIVITY_UNKNOWN_OR_BUSY', 'YCA_RECOVERY_FAILED', 'WINDOWS_MCP_RECOVERY_FAILED']);
 const retryDelays = [2000, 5000, 10_000, 30_000, 30_000];
 const retryBudget = retryDelays.length;
-const permanent = new Set(['VERSION_UNSUPPORTED', 'PATH_MISSING', 'PORT_CONFLICT', 'MULTIPLE_INSTANCES', 'LEGACY_RUNTIME_LOCK', 'ORPHAN_TASK_REVIEW', 'RUNTIME_LOCKED', 'OBSERVED_UNOWNED', 'TOPOLOGY_CHANGED', 'PROFILE_REVIEW_REQUIRED', 'PID_CONFLICT', 'NATIVE_RUNTIME_CONFLICT', 'STATE_UNREADABLE', 'ACTIVITY_UNKNOWN', 'AUTH_REQUIRED', 'STOP_TIMEOUT', 'OWNERSHIP_CHANGED']);
+const permanent = new Set(['VERSION_UNSUPPORTED', 'PATH_MISSING', 'PORT_CONFLICT', 'MULTIPLE_INSTANCES', 'LEGACY_RUNTIME_LOCK', 'ORPHAN_TASK_REVIEW', 'RUNTIME_LOCKED', 'OBSERVED_UNOWNED', 'TOPOLOGY_CHANGED', 'PROFILE_REVIEW_REQUIRED', 'PID_CONFLICT', 'NATIVE_RUNTIME_CONFLICT', 'STATE_UNREADABLE', 'ACTIVITY_UNKNOWN', 'AUTH_REQUIRED', 'STOP_TIMEOUT', 'OWNERSHIP_CHANGED', 'PROFILE_CHANGED', 'MCP_RESPONSE_INVALID', 'WINDOWS_MCP_PYTHON_PATH_MISSING']);
 for (const code of ['CODEX_EXECUTABLE_UNAVAILABLE', 'NODE_PATH_MISSING', 'YCA_ENTRY_PATH_MISSING', 'PWSH_PATH_MISSING']) permanent.add(code);
 const unknownOperation = error => Object.assign(error, { operationOutcome: 'unknown' });
 const validActivity = activity => Boolean(activity && ['codex', 'computer', 'requests'].every(key => Number.isSafeInteger(activity[key]) && activity[key] >= 0));
@@ -33,12 +36,15 @@ export class Supervisor {
   constructor({ stateFile, events, createUnits, clock = Date.now, observeOnly = false, startupMs = 30_000, intervalMs = 5000 }) {
     Object.assign(this, { stateFile, events, clock, observeOnly, startupMs, intervalMs });
     this.state = readJson(stateFile, defaults());
-    if (![1, 2].includes(this.state.version) || ids.some(id => !this.state.units?.[id] || !Array.isArray(this.state.units[id].attempts))) throw fail('STATE_INVALID');
-    // v1 deliberately disabled recovery during the first acceptance period. The
-    // new policy enables it once on upgrade; later explicit user choices persist.
-    if (this.state.version === 1 && !observeOnly) {
-      this.state.version = 2; this.state.autoRecovery = true; this.persist();
+    if (![1, 2, 3].includes(this.state.version) || !this.state.units) throw fail('STATE_INVALID');
+    const loadedVersion = this.state.version;
+    if (loadedVersion < 3) {
+      for (const id of ids) this.state.units[id] ??= freshUnit();
+      if (loadedVersion === 1 && !observeOnly) this.state.autoRecovery = true;
+      this.state.version = 3;
+      if (!observeOnly) this.persist();
     }
+    if (ids.some(id => !this.state.units?.[id] || !Array.isArray(this.state.units[id].attempts))) throw fail('STATE_INVALID');
     this.units = createUnits(this.state, () => this.persist()); this.observations = {}; this.tail = Promise.resolve();
     this.lastTick = clock(); this.busy = null; this.codex = { cli: '未检查', account: '未检查', inference: '未在此验证' };
     this.deploymentLatest = null;
@@ -54,12 +60,13 @@ export class Supervisor {
   }
   async observe() {
     await Promise.all(ids.map(async id => {
-      try { this.observations[id] = { ...await this.units[id].observe(), at: this.clock(), source: id === 'yca' ? 'OS + YCA loopback' : 'native metadata + OS + loopback' }; }
+      try { this.observations[id] = { ...await this.units[id].observe(), at: this.clock(), source: id === 'yca' ? 'OS + YCA loopback' : id === 'windowsMcp' ? 'OS + startup MCP probe' : 'native metadata + OS + loopback' }; }
       catch (e) { this.observations[id] = { running: null, healthy: false, code: e.code ?? 'OBSERVATION_FAILED', at: this.clock(), source: 'local observation failed' }; }
     }));
     let reconciled = false;
     if (recoveredYcaStartup(this.state.units.yca, this.observations.yca)) { this.state.units.yca.blocked = null; reconciled = true; }
-    if (recoveredTunnelStartup(this.state.units.tunnel, this.observations.tunnel)) { this.state.units.tunnel.blocked = null; reconciled = true; }
+    for (const id of ['tunnel', 'windowsTunnel']) if (recoveredTunnelStartup(this.state.units[id], this.observations[id])) { this.state.units[id].blocked = null; reconciled = true; }
+    if (recoveredTunnelStartup(this.state.units.windowsMcp, this.observations.windowsMcp)) { this.state.units.windowsMcp.blocked = null; reconciled = true; }
     if (reconciled) this.persist();
   }
   snapshot() {
@@ -70,7 +77,7 @@ export class Supervisor {
       const o = this.observations[id] ?? {}; const s = this.state.units[id];
       const stale = !o.at || at - o.at > this.intervalMs * 3;
       let status = stale || o.running === null || o.running === undefined ? '未知' : !o.running ? (s.desired === 'running' ? '失败' : '已停止')
-        : o.healthy ? (id === 'tunnel' && (o.controlPlane?.state !== 'healthy' || o.communication?.state !== 'recent-local-evidence') ? '降级' : '可用') : '降级';
+        : o.healthy ? (tunnelIds.has(id) && (o.controlPlane?.state !== 'healthy' || o.communication?.state !== 'recent-local-evidence') ? '降级' : '可用') : '降级';
       if (s.nextAt && !stale) status = '恢复中';
       if (this.busy?.endsWith('start') && this.busy.startsWith(id)) status = '启动中';
       const value = { ...o, status, stale, desired: s.desired, blocked: s.blocked, nextAt: s.nextAt,
@@ -270,7 +277,8 @@ export class Supervisor {
   async startOne(id, options = {}) {
     const s = this.state.units[id]; this.busy = `${id}:start`;
     try {
-      if (id === 'tunnel' && !this.observations.yca?.healthy) throw fail('YCA_NOT_READY');
+      const dependency = dependencies[id];
+      if (dependency && !this.observations[dependency]?.healthy) throw fail(dependencyCodes[id][0]);
       await this.units[id].start(options);
       const startedInstance = id === 'yca' ? this.state.units.yca.ownership.instance : null;
       const deadline = this.clock() + this.startupMs;
@@ -315,7 +323,7 @@ export class Supervisor {
       let failure = null;
       try {
         if (stopping) {
-          await this.guardImpact(confirm);
+          if (selected.some(key => ['yca', 'tunnel'].includes(key))) await this.guardImpact(confirm);
           if (action === 'restart' && selected.includes('yca')) restartCommit = this.currentYcaCommit();
           const expectedYca = structuredClone(this.observations.yca);
           for (const key of [...selected].reverse()) { this.busy = `${key}:stop`; await this.units[key].stop(confirm, key === 'yca' ? expectedYca : null); this.events.add(key, 'stopped'); }
@@ -373,10 +381,11 @@ export class Supervisor {
     await this.observe();
     if (this.observeOnly) return this.snapshot();
     for (const id of ids) {
-      if (id === 'tunnel' && !this.state.autoRecovery) continue;
+      if (tunnelIds.has(id) && !this.state.autoRecovery) continue;
       const state = this.state.units[id], observation = this.observations[id];
+      const dependency = dependencies[id];
       if (state.desired !== 'running' || observation?.running !== false || observation.code
-          || id === 'tunnel' && !this.observations.yca?.healthy) continue;
+          || dependency && !this.observations[dependency]?.healthy) continue;
       try {
         await this.startOne(id, { recovery: true, commit: id === 'yca' ? state.ownership?.deployment?.commit ?? null : null });
         this.events.add(id, 'startup-reconciled');
@@ -398,11 +407,13 @@ export class Supervisor {
     for (const id of ids) {
       const s = this.state.units[id], o = this.observations[id];
       if (s.desired !== 'running') continue;
-      if (id === 'tunnel' && !this.observations.yca?.healthy && !permanent.has(o.code)) {
+      const dependency = dependencies[id];
+      if (dependency && !this.observations[dependency]?.healthy && !permanent.has(o.code)) {
         s.stableSince = null;
-        s.blocked = this.state.units.yca.blocked === 'RECOVERY_BUDGET_EXHAUSTED' ? 'YCA_RECOVERY_FAILED' : 'YCA_NOT_READY';
-        s.lastFailure = this.observations.yca?.code ?? 'YCA_NOT_READY';
-        s.nextAt = s.blocked === 'YCA_NOT_READY' ? this.state.units.yca.nextAt ?? at + this.intervalMs : null;
+        const [notReady, recoveryFailed] = dependencyCodes[id];
+        s.blocked = this.state.units[dependency].blocked === 'RECOVERY_BUDGET_EXHAUSTED' ? recoveryFailed : notReady;
+        s.lastFailure = this.observations[dependency]?.code ?? notReady;
+        s.nextAt = s.blocked === notReady ? this.state.units[dependency].nextAt ?? at + this.intervalMs : null;
         continue;
       }
       if (o.healthy) {
@@ -417,11 +428,14 @@ export class Supervisor {
       if (o.code && (permanent.has(o.code) && o.code !== 'ACTIVITY_UNKNOWN' || o.code.startsWith('DEPLOYMENT_'))) {
         s.blocked = o.code; s.lastFailure = o.code; s.nextAt = null; continue;
       }
-      if (id === 'tunnel' && s.blocked === 'YCA_NOT_READY') { s.blocked = null; s.nextAt = o.running ? null : at; }
-      if (id === 'tunnel' && s.blocked === 'YCA_RECOVERY_FAILED') { s.blocked = null; s.nextAt = null; }
+      if (dependencies[id] && dependencyCodes[id].includes(s.blocked)) {
+        const [notReady, recoveryFailed] = dependencyCodes[id];
+        if (s.blocked === notReady) { s.blocked = null; s.nextAt = o.running ? null : at; }
+        else if (s.blocked === recoveryFailed) { s.blocked = null; s.nextAt = null; }
+      }
       // A live tunnel owns its network retries. Never restart it for a remote
       // timeout or MCP readiness loss while it retains verified ownership.
-      if (o.running === null || o.running === undefined || o.running && !o.owned || id === 'tunnel' && o.running) continue;
+      if (o.running === null || o.running === undefined || o.running && !o.owned || tunnelIds.has(id) && o.running) continue;
       if (o.running) {
         s.failures = (s.failures ?? 0) + 1;
         if (s.failures < 3) continue;

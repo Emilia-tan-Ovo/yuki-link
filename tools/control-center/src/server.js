@@ -41,7 +41,7 @@ export function createServer(supervisor, { codexCheck, startup, deploymentCheck,
       let result;
       if (req.url === '/api/action') {
         if (!operationId(body.operation_id) || Object.keys(body).some(k => !['operation_id', 'id', 'action', 'confirm'].includes(k))
-          || !['yca', 'tunnel', 'all'].includes(body.id) || !['start', 'stop', 'restart', 'retry'].includes(body.action)
+          || !['yca', 'tunnel', 'windowsMcp', 'windowsTunnel', 'all'].includes(body.id) || !['start', 'stop', 'restart', 'retry'].includes(body.action)
           || (body.confirm !== undefined && typeof body.confirm !== 'boolean')) return json(400, { code: 'INVALID_ACTION' });
         const operation = { operationId: body.operation_id, action: body.action === 'restart' ? 'restart-current' : body.action, target: body.id };
         result = await supervisor.action(body.id, body.action, body.confirm === true, operation);

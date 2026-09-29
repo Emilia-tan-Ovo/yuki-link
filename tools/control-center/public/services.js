@@ -29,8 +29,8 @@ function render(next) {
   $('#overall').textContent = state.observeOnly ? 'observeOnly · 日常动作不可用' : state.busy ? 'Supervisor 正在执行操作…' : '本地状态 · 以当前观察证据为准';
   $('#checked').textContent = 'snapshot observed_at：' + (state.at ? new Date(state.at).toLocaleString() : 'unknown');
   $('#auto-recovery').textContent = `自动恢复：${value(state.autoRecovery)}（只读；打开或刷新本页不会更改）`;
-  const yca = state.units.yca, tunnel = state.units.tunnel;
-  for (const [id, observation] of Object.entries({ yca, tunnel })) {
+  const yca = state.units.yca, tunnel = state.units.tunnel, windowsMcp = state.units.windowsMcp, windowsTunnel = state.units.windowsTunnel;
+  for (const [id, observation] of Object.entries({ yca, tunnel, windowsMcp, windowsTunnel })) {
     const card = $('#' + id);
     card.querySelector('.status').textContent = observation.status ?? '未知';
     card.querySelector('.status').dataset.status = observation.status ?? '未知';
@@ -49,6 +49,7 @@ async function refresh() {
   render(await response.json());
 }
 function needsImpactConfirmation(target) {
+  if (!['yca', 'tunnel', 'all'].includes(target)) return false;
   if (target === 'tunnel' && state.units.yca.running === false) return false;
   const current = state.units.yca;
   return current.running !== false && (!current.activity || Object.values(current.activity).some(count => count > 0));
