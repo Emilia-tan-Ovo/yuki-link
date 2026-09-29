@@ -8,7 +8,7 @@ import { SqliteMemoryStore } from '../backend/sqlite-memory.mjs';
 
 async function fixture(t) { const dir = await mkdtemp(join(tmpdir(), 'yuki-sqlite-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
 
-test('v0 migrates in place, keeps old rows, and reopens v2 idempotently', async t => {
+test('v0 migrates in place, keeps old rows, and reopens v3 idempotently', async t => {
   const dir = await fixture(t);
   const db = new DatabaseSync(join(dir, 'conversation.sqlite'));
   db.exec("CREATE TABLE messages (id TEXT PRIMARY KEY, role TEXT NOT NULL CHECK(role IN ('user','assistant')), text TEXT NOT NULL, created_at TEXT NOT NULL, turn_id TEXT NOT NULL)");
@@ -22,7 +22,7 @@ test('v0 migrates in place, keeps old rows, and reopens v2 idempotently', async 
   store.close();
   store = new SqliteMemoryStore(dir);
   assert.equal(store.displayHistory()[1].reasoningContent, 'MARKER');
-  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 3);
   store.close();
 });
 
@@ -30,10 +30,10 @@ test('unknown future schema fails closed without changing data', async t => {
   const dir = await fixture(t);
   const store = new SqliteMemoryStore(dir); store.close();
   const db = new DatabaseSync(join(dir, 'conversation.sqlite'));
-  db.exec('PRAGMA user_version = 3'); db.close();
+  db.exec('PRAGMA user_version = 4'); db.close();
   assert.throws(() => new SqliteMemoryStore(dir), /版本过高/);
   const check = new DatabaseSync(join(dir, 'conversation.sqlite'));
-  assert.equal(check.prepare('PRAGMA user_version').get().user_version, 3);
+  assert.equal(check.prepare('PRAGMA user_version').get().user_version, 4);
   check.close();
 });
 
@@ -61,7 +61,7 @@ test('displayHistory keeps rows and reasoning when stored metadata is malformed 
   store.close();
 });
 
-test('v2 reopen rejects a memory table with columns but no state enum constraint', async t => {
+test('v3 reopen rejects a memory table with columns but no state enum constraint', async t => {
   const dir = await fixture(t);
   const store = new SqliteMemoryStore(dir); store.close();
   const db = new DatabaseSync(join(dir, 'conversation.sqlite'));
@@ -71,11 +71,11 @@ test('v2 reopen rejects a memory table with columns but no state enum constraint
   db.close();
   assert.throws(() => new SqliteMemoryStore(dir), /版本与结构不一致/);
   const check = new DatabaseSync(join(dir, 'conversation.sqlite'));
-  assert.equal(check.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(check.prepare('PRAGMA user_version').get().user_version, 3);
   check.close();
 });
 
-test('v1 migrates to v2, correction and forgetting cut model history while keeping display history', async t => {
+test('v1 migrates to v3, correction and forgetting cut model history while keeping display history', async t => {
   const dir = await fixture(t);
   const db = new DatabaseSync(join(dir, 'conversation.sqlite'));
   db.exec("CREATE TABLE messages (id TEXT PRIMARY KEY, role TEXT NOT NULL CHECK(role IN ('user','assistant')), text TEXT NOT NULL, created_at TEXT NOT NULL, turn_id TEXT NOT NULL, reasoning_content TEXT, response_metadata TEXT); PRAGMA user_version = 1");
@@ -90,12 +90,27 @@ test('v1 migrates to v2, correction and forgetting cut model history while keepi
   assert.equal(store.recall('红茶怎么样').entries.length, 0);
   assert.equal(store.recall('绿茶怎么样').entries[0].id, replacement.id);
   store.close(); store = new SqliteMemoryStore(dir);
-  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 2);
+  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 3);
   assert.equal(store.listMemories()[0].id, replacement.id);
   store.forget(replacement.id);
   assert.deepEqual(store.listMemories(), []);
   assert.equal(store.db.prepare('SELECT text FROM companion_memories WHERE id=?').get(replacement.id).text, null);
   assert.throws(() => store.forget(first.id), /已失效/);
+  store.close();
+});
+
+test('v2 memory data migrates to v3 with its active fact and cutoff intact', async t => {
+  const dir = await fixture(t);
+  let store = new SqliteMemoryStore(dir);
+  const entry = store.remember({ text: '喜欢红茶', sourceKind: 'explicit_chat' });
+  store.close();
+  const db = new DatabaseSync(join(dir, 'conversation.sqlite'));
+  db.exec('DROP TABLE companion_operations; ALTER TABLE companion_context DROP COLUMN memory_revision; PRAGMA user_version = 2');
+  db.close();
+  store = new SqliteMemoryStore(dir);
+  assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 3);
+  assert.equal(store.listMemories()[0].id, entry.id);
+  assert.equal(store.memoryRevision(), 0);
   store.close();
 });
 

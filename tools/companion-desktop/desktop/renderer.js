@@ -11,6 +11,20 @@ let memoryPending = null, memorySource = null;
 let memoryRefreshId = null;
 let cardCurrent = null, cardEntries = [], cardPending = null;
 let cardFocusExplicit = false;
+let wechatRevision = null;
+function showWeChat(message) {
+  if (Number.isSafeInteger(message.revision)) wechatRevision = message.revision;
+  const names = { unbound: '未绑定', waiting_scan: '等待扫码', scanned: '已扫码，等待手机确认', awaiting_local_confirmation: '等待本机确认', paused: '已绑定，当前暂停', connected: '连接可用', unavailable: '连接不可用', backend_unavailable: '桌面文字服务未连接，微信已暂停', qr_expired: '二维码已过期', auth_expired: '认证已失效，请重新绑定', protocol_mismatch: '协议回包无法核实，已暂停', need_verification: '请在手机完成验证' };
+  $('wechat-status').textContent = `${names[message.status] || '微信状态待确认'}${message.detail ? '：' + message.detail : ''}`;
+  const image = $('wechat-qr'); image.hidden = !message.qrImage; image.src = message.qrImage || '';
+  $('wechat-expiry').textContent = message.qrExpiresAt ? `二维码截止时间：${new Date(message.qrExpiresAt).toLocaleString()}` : '';
+  const delivery = { none: '尚无微信投递记录', accepted_by_transport: '最近回复已被微信服务接受；手机可见仍待确认', partial: '最近回复部分已被微信服务接受，后续部分投递失败；手机可见仍待确认', failed: '最近回复被明确拒绝', unknown: '最近回复投递状态未知，不会自动重发', stale_memory: '记忆已变化，旧回复未继续投递' };
+  $('wechat-delivery').textContent = `${delivery[message.lastDelivery] || delivery.none}${message.lastInputAt ? ' · 最近入站 ' + new Date(message.lastInputAt).toLocaleString() : ''}`;
+  $('wechat-confirm').disabled = message.status !== 'awaiting_local_confirmation';
+  $('wechat-resume').disabled = !message.bound || message.status === 'connected';
+  $('wechat-pause').disabled = !message.bound || message.status === 'paused';
+  $('wechat-unbind').disabled = !message.bound;
+}
 const verifiedFocus = card => card?.state !== 'revoked' && card?.content?.resolution?.status === 'verified_existing' && card.content.ticket?.url ? { projectKey: card.content.projectKey, ticket: card.content.ticket } : null;
 function currentCardFocus() { const targets = new Set(cardEntries.map(card => verifiedFocus(card)?.ticket.url).filter(Boolean)); return cardFocusExplicit || targets.size === 1 ? verifiedFocus(cardCurrent) : null; }
 let thinkingCommitted = null, thinkingPending = null, thinkingDesired = null;
@@ -224,6 +238,7 @@ function renderCardList(entries) {
   renderCard(entries.find(card => card.cardId === selected) || entries.find(card => verifiedFocus(card)) || entries[0] || null);
 }
 host.subscribe(message => {
+  if (message.type === 'wechat-state') { showWeChat(message); return; }
   if (message.generation !== undefined && message.generation < generation) { if (message.wav instanceof Uint8Array) message.wav.fill(0); return; }
   if (message.type === 'connection') generation = message.generation;
   void mediaUI.receive(message);
@@ -400,6 +415,13 @@ $('voice-settings-open').onclick = () => { $('voice-settings').showModal(); host
 $('workbench-save').onclick = () => host.send('workbench-save', $('workbench-url').value.trim());
 $('workbench-open').onclick = () => host.send('workbench-open');
 for (const id of ['settings', 'about']) { $(id + '-open').onclick = () => { $(id).showModal(); if (id === 'settings') { host.send('memory', { generation, id: crypto.randomUUID(), action: 'list' }); host.send('persona-load'); host.send('thinking-load'); } }; }
+$('wechat-open').onclick = () => { $('wechat').showModal(); host.send('wechat', { action: 'refresh' }); };
+$('wechat-begin').onclick = () => host.send('wechat', { action: 'begin' });
+$('wechat-confirm').onclick = () => { if (window.confirm('确认这个微信账号可以接续本机 Emilia 的已有聊天和有效陪伴记忆吗？')) host.send('wechat', { action: 'confirm', revision: wechatRevision }); };
+$('wechat-resume').onclick = () => host.send('wechat', { action: 'resume' });
+$('wechat-pause').onclick = () => host.send('wechat', { action: 'pause' });
+$('wechat-unbind').onclick = () => { if (window.confirm('解绑并移除本机微信凭据？已提交的聊天和陪伴记忆会保留。')) host.send('wechat', { action: 'unbind' }); };
+$('wechat-refresh').onclick = () => host.send('wechat', { action: 'refresh' });
 $('memory-add').onclick = () => memoryCommand('remember', { text: $('memory-text').value, sourceKind: memorySource ? 'selected_user_message' : 'explicit_chat', sourceRef: memorySource || undefined });
 $('memory-correct').onclick = () => { if (!$('memory-target').value) { $('memory-status').textContent = '请先选择要更正的记忆。'; return; } memoryCommand('correct', { targetId: $('memory-target').value, text: $('memory-text').value }); };
 $('memory-forget').onclick = () => { if (!$('memory-target').value) { $('memory-status').textContent = '请先选择要忘记的记忆。'; return; } memoryCommand('forget', { targetId: $('memory-target').value }); };

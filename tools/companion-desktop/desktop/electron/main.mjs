@@ -15,6 +15,7 @@ import { VoiceRuntime } from './voice-runtime.mjs';
 import { VoiceReadiness } from './voice-readiness.mjs';
 import { Live2DResources } from './live2d-runtime.mjs';
 import { VoiceCredentialStore, privateVoiceDirectory } from './voice-credential.mjs';
+import { WeChatRuntime } from '../wechat/runtime.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const option = name => { const index = process.argv.indexOf(name); return index < 0 ? undefined : process.argv[index + 1]; };
@@ -27,7 +28,7 @@ else app.setPath('userData', join(app.getPath('appData'), preview ? 'Yuki Link D
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 protocol.registerSchemesAsPrivileged([{ scheme: 'yuki', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
-let win, rendererReady = false, currentStatus, settings, quitting = false, smokeSubmittedThinking, startRevision = 0;
+let win, rendererReady = false, currentStatus, settings, quitting = false, smokeSubmittedThinking, startRevision = 0, wechat;
 const dataDir = () => app.getPath('userData');
 const deliver = message => { if (rendererReady && win && !win.isDestroyed()) win.webContents.send('yuki:delivery', message); };
 const readiness = new VoiceReadiness();
@@ -37,6 +38,8 @@ const publishAvatar = () => { deliver({ type: 'live2d-settings', readiness: avat
 const voice = new VoiceTurnCoordinator({ canAttempt: () => readiness.snapshot(!preview && connection.state === 'ready', currentStatus?.service).voice.canAttempt });
 let voiceCredentials;
 const connection = new BackendConnection({ worker: resolve(here, '../../backend/worker.mjs'), fork: (...args) => utilityProcess.fork(...args), onMessage: (message, generation) => {
+  if (wechat?.onWorkerMessage(message, generation)) return;
+  if (message.type === 'ready') void wechat?.reconcile();
   currentStatus = message?.status ?? currentStatus;
   if (media.backend(message, generation)) return;
   if (message.type === 'disconnected') { media.invalidate(); readiness.reset(readiness.configured); }
@@ -87,7 +90,11 @@ async function checkWorkbench() {
   catch { return { configured: true, reachable: false }; }
 }
 
-ipcMain.on('yuki:ready', event => { if (!trusted(event) || rendererReady) return; rendererReady = true; void start(); });
+ipcMain.on('yuki:ready', event => { if (!trusted(event) || rendererReady) return; rendererReady = true; void wechat?.publish(); void start(); });
+ipcMain.on('yuki:wechat', (event, value) => {
+  if (!trusted(event) || !value || !['begin','confirm','pause','resume','unbind','refresh'].includes(value.action)) return;
+  void wechat?.action(value.action, value).catch(() => deliver({ type: 'wechat-state', status: 'unavailable', detail: '微信操作未完成，请检查当前状态。' }));
+});
 ipcMain.on('yuki:submit', (event, value) => {
   if (!trusted(event) || !value || !validRequestId(value.requestId)) return;
   const identity = { id: value.requestId, requestId: value.requestId, generation: value.generation, origin: value.origin, voiceScope: value.voiceScope };
@@ -232,6 +239,8 @@ ipcMain.on('yuki:quit', event => { if (trusted(event)) app.quit(); });
 void app.whenReady().then(async () => {
   await mkdir(dataDir(), { recursive: true });
   settings = await SettingsStore.load(settingsFile());
+  wechat = new WeChatRuntime({ directory: dataDir(), safeStorage, connection, settings: () => settings.snapshot(), deliver, enabled: !preview });
+  await wechat.start().catch(() => { wechat.initError = '本机微信资料无法读取；桌面陪伴仍可使用。'; wechat.publish(); });
   voiceCredentials = new VoiceCredentialStore(dataDir(), safeStorage, privateVoiceDirectory({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath }));
   const root = resolve(here, '..');
   win = new BrowserWindow({ title: 'Yuki Link · Emilia', width: 1120, height: 760, minWidth: 760, minHeight: 540, backgroundColor: '#f7f4ff', show: !smoke,
@@ -395,6 +404,7 @@ void app.whenReady().then(async () => {
   }
 }).catch(error => { console.error('Yuki startup failed: ' + error.message); app.exit(1); });
 app.on('before-quit', event => {
+  wechat?.close();
   if (quitting) return;
   event.preventDefault(); quitting = true;
   media.invalidate();
