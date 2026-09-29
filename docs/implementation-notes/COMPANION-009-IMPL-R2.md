@@ -68,3 +68,10 @@ Candidate-only legacy slice: `a57723d31d939becf71852cff9a55da33951d5d4` (merge-b
 - 最小修复：仍拒绝显式非零 `ret` 和非数组 `msgs`；允许缺失 `ret/msgs/cursor` 的已认证空 update，`msgs ?? []` 处理，只有合法 cursor 才持久推进。消息级 owner/bot/epoch/create_time/context-token 检查保持不变，不因本次真实兼容问题放宽。
 - Regression：新增 `authenticated empty update may omit ret, msgs, and cursor`；`node --test test/wechat-transport.test.mjs test/wechat-conversation.test.mjs` 21/21 通过，`npm run check` 通过，`git diff --check` 通过。
 - 该修复改变真实协议边界，原 focused review 对这 2 文件变化不再覆盖；提交后必须 fresh focused review，再重启当前 Desktop 继续真实 Acceptance。现有微信绑定凭据保留，不要求重新扫码。
+### 真实 Acceptance 自然语言路由修复 A2（2026-09-30）
+
+- Owner 在 Desktop 写入合成记忆 `月桂-73` 后，从真实微信发送普通自然语言“我刚刚在桌面记住的009验收测试代号是什么？”，实际收到 slash-command 帮助，而非正常 Emilia 回复；本地 messages / companion_operations 未新增，证明该输入在进入 BackendSession 前被 adapter 吞掉。
+- 根因：`WeChatConversation.receive()` 在已经存在严格 slash-command parser 的情况下，又额外用 `(!command && /更正|遗忘|记住/.test(text))` 猜测管理意图。任何普通聊天只要包含这些词就会被错误路由为本地帮助。
+- 最小修复：删除关键词猜测。只有 `command(text)` 明确解析出的 `/记忆`、`/记住`、`/更正`、`/遗忘`（含格式错误的 slash 命令）进入记忆管理/帮助；`command === null` 的普通文本无条件进入 `backend.submit`。
+- Regression：新增 Owner 原句作为自然语言用例，要求确实调用 `backend.submit` 并正常发送回复；wechat conversation + transport + worker 定向测试 27/27 通过，`npm run check`、`git diff --check` 通过。
+- 该修复不改变记忆管理命令语法、binding/epoch/context-token、receipt、memoryRevision 或 delivery 契约；提交后做一次 fresh focused review，再重启当前 Desktop 继续真实记忆接续验收。

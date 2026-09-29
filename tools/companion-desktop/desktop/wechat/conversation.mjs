@@ -48,7 +48,7 @@ export class WeChatConversation {
     let finalText, turnId = null, assistantId = null, status = 'handled', memoryRevision;
     try {
       const command = this.command(text);
-      if (command?.action === 'invalid' || (!command && /更正|遗忘|记住/.test(text))) {
+      if (command?.action === 'invalid') {
         // Guidance is local only; it must not be mistaken for a committed backend reply.
         finalText = '请使用 /记住 <事实>、/记忆、/更正 <选择码> <新事实> 或 /遗忘 <选择码>。';
       }

@@ -45,6 +45,22 @@ test('only committed final text is sent; unknown transport does not retry', asyn
   assert.equal(store.record('in').delivery, 'unknown');
 });
 
+test('natural language mentioning memory words stays in normal dialogue', async t => {
+  const { store } = await fixture(t);
+  const calls = [], sends = [];
+  const conversation = new WeChatConversation({
+    store,
+    backend: backend({ submit: async input => { calls.push(input); return { outcome: 'committed', finalText: '月桂-73', turnId: 'turn-recall', messageId: 'assistant-recall', memoryRevision: 1 }; }, list: async () => ({ outcome: 'committed', memoryRevision: 1, entries: [], listVersion: 'v1' }) }),
+    api: { send: async (_auth, token, text) => { sends.push({ token, text }); return { ret: 0 }; } },
+  });
+  const text = '我刚刚在桌面记住的009验收测试代号是什么？';
+  const result = await conversation.receive(await claim(store, 'natural-memory-question', text, 'ctx-natural'));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].text, text);
+  assert.equal(result.delivery, 'accepted_by_transport');
+  assert.deepEqual(sends, [{ token: 'ctx-natural', text: '月桂-73' }]);
+});
+
 test('pending backend result is never sent and processing restart is not replayed', async t => {
   const { store, file, crypto } = await fixture(t);
   let calls = 0, sends = 0;
