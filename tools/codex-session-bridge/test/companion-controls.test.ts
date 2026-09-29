@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {EngineeringCardStore} from '../../companion-desktop/backend/engineering-card-store.mjs';
+import {EngineeringCardStore,digestCardContent} from '../../companion-desktop/backend/engineering-card-store.mjs';
 import {CompanionWorkControlService} from '../src/orchestration/companion-controls.mjs';
 
 test('persisted Desktop stop targets only the bound run and never repeats a lost control receipt', async t => {
@@ -77,7 +77,8 @@ test('owned full-suite task is observed without an operation lookup',async()=>{
   const store={continuation:()=>({ticket_id:'ticket'}),dispatch:()=>null,preparation:()=>null,
     continuationActions:()=>[action],workStop:()=>null};
   const manager={harness:{executionOperations:{findByRequest:()=>{throw Error('full suite has no operation');}},
-    taskHistory:{target:()=>({binding:{request_id:'task-request',service_epoch:'epoch'}})},
+    taskHistory:{target:()=>({binding:{request_id:'task-request',service_epoch:'epoch',
+      binding_id:'task-binding'}})},
     workflowHistory:{summary:()=>({})}}};
   const service=new CompanionWorkControlService({manager,directory:'unused',store:store as any,
     computer:{tasks:{status:()=>({status:'running'})}}});
@@ -85,6 +86,7 @@ test('owned full-suite task is observed without an operation lookup',async()=>{
   const result=await service.get({} as any);
   assert.equal(result.operations.length,0);
   assert.equal(result.tasks[0].manageable,true);
+  assert.equal(result.tasks[0].binding_id,'task-binding');
   assert.equal(result.observation.state,'current');
   action.receipt={task_id:'task'};
   service.computer.tasks.status=()=>({status:'completed',service_epoch:'epoch'});
@@ -125,4 +127,31 @@ test('control request exposes failed result and journal gap separately',()=>{
   const lost=service.targetStatus({...target,attempt:{state:'unknown',
     started_at:'2026-09-29T00:00:00Z'}});
   assert.equal(lost.request.state,'request_failed');
+});
+
+test('task stop freezes owned binding and reconciles recorded or lost receipts',async()=>{
+  const frozen={kind:'task',ticket_id:'ticket',request_id:'task-request',task_id:'task',
+    service_epoch:'epoch',binding_id:'task-binding'};
+  let claimed:any=null;
+  const records=[{data:{kind:'control_action',control:{control_id:'task-control',ticket_id:'ticket',
+    action:'task.stop',stage:'result',outcome:'requested',occurred_at:'2026-09-29T00:00:01Z',
+    target:{binding_id:'task-binding',task_id:'task',service_epoch:'epoch'}}}}];
+  const store={workStop:()=>({control_id:'desktop-control',confirmation_digest:digestCardContent({})}),
+    claimWorkStopTarget:(_card:any,_revision:any,_key:any,target:any)=>{
+      claimed=target;return {deduplicated:false};},recordWorkStopAttempt:()=>({recorded:true})};
+  const manager={harness:{journal:{records},controls:{stopTask:()=>({control_id:'task-control',
+    outcome:'requested'})}}};
+  const service=new CompanionWorkControlService({manager,directory:'unused',store:store as any});
+  service.locator=()=>({cardId:'card',revision:1,confirmation:{content:{}}}) as any;
+  service.get=async()=>({ticket_id:'ticket',operations:[],tasks:[{request_id:'task-request',
+    task_id:'task',service_epoch:'epoch',binding_id:'task-binding',manageable:true,
+    observation:{state:'current'}}]}) as any;
+  await service.requestStop({control_id:'desktop-control'} as any);
+  assert.deepEqual(claimed,frozen);
+  const recorded=service.targetStatus({target:frozen,attempt:{receipt:{control_id:'task-control',
+    outcome:'requested'}}});
+  assert.equal(recorded.request.state,'requested');
+  const lost=service.targetStatus({target:frozen,attempt:{state:'unknown',
+    started_at:'2026-09-29T00:00:00Z'}});
+  assert.equal(lost.request.state,'requested');
 });

@@ -114,3 +114,10 @@ Deferred：DTO/错误码、表名、现有布局内按钮位置、轮询间隔�
 - 验证：`node --test test/companion-controls.test.ts test/companion-continuation.test.ts`（在 `tools/codex-session-bridge`，20/20 通过）；`node --test test/renderer.test.mjs`（在 `tools/companion-desktop`，36/36 通过）；bridge `npm run typecheck`、Desktop `npm run check`、`git diff --check` 均 exit 0。最终 journal 匹配逻辑调整后另跑 `node --test test/companion-controls.test.ts`，5/5 通过。preparation 测试 fixture 首次缺完整授权结构而失败，修正 fixture 后通过。未运行两包完整测试套件。
 - Review policy：delegated，交 Ticket Main workflow 做一次独立 focused re-review；F1–F5 为 fixed、未 verified，原 Standards 无 finding 的结论保留。真实断线重连与停止验收仍 pending；本修复未做真实模型派发、push、PR 或部署。
 - 下一步：以修复 commit 与本 handoff 为内容身份复核 F1–F5；复核通过后才进入 #133 的真实链路验收。
+
+## Focused Review 1 Finding Fix Handoff — 2026-09-29
+
+- 来源：`.local/workflow-state/companion-008-focused-review-1-review.md`，受审 HEAD `97aeca8112c7f2834c6e7f3ba937126c75d96afc`。F1、F2、F4、F5 已由该复核验证；本轮只续修原 F3-stop-journal。新 commit SHA 见 `.local/workflow-state/COMPANION-008.md`。
+- 修复：从已验证的 owned-task binding 取 `binding_id`，冻结到停止目标，使该目标与 Harness task-stop journal 的身份字段一致；原 journal/result/gap 投影逻辑沿用。
+- 验证：`node --test test/companion-controls.test.ts`（在 `tools/codex-session-bridge`）6/6 通过，新增样例覆盖任务目标冻结、正常 task-stop journal 和丢失回执后按原目标查回。最终 typecheck 和 diff 检查结果见 checkpoint。本轮不重跑已验证的其他 finding 测试或完整套件。
+- Review policy：delegated，F3 为 fixed、待独立定向复核；其余四项保持上一轮 verified 结论。#133 真实链路验收仍 pending；未 push、未开 PR、未部署。

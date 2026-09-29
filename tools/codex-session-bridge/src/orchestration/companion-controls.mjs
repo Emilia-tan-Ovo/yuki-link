@@ -122,6 +122,7 @@ export class CompanionWorkControlService {
           || !epoch || binding.service_epoch!==epoch)
           throw Error('TASK_BINDING_CONFLICT');
         tasks.push({request_id:action.intent.request_id,task_id:taskId,service_epoch:epoch,
+          binding_id:binding.binding_id,
           status:task?.status ?? 'unknown',manageable:!!task && !terminal.has(task.status),
           observation:observed(task?'current':'unknown','yca-owned-task')});
       } catch { tasks.push({request_id:action.intent.request_id,task_id:taskId,
@@ -181,7 +182,7 @@ export class CompanionWorkControlService {
     for (const task of status.tasks) {
       if (!task.manageable || task.observation.state!=='current') continue;
       const target={kind:'task',ticket_id:status.ticket_id,request_id:task.request_id,
-        task_id:task.task_id,service_epoch:task.service_epoch};
+        task_id:task.task_id,service_epoch:task.service_epoch,binding_id:task.binding_id};
       const key=`task:${task.task_id}`;
       const claimed=this.store.claimWorkStopTarget(card.cardId,card.revision,key,target);
       if (claimed.conflict || claimed.deduplicated) continue;
