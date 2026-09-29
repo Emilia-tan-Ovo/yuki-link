@@ -2,7 +2,7 @@
 
 > 冻结历史摘要，不是动态 runtime source of truth。本机 raw 位置不保证在 fresh clone 可用；available 只表示观察时本机文件存在，不代表内容有效或验收通过。
 
-- 观察时间：2026-09-29T16:40:43.942Z
+- 观察时间：2026-09-29T16:53:21.413Z
 - Ticket / Issue：COMPANION-009-IMPL-R2 / GitHub \#134
 - 来源：docs/implementation-notes/COMPANION-009-IMPL-R2.md；.local/workflow-state/COMPANION-009-IMPL-R2.md；.local/workflow-state/companion-009-primary-review-1.md；.local/workflow-state/companion-009-focused-review-1.md；.local/workflow-state/companion-009-final-acceptance.md
 - worktree：C:\\Users\\KQ\_Sh\\Desktop\\yuki-link\\.local\\worktrees\\companion-009-implementation-v2
@@ -66,41 +66,41 @@ COMPANION-009 将真实个人微信接入现有 Desktop BackendSession 与同一
 ## PR
 
 - 状态：recorded
-- 摘要：GitHub PR \#166 已创建并保持 OPEN / non-draft；base=codex/codex-session-bridge，head=codex/companion-009-wechat-v2，body 含 Closes \#134。
+- 摘要：GitHub PR \#166 已于 2026-09-29T16:51:06Z 合并；head 4d2762798696f5ed11cad1f69d9638504916b585。
 - 证据来源：GitHub PR \#166: https://github.com/Emilia-tan-Ovo/yuki-link/pull/166
 
 ## Merge
 
-- 状态：pending
-- 摘要：尚未合并；merge 保留 Owner gate。
-- 证据来源：unknown / 尚无来源
+- 状态：recorded
+- 摘要：PR \#166 已合并到 codex/codex-session-bridge；merge commit dd37c25e03190a561165854caaffddccede1a62c。Closes \#134 生效，Issue \#134 于 2026-09-29T16:51:07Z CLOSED。
+- 证据来源：GitHub PR \#166 merge receipt；GitHub Issue \#134 close receipt
 
 ## Raw evidence（仅引用）
 
 - checkpoint：available
-  - 本机位置：.local/workflow-state/COMPANION-009-IMPL-R2.md
-  - 观察时间：2026-09-29T16:40:43.942Z；适用内容 / 来源身份：final closeout checkpoint for 207b458
+  - 本机位置：C:\\Users\\KQ\_Sh\\Desktop\\yuki-link\\.local\\worktrees\\companion-009-implementation-v2\\.local\\workflow-state\\COMPANION-009-IMPL-R2.md
+  - 观察时间：2026-09-29T16:53:21.413Z；适用内容 / 来源身份：final closeout checkpoint for 207b458
 
 - implementation-notes：available
-  - 本机位置：docs/implementation-notes/COMPANION-009-IMPL-R2.md
-  - 观察时间：2026-09-29T16:40:43.942Z；适用内容 / 来源身份：tracked implementation \+ A1/A2 repair notes
+  - 本机位置：C:\\Users\\KQ\_Sh\\Desktop\\yuki-link\\.local\\worktrees\\companion-009-implementation-v2\\docs\\implementation-notes\\COMPANION-009-IMPL-R2.md
+  - 观察时间：2026-09-29T16:53:21.413Z；适用内容 / 来源身份：tracked implementation \+ A1/A2 repair notes
 
 - primary-review：available
-  - 本机位置：.local/workflow-state/companion-009-primary-review-1.md
-  - 观察时间：2026-09-29T16:40:43.942Z；适用内容 / 来源身份：primary review 16a065c..722c4a2
+  - 本机位置：C:\\Users\\KQ\_Sh\\Desktop\\yuki-link\\.local\\worktrees\\companion-009-implementation-v2\\.local\\workflow-state\\companion-009-primary-review-1.md
+  - 观察时间：2026-09-29T16:53:21.413Z；适用内容 / 来源身份：primary review 16a065c..722c4a2
 
 - focused-review：available
-  - 本机位置：.local/workflow-state/companion-009-focused-review-1.md
-  - 观察时间：2026-09-29T16:40:43.942Z；适用内容 / 来源身份：focused verification on cce89b6
+  - 本机位置：C:\\Users\\KQ\_Sh\\Desktop\\yuki-link\\.local\\worktrees\\companion-009-implementation-v2\\.local\\workflow-state\\companion-009-focused-review-1.md
+  - 观察时间：2026-09-29T16:53:21.413Z；适用内容 / 来源身份：focused verification on cce89b6
 
 - a1-review：available
-  - 本机位置：.local/workflow-state/companion-009-real-acceptance-a1-focused-review.md
-  - 观察时间：2026-09-29T16:40:43.942Z；适用内容 / 来源身份：A1 focused verification on 96b62a4
+  - 本机位置：C:\\Users\\KQ\_Sh\\Desktop\\yuki-link\\.local\\worktrees\\companion-009-implementation-v2\\.local\\workflow-state\\companion-009-real-acceptance-a1-focused-review.md
+  - 观察时间：2026-09-29T16:53:21.413Z；适用内容 / 来源身份：A1 focused verification on 96b62a4
 
 - a2-review：available
-  - 本机位置：.local/workflow-state/companion-009-real-acceptance-a2-focused-review.md
-  - 观察时间：2026-09-29T16:40:43.942Z；适用内容 / 来源身份：A2 focused verification on 207b458
+  - 本机位置：C:\\Users\\KQ\_Sh\\Desktop\\yuki-link\\.local\\worktrees\\companion-009-implementation-v2\\.local\\workflow-state\\companion-009-real-acceptance-a2-focused-review.md
+  - 观察时间：2026-09-29T16:53:21.413Z；适用内容 / 来源身份：A2 focused verification on 207b458
 
 - final-acceptance：available
-  - 本机位置：.local/workflow-state/companion-009-final-acceptance.md
-  - 观察时间：2026-09-29T16:40:43.942Z；适用内容 / 来源身份：real Owner WeChat \+ shared memory final Acceptance on 207b458
+  - 本机位置：C:\\Users\\KQ\_Sh\\Desktop\\yuki-link\\.local\\worktrees\\companion-009-implementation-v2\\.local\\workflow-state\\companion-009-final-acceptance.md
+  - 观察时间：2026-09-29T16:53:21.413Z；适用内容 / 来源身份：real Owner WeChat \+ shared memory final Acceptance on 207b458
