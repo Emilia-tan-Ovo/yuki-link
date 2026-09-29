@@ -497,6 +497,14 @@ test('real MCP HTTP clients reconnect to durable runs; host/origin checks and ex
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const url = new URL(`http://127.0.0.1:${server.address().port}/mcp`);
+  const discover = await fetch(url, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 'openai-mcp-discover', method: 'server/discover', params: {} }),
+  });
+  assert.equal(discover.status, 200);
+  assert.deepEqual(await discover.json(), {
+    jsonrpc: '2.0', id: 'openai-mcp-discover', error: { code: -32601, message: 'Method not found' },
+  });
   const client = new Client({ name: 'test', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(url));
   const toolList = await client.listTools();
