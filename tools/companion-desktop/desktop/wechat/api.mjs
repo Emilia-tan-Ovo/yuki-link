@@ -59,8 +59,14 @@ export class WeChatApi {
       const response = await this.transport(new URL(path, weixinOrigin(base)), { method: body ? 'POST' : 'GET', headers, redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]), ...(body ? { body: JSON.stringify(body) } : {}) });
       if (!response.ok) throw new WeChatApiError(response.status === 401 || response.status === 403 ? 'expired' : 'network');
       if (Number(response.headers.get('content-length')) > 2 * 1024 * 1024) throw new WeChatApiError('invalid_response');
-      const raw = await response.text();
-      if (raw.length > 2 * 1024 * 1024) throw new WeChatApiError('invalid_response');
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of response.body) {
+        size += chunk.byteLength;
+        if (size > 2 * 1024 * 1024) throw new WeChatApiError('invalid_response');
+        chunks.push(chunk);
+      }
+      const raw = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
       const data = parseWeixinJson(raw);
       if (!data || typeof data !== 'object' || Array.isArray(data)) throw new WeChatApiError('invalid_response');
       if (data.ret === -14 || data.errcode === -14) throw new WeChatApiError('expired');

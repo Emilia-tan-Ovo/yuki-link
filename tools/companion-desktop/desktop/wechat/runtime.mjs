@@ -59,9 +59,12 @@ export class WeChatRuntime {
     this.publish();
   }
   async publish() {
+    const publication = this.publication = (this.publication ?? 0) + 1;
     if (!this.service) { this.deliver({ type: 'wechat-state', status: 'unavailable', detail: this.initError || '微信资料无法读取。' }); return; }
     const snapshot = this.service.snapshot();
     const qrImage = snapshot.qr ? await QRCode.toDataURL(snapshot.qr.content, { errorCorrectionLevel: 'M', margin: 2, width: 240 }).catch(() => null) : null;
+    const current = this.service.snapshot();
+    if (publication !== this.publication || current.revision !== snapshot.revision || current.qr?.content !== snapshot.qr?.content) return;
     this.deliver({ type: 'wechat-state', status: snapshot.status, detail: snapshot.detail, revision: snapshot.revision,
       bound: snapshot.bound, qrImage, qrExpiresAt: snapshot.qr?.expiresAt, lastInputAt: snapshot.lastInputAt, lastDelivery: snapshot.lastDelivery });
   }

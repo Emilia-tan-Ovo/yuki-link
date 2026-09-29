@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChannelStore } from '../desktop/wechat/channel-store.mjs';
 import { WeChatConversation } from '../desktop/wechat/conversation.mjs';
+import { WeChatApiError } from '../desktop/wechat/api.mjs';
 
 async function fixture(t) {
   const dir = await mkdtemp(join(tmpdir(), 'yuki-wechat-'));
@@ -139,4 +140,44 @@ test('memory correction between delivery parts invalidates the remaining snapsho
   assert.equal((await conversation.receive(await claim(store, 'stale', '你好'))).delivery, 'stale_memory');
   assert.equal(sends, 1);
   assert.deepEqual(store.record('stale').parts.map(part => part.status), ['accepted_by_transport']);
+});
+
+test('pause during processing persistence prevents backend admission', async t => {
+  const { store } = await fixture(t);
+  const input = await claim(store, 'paused-before-backend', '你好');
+  const finish = store.finish.bind(store);
+  let release, calls = 0;
+  store.finish = (...args) => args[2]?.status === 'processing' ? new Promise(resolve => { release = async () => resolve(finish(...args)); }) : finish(...args);
+  const conversation = new WeChatConversation({ store, backend: backend({ submit: async () => { calls++; } }), api: { send: async () => {} }, isAuthorized: () => !store.paused() });
+  const receiving = conversation.receive(input);
+  await new Promise(resolve => setImmediate(resolve));
+  await store.setPaused(true);
+  await release();
+  assert.equal((await receiving).processing, 'binding_changed');
+  assert.equal(calls, 0);
+});
+
+test('rebind during delivery intent cannot redirect an old reply', async t => {
+  const { store, auth } = await fixture(t);
+  const input = await claim(store, 'old-reply', '你好', 'old-token');
+  const finish = store.finish.bind(store);
+  let release;
+  store.finish = (...args) => args[2]?.parts?.length === 1 ? new Promise(resolve => { release = async () => resolve(finish(...args)); }) : finish(...args);
+  const sent = [];
+  const conversation = new WeChatConversation({ store, backend: backend({ submit: async () => ({ committed: true, finalText: '回复', turnId: 't', messageId: 'm' }) }), api: { send: async (...args) => { sent.push(args); return { ret: 0 }; } } });
+  const receiving = conversation.receive(input);
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  await store.bind({ ...auth, userId: 'new-owner' }, 2);
+  await store.setPaused(false);
+  await release();
+  assert.equal((await receiving).processing, 'binding_changed');
+  assert.equal(sent.length, 0);
+});
+
+test('accepted first part and rejected second part retain partial delivery', async t => {
+  const { store } = await fixture(t);
+  let sent = 0;
+  const conversation = new WeChatConversation({ store, backend: backend({ submit: async () => ({ committed: true, finalText: '字'.repeat(1600), turnId: 't', messageId: 'm' }) }), api: { send: async () => ++sent === 1 ? { ret: 0 } : Promise.reject(new WeChatApiError('rejected')) } });
+  assert.equal((await conversation.receive(await claim(store, 'partial', '你好'))).delivery, 'partial');
+  assert.deepEqual(store.record('partial').parts.map(part => part.status), ['accepted_by_transport', 'failed']);
 });

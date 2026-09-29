@@ -42,6 +42,7 @@ export class WeChatConversation {
     const generation = prior.backendGeneration;
     if (!this.current(epoch, generation)) { await this.reconcile(messageId, epoch); return { delivery: 'none', processing: 'binding_changed' }; }
     if (!await this.store.finish(messageId, epoch, { status: 'processing' })) return { delivery: 'none', processing: 'binding_changed' };
+    if (!this.current(epoch, generation)) return { delivery: 'none', processing: 'binding_changed' };
 
     const input = { operationId: prior.operationId, payloadDigest: prior.payloadDigest, bindingEpoch: epoch };
     let finalText, turnId = null, assistantId = null, status = 'handled', memoryRevision;
@@ -52,6 +53,7 @@ export class WeChatConversation {
         finalText = '请使用 /记住 <事实>、/记忆、/更正 <选择码> <新事实> 或 /遗忘 <选择码>。';
       }
       else if (command?.action === 'list') {
+        if (!this.current(epoch, generation)) return { delivery: 'none', processing: 'binding_changed' };
         const result = await this.backend.list(input);
         if (!this.current(epoch, generation)) { await this.reconcile(messageId, epoch); return { delivery: 'none', processing: 'binding_changed' }; }
         if (result?.outcome !== 'committed' || !Array.isArray(result.entries) || typeof result.listVersion !== 'string') throw Error('Memory list unconfirmed');
@@ -68,6 +70,7 @@ export class WeChatConversation {
             finalText = '选择码已失效，请先发送 /记忆 重新列出。';
             status = 'handled';
           } else {
+            if (!this.current(epoch, generation)) return { delivery: 'none', processing: 'binding_changed' };
             const active = await this.backend.list(input);
             if (!this.current(epoch, generation)) { await this.reconcile(messageId, epoch); return { delivery: 'none', processing: 'binding_changed' }; }
             targetId = selection.codes[command.code];
@@ -80,6 +83,7 @@ export class WeChatConversation {
         }
         if (finalText) { /* deterministic local guidance does not mutate memory */ }
         else {
+        if (!this.current(epoch, generation)) return { delivery: 'none', processing: 'binding_changed' };
         const result = await this.backend[command.action]({ ...input, ...(targetId ? { targetId } : {}), ...(command.text ? { text: command.text } : {}), ...(command.action === 'remember' ? { sourceRef: `wechat:${hash(messageId)}` } : {}) });
         if (!this.current(epoch, generation)) { await this.reconcile(messageId, epoch); return { delivery: 'none', processing: 'binding_changed' }; }
         if (result?.outcome === 'rejected' || result?.outcome === 'cancelled') { status = 'handled'; finalText = result.reason === 'busy' ? '上一条消息尚未完成，请稍后再试。' : '记忆操作未受理，请检查输入并重新列出。'; }
@@ -88,6 +92,7 @@ export class WeChatConversation {
         if (!finalText) { finalText = result.finalText; status = 'committed'; memoryRevision = result.memoryRevision; }
         }
       } else {
+        if (!this.current(epoch, generation)) return { delivery: 'none', processing: 'binding_changed' };
         const result = await this.backend.submit({ ...input, text });
         if (!this.current(epoch, generation)) { await this.reconcile(messageId, epoch); return { delivery: 'none', processing: 'binding_changed' }; }
         if (result?.outcome === 'rejected' || result?.outcome === 'cancelled') { status = 'handled'; finalText = result.reason === 'busy' ? '上一条消息尚未完成，请稍后再试。' : '文字服务当前无法受理，请检查配置。'; }
@@ -100,6 +105,7 @@ export class WeChatConversation {
     }
     if (!this.current(epoch, generation)) { await this.reconcile(messageId, epoch); return { delivery: 'none', processing: 'binding_changed' }; }
     if (!await this.store.finish(messageId, epoch, { status, turnId, messageId: assistantId, memoryRevision })) return { delivery: 'none', processing: 'binding_changed' };
+    if (!this.current(epoch, generation)) return { delivery: 'none', processing: 'binding_changed' };
     if (!finalText || !contextToken) return { delivery: 'none', processing: status };
     const parts = split(finalText), deliveryId = randomUUID();
     // Per-part intent is durable before each network call. An interrupted attempt is unknown.
@@ -116,9 +122,11 @@ export class WeChatConversation {
       const clientId = randomUUID();
       const part = { deliveryId, index, count: parts.length, clientId, status: 'unknown', attemptedAt: this.now(), observedAt: null };
       if (!await this.store.finish(messageId, epoch, { parts: [...this.store.record(messageId, epoch).parts, part] })) return { delivery: 'unknown', processing: 'binding_changed' };
+      const auth = this.store.binding();
+      if (!this.current(epoch, generation) || auth?.userId !== prior.recipient) return { delivery: 'unknown', processing: 'binding_changed' };
       let outcome;
       try {
-        const result = await this.api.send(this.store.binding(), prior.contextToken, parts[index], clientId, signal);
+        const result = await this.api.send(auth, prior.contextToken, parts[index], clientId, signal);
         outcome = result?.ret === 0 && (result.errcode === undefined || result.errcode === 0) ? 'accepted_by_transport' : 'unknown';
       } catch (error) { outcome = error instanceof WeChatApiError && error.kind === 'rejected' ? 'failed' : 'unknown'; }
       if (!this.current(epoch, generation)) return { delivery: 'unknown', processing: 'binding_changed' };
@@ -128,7 +136,7 @@ export class WeChatConversation {
       if (outcome !== 'accepted_by_transport') break;
     }
     const outcomes = this.store.record(messageId, epoch).parts.map(part => part.status);
-    const delivery = outcomes.length === parts.length && outcomes.every(value => value === 'accepted_by_transport') ? 'accepted_by_transport' : outcomes.includes('unknown') ? 'unknown' : 'failed';
+    const delivery = outcomes.length === parts.length && outcomes.every(value => value === 'accepted_by_transport') ? 'accepted_by_transport' : outcomes.includes('unknown') ? 'unknown' : outcomes.includes('accepted_by_transport') ? 'partial' : 'failed';
     await this.store.finish(messageId, epoch, { delivery, deliveryObservedAt: this.now() });
     return { delivery };
   }

@@ -77,8 +77,10 @@ export class WeChatService {
   }
   async pause() {
     this.active = false; this.pending = null; this.loginAttempt++; this.revoke();
-    await this.store.setPaused(true);
-    return this.update(this.store.binding() ? 'paused' : 'unbound');
+    const epoch = this.store.epoch();
+    await this.store.setPaused(true, epoch);
+    const unverified = await this.store.markUnverified(epoch);
+    return this.update(this.store.binding() ? 'paused' : 'unbound', unverified ? `${unverified} 条微信操作结果尚未核实，记录保留供核对。` : '');
   }
   async resume(signal = new AbortController().signal) {
     if (!this.store.binding()) return this.update('unbound');
@@ -93,9 +95,11 @@ export class WeChatService {
     this.pending = null;
     this.loginAttempt++;
     this.revoke();
+    const oldEpoch = this.store.epoch();
     await this.store.unbind();
+    const unverified = await this.store.markUnverified(oldEpoch);
     this.state.lastDelivery = 'none'; this.state.lastInputAt = null;
-    return this.update('unbound');
+    return this.update('unbound', unverified ? `${unverified} 条旧绑定微信操作结果尚未核实，记录保留供核对。` : '');
   }
   async pollOnce(signal = new AbortController().signal) {
     if (this.polling) return this.snapshot();

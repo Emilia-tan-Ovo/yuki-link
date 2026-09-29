@@ -53,3 +53,11 @@ Candidate-only legacy slice: `a57723d31d939becf71852cff9a55da33951d5d4` (merge-b
 - **已知边界：**未运行 Windows 安装包构建、真实扫码/网络/DeepSeek/手机可见验收；若上游真实响应缺少必要身份、新鲜度或业务成功字段，频道将停在 `protocol_mismatch`，需在 Acceptance 核对真实等价证据，不能放宽校验当作通过。单机加密存储不可用时微信不可用，桌面文字路径仍可启动。微信语音、设备、工程控制、主动通知与旧历史物理删除均不属 #134。
 - **Review policy：**本轮 `delegated`，由 Emilia/YCA 上层接收本 handoff，针对提交内容从 fixed point 启动 fresh primary Review；本 implementation 不执行 Review。Review finding/结果均 pending，未宣称 Acceptance 通过。
 - **Commit 与后续：**实现提交的精确 SHA、最终工作区状态及测试绑定记录在本 worktree `.local/workflow-state/COMPANION-009-IMPL-R2.md` 的 post-commit 更新；后续先独立 Review，再由 Owner 参与真实微信 external gate。未 push、未部署、未合并。
+
+## Finding-fix Handoff（2026-09-29）
+
+- **来源与基线：**GitHub #134、上文 R2 Notes、`.local/workflow-state/companion-009-primary-review-1.md`；修复基线 `722c4a24f2149847ef46bd6b24a8ff7ec2413b81`，同一 worktree/branch。仅处理 Review 的 ST1、S1–S5。
+- **修复：**ST1 在 QR 异步渲染后核对发布序号与当前 revision；S1 在 processing 持久化后及各 backend admission 前重验 authority；S2 在出站意图持久化后重验 epoch/generation，并核对 claim 固定收件人；S3 暂停/解绑完成前将本 epoch 未决 claim 持久标为 unknown，在 UI 状态说明未核实数量，保留旧 epoch 核对记录；S4 将已接受部分后续明确失败汇总为 `partial` 并展示；S5 在读取响应流时按字节限制 2 MiB。
+- **定向验证：**`node --test test/wechat-conversation.test.mjs test/wechat-transport.test.mjs` 20/20 通过；`node --test test/wechat-worker.test.mjs test/renderer.test.mjs` 41/41 通过；`npm run check` 与 `git diff --check` 通过。新增交错测试覆盖暂停时 processing 写入、改绑时投递意图写入、旧 QR 渲染晚完成、部分投递和无可信 content-length 的超限响应。
+- **Review policy 与状态：**本轮 finding-fix 交给上层按原 review cycle 启动独立 focused re-review；六条 finding 均标记为已修复、待独立核验，不声称 Review 或真实微信 Acceptance 通过。真实扫码、DeepSeek、手机可见与 Windows 安装包仍未在本轮执行。
+- **Commit 与下一步：**精确修复提交、最终 Git 状态与内容身份见当前 worktree 的 `.local/workflow-state/COMPANION-009-IMPL-R2.md` post-commit 记录；本轮不 push、部署或合并。复核只需基线至修复提交的 delta、本节、原 Review 报告和上述测试结果。

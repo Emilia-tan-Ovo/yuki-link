@@ -65,6 +65,18 @@ export class ChannelStore {
     return this.change(state => { state.binding = structuredClone(auth); state.boundAt = at; state.epoch = randomUUID(); state.paused = true; delete state.legacyScope; delete state.scope; state.cursor = ''; });
   }
   unresolvedClaims() { return Object.values(this.state.seen).filter(row => row.inboundId && ['pending','processing','unknown'].includes(row.status)).map(row => ({ id: row.inboundId, epoch: row.epoch })); }
+  async markUnverified(epoch) {
+    return this.change(state => {
+      let count = 0;
+      for (const claim of Object.values(state.seen)) {
+        if (claim.epoch === epoch && ['pending', 'processing', 'unknown'].includes(claim.status)) {
+          claim.status = 'unknown';
+          count++;
+        }
+      }
+      return count;
+    });
+  }
   async unbind(expectedEpoch) { return this.change(state => { if (expectedEpoch && state.epoch !== expectedEpoch) return false; state.binding = null; state.boundAt = null; state.cursor = ''; state.paused = true; state.epoch = randomUUID(); }); }
   async setPaused(value, epoch = this.state.epoch) { return this.change(state => { if (state.epoch !== epoch || !state.binding) return false; state.paused = !!value; }); }
   async setCursor(cursor, epoch = this.state.epoch) {

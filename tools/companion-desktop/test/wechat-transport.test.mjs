@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { WeChatApi, WeChatApiError, parseWeixinJson, weixinOrigin } from '../desktop/wechat/api.mjs';
 import { ChannelStore } from '../desktop/wechat/channel-store.mjs';
 import { WeChatService } from '../desktop/wechat/service.mjs';
+import { WeChatRuntime } from '../desktop/wechat/runtime.mjs';
+import QRCode from 'qrcode';
 
 async function fixture(t) {
   const dir = await mkdtemp(join(tmpdir(), 'yuki-wechat-'));
@@ -95,6 +97,58 @@ test('pending claim prevents cursor advance; old poll cannot restore status afte
   await store.bind(auth, 1000);
   assert.notEqual(store.epoch(), oldEpoch);
   assert.equal(store.record('unresolved'), null);
+});
+
+test('response stream stops at the byte limit without consuming the rest', async () => {
+  let chunks = 0, cancelled = false;
+  const stream = new ReadableStream({
+    pull(controller) {
+      chunks++;
+      controller.enqueue(new Uint8Array(1024 * 1024));
+    },
+    cancel() { cancelled = true; },
+  }, { highWaterMark: 0 });
+  const api = new WeChatApi(async () => new Response(stream));
+  await assert.rejects(api.updates(auth, '', new AbortController().signal), error => error instanceof WeChatApiError && error.kind === 'invalid_response');
+  assert.equal(chunks, 3);
+  assert.equal(cancelled, true);
+});
+
+test('older QR render cannot publish after a newer state', async () => {
+  const original = QRCode.toDataURL;
+  let release;
+  QRCode.toDataURL = () => new Promise(resolve => { release = resolve; });
+  try {
+    const delivered = [];
+    const runtime = new WeChatRuntime({ deliver: message => delivered.push(message) });
+    let state = { revision: 1, status: 'waiting_scan', qr: { content: 'qr', expiresAt: 10 }, bound: false };
+    runtime.service = { snapshot: () => structuredClone(state) };
+    const stale = runtime.publish();
+    state = { revision: 2, status: 'paused', qr: null, bound: true };
+    await runtime.publish();
+    release('old image');
+    await stale;
+    assert.equal(delivered.length, 1);
+    assert.equal(delivered[0].status, 'paused');
+    assert.equal(delivered[0].qrImage, null);
+  } finally { QRCode.toDataURL = original; }
+});
+
+test('pause and unbind persist visible unverified outcomes for in-flight claims', async t => {
+  const { store } = await fixture(t);
+  await store.bind(auth, 1000);
+  await store.setPaused(false);
+  const epoch = store.epoch();
+  await store.claim('in-flight', 'ctx', { text: '你好', epoch });
+  await store.finish('in-flight', epoch, { status: 'processing' });
+  const service = new WeChatService({ store, api: {}, receive: async () => {} });
+  const paused = await service.pause();
+  assert.match(paused.detail, /尚未核实/u);
+  assert.equal(store.record('in-flight', epoch).status, 'unknown');
+  const unbound = await service.unbind();
+  assert.match(unbound.detail, /尚未核实/u);
+  assert.equal(store.record('in-flight', epoch).status, 'unknown');
+  assert.equal(store.binding(), null);
 });
 
 test('pause during async local confirmation cannot restore an old binding', async t => {

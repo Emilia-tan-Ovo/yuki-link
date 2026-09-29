@@ -18,7 +18,7 @@ function showWeChat(message) {
   $('wechat-status').textContent = `${names[message.status] || '微信状态待确认'}${message.detail ? '：' + message.detail : ''}`;
   const image = $('wechat-qr'); image.hidden = !message.qrImage; image.src = message.qrImage || '';
   $('wechat-expiry').textContent = message.qrExpiresAt ? `二维码截止时间：${new Date(message.qrExpiresAt).toLocaleString()}` : '';
-  const delivery = { none: '尚无微信投递记录', accepted_by_transport: '最近回复已被微信服务接受；手机可见仍待确认', failed: '最近回复被明确拒绝', unknown: '最近回复投递状态未知，不会自动重发', stale_memory: '记忆已变化，旧回复未继续投递' };
+  const delivery = { none: '尚无微信投递记录', accepted_by_transport: '最近回复已被微信服务接受；手机可见仍待确认', partial: '最近回复部分已被微信服务接受，后续部分投递失败；手机可见仍待确认', failed: '最近回复被明确拒绝', unknown: '最近回复投递状态未知，不会自动重发', stale_memory: '记忆已变化，旧回复未继续投递' };
   $('wechat-delivery').textContent = `${delivery[message.lastDelivery] || delivery.none}${message.lastInputAt ? ' · 最近入站 ' + new Date(message.lastInputAt).toLocaleString() : ''}`;
   $('wechat-confirm').disabled = message.status !== 'awaiting_local_confirmation';
   $('wechat-resume').disabled = !message.bound || message.status === 'connected';
