@@ -78,6 +78,8 @@ export class WorkflowHistory {
   current = new Map<string, WorkflowSnapshotRecord>();
   requests = new Map<string, WorkflowSnapshotRecord>();
   assessments = new Map<string, WorkflowAssessment>();
+  private background: { controller: AbortController; done: Promise<void> } | null = null;
+  private closed = false;
   constructor(journal: Journal, ticket: (id: string) => Ticket, source: WorkflowSource) {
     this.journal = journal; this.ticket = ticket; this.source = source;
     for (const record of journal.records) this.apply(record);
@@ -135,19 +137,44 @@ export class WorkflowHistory {
     return this.receipt(workflow, entry, false);
   }
   scan() {
+    // An explicit synchronous refresh supersedes any older background observation.
+    this.background?.controller.abort();
     if (this.journal.failure) return;
     for (const [ticketId, workflow] of this.current) {
       const assessment = this.source.assess(this.ticket(ticketId), workflow.snapshot);
-      const previous = this.assessments.get(ticketId) ?? workflow.assessment;
-      if (comparable(assessment) !== comparable(previous)) {
-        try {
-          const entry = this.journal.append({ kind: 'workflow_observation', workflow: { ticket_id: ticketId,
-            conversation_id: workflow.conversation_id, workflow_revision: workflow.workflow_revision,
-            subject_ref: workflow.snapshot.subject.subject_id, assessment } });
-          this.apply(entry);
-        } catch { if (this.journal.failure) return; throw new HarnessError('RECORDING_FAILED'); }
-      } else this.assessments.set(ticketId, assessment);
+      this.observe(ticketId, workflow, assessment);
+      if (this.journal.failure) return;
     }
+  }
+  scanBackground(): Promise<void> {
+    if (this.closed || this.journal.failure) return Promise.resolve();
+    if (this.background) return this.background.done;
+    const controller = new AbortController();
+    const done = (async () => {
+      for (const [ticketId, workflow] of [...this.current]) {
+        if (controller.signal.aborted || this.journal.failure) return;
+        const assessment = await this.source.assessAsync(this.ticket(ticketId), workflow.snapshot, controller.signal);
+        if (controller.signal.aborted || this.journal.failure) return;
+        // A newly recorded revision must never receive the old revision's result.
+        if (this.current.get(ticketId) === workflow) this.observe(ticketId, workflow, assessment);
+      }
+    })().catch(error => { if (!controller.signal.aborted) throw error; }).finally(() => {
+      if (this.background?.controller === controller) this.background = null;
+    });
+    this.background = { controller, done };
+    return done;
+  }
+  close() { this.closed = true; this.background?.controller.abort(); }
+  private observe(ticketId: string, workflow: WorkflowSnapshotRecord, assessment: WorkflowAssessment) {
+    const previous = this.assessments.get(ticketId) ?? workflow.assessment;
+    if (comparable(assessment) !== comparable(previous)) {
+      try {
+        const entry = this.journal.append({ kind: 'workflow_observation', workflow: { ticket_id: ticketId,
+          conversation_id: workflow.conversation_id, workflow_revision: workflow.workflow_revision,
+          subject_ref: workflow.snapshot.subject.subject_id, assessment } });
+        this.apply(entry);
+      } catch { if (this.journal.failure) return; throw new HarnessError('RECORDING_FAILED'); }
+    } else this.assessments.set(ticketId, assessment);
   }
   summary(ticketId: string) {
     const record = this.current.get(ticketId);
