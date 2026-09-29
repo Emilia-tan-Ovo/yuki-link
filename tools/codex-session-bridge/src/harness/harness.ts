@@ -250,10 +250,11 @@ export class Harness {
       }
     }
   }
-  scan(refresh = false) {
+  scan(refresh = false, backgroundWorkflow = false) {
     if (this.journal.failure) return;
     this.taskHistory.scan();
-    this.workflowHistory.scan();
+    if (backgroundWorkflow) void this.workflowHistory.scanBackground().catch(() => { this.sourceFailure = 'SOURCE_UNAVAILABLE'; });
+    else this.workflowHistory.scan();
     let failure = false;
     for (const binding of this.bindings.values()) {
       try {
@@ -288,8 +289,8 @@ export class Harness {
     this.sourceFailure = failure ? 'SOURCE_UNAVAILABLE' : null;
     this.checkedAt = now();
   }
-  start(interval = 1000) { this.recover(); this.scan(true); this.timer ??= setInterval(() => this.scan(), interval); this.timer.unref(); }
-  close() { if (this.timer) clearInterval(this.timer); this.timer = null; this.scan(); this.taskHistory.close(); }
+  start(interval = 1000) { this.recover(); this.scan(true); this.timer ??= setInterval(() => this.scan(false, true), interval); this.timer.unref(); }
+  close() { if (this.timer) clearInterval(this.timer); this.timer = null; this.workflowHistory.close(); this.scan(); this.taskHistory.close(); }
   health() {
     const computer = this.computerCalls.health();
     const tasks = this.taskHistory.health();

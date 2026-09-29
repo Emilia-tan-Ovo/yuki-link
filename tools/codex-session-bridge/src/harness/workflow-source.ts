@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import type { Source, Ticket } from './model.ts';
 import type { WorkflowAssessment, WorkflowSnapshot } from './workflow-model.ts';
 
@@ -25,6 +25,9 @@ const scalar = (front: string, name: string) => {
 };
 
 interface GitResult { status: number | null; stdout: string; stderr: string }
+const gitArgs = (args: string[]) => ['--no-optional-locks', '-c', 'core.hooksPath=', '-c', 'core.fsmonitor=false',
+  '-c', 'diff.external=', ...args];
+const gitOptions = { encoding: 'utf8' as const, windowsHide: true, shell: false, timeout: 3000, maxBuffer: 1024 * 1024 };
 export interface WorkflowSourceOptions { git?: () => string }
 
 export type WorkflowValidationIssue = { field: string; path: string; reason: string };
@@ -73,9 +76,15 @@ export class WorkflowSource {
     if (issues.length) throw new WorkflowPathError(issues);
   }
   private runGit(cwd: string, args: string[]): GitResult {
-    const result = spawnSync(this.git(), ['--no-optional-locks', '-c', 'core.hooksPath=', '-c', 'core.fsmonitor=false',
-      '-c', 'diff.external=', ...args], { cwd, encoding: 'utf8', windowsHide: true, shell: false, timeout: 3000, maxBuffer: 1024 * 1024 });
+    const result = spawnSync(this.git(), gitArgs(args), { ...gitOptions, cwd });
     return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+  }
+  private runGitAsync(cwd: string, args: string[], signal?: AbortSignal): Promise<GitResult> {
+    return new Promise(resolve => {
+      execFile(this.git(), gitArgs(args), { ...gitOptions, cwd, signal }, (error, stdout, stderr) => {
+        resolve({ status: error ? typeof error.code === 'number' ? error.code : null : 0, stdout, stderr });
+      });
+    });
   }
   private file(root: string, location: string) {
     if (!path.isAbsolute(location) || /[\x00-\x1f]/.test(location)) throw new Error('unsafe-path');
@@ -89,6 +98,24 @@ export class WorkflowSource {
     return resolved;
   }
   assess(ticket: Ticket, snapshot: WorkflowSnapshot): WorkflowAssessment {
+    const facts = this.assessment(ticket, snapshot);
+    let step = facts.next();
+    while (!step.done) step = facts.next(this.runGit(...step.value));
+    return step.value;
+  }
+  async assessAsync(ticket: Ticket, snapshot: WorkflowSnapshot, signal?: AbortSignal): Promise<WorkflowAssessment> {
+    const facts = this.assessment(ticket, snapshot);
+    signal?.throwIfAborted();
+    let step = facts.next();
+    while (!step.done) {
+      const result = await this.runGitAsync(...step.value, signal);
+      signal?.throwIfAborted();
+      step = facts.next(result);
+    }
+    return step.value;
+  }
+  // Share validation and freshness semantics; only the Git waiting strategy differs.
+  private *assessment(ticket: Ticket, snapshot: WorkflowSnapshot): Generator<[string, string[]], WorkflowAssessment, GitResult> {
     const checked = now();
     const reasons: WorkflowAssessment['reasons'] = [];
     let state: State = 'verified';
@@ -140,14 +167,14 @@ export class WorkflowSource {
     });
 
     if (root) {
-      const head = this.runGit(root, ['rev-parse', 'HEAD']);
-      const branch = this.runGit(root, ['rev-parse', '--abbrev-ref', 'HEAD']);
+      const head = yield [root, ['rev-parse', 'HEAD']];
+      const branch = yield [root, ['rev-parse', '--abbrev-ref', 'HEAD']];
       if (head.status !== 0 || branch.status !== 0) add('unknown', 'GIT_UNAVAILABLE', 'git', (head.stderr || branch.stderr).trim() || null);
       else {
         if (snapshot.subject.head && head.stdout.trim() !== snapshot.subject.head) add('stale', 'HEAD_CHANGED', 'git rev-parse', head.stdout.trim());
         if (snapshot.checkpoint.head && head.stdout.trim() !== snapshot.checkpoint.head) add('stale', 'CHECKPOINT_HEAD_STALE', 'git rev-parse', head.stdout.trim());
         if (snapshot.checkpoint.branch && branch.stdout.trim() !== snapshot.checkpoint.branch) add('mismatch', 'BRANCH_MISMATCH', 'git rev-parse', branch.stdout.trim());
-        const status = this.runGit(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
+        const status = yield [root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']];
         if (status.status !== 0) add('unknown', 'GIT_STATUS_UNAVAILABLE', 'git status', status.stderr.trim() || null);
         else {
           const actual = { staged: new Set<string>(), unstaged: new Set<string>(), untracked: new Set<string>() };
