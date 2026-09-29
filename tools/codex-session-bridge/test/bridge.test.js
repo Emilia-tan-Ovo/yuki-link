@@ -484,9 +484,10 @@ test('UTF-8 split byte streams, multiline input and shell metacharacters round-t
   const bytes = Buffer.from(JSON.stringify({ text: payload }) + '\r\n');
   for (const byte of bytes) stream.write(Buffer.from([byte]));
   stream.end(); await tick(); assert.equal(lines[0].text, payload);
-  const args = execArguments({ model: 'gpt-6-astra', reasoning: 'high' }, { cwd: 'C:\\中文 空格', codex_thread_id: 'test-id' });
+  const args = execArguments({ model: 'gpt-6-astra', reasoning: 'high', service_tier: 'fast' }, { cwd: 'C:\\中文 空格', codex_thread_id: 'test-id' });
   assert.deepEqual(args.slice(-3), ['resume', 'test-id', '-']);
-  assert.ok(args.includes('model_reasoning_effort="high"')); assert.ok(!args.includes('--last'));
+  assert.ok(args.includes('model_reasoning_effort="high"'));
+  assert.ok(args.includes('service_tier="fast"')); assert.ok(!args.includes('--last'));
 });
 
 test('real MCP HTTP clients reconnect to durable runs; host/origin checks and explicit errors work', async t => {
@@ -508,8 +509,9 @@ test('real MCP HTTP clients reconnect to durable runs; host/origin checks and ex
     assert.match(tool.description, /Compatibility, diagnostic or administrator/);
     assert.match(tool.description, /start_workflow_agent/);
   }
-  assert.match(toolList.tools.find(tool => tool.name === 'codex_start_session').inputSchema.properties.model.description,
-    /Start default: gpt-6-sol/);
+  const rawStartTool = toolList.tools.find(tool => tool.name === 'codex_start_session');
+  assert.match(rawStartTool.inputSchema.properties.model.description, /Start default: gpt-6-sol/);
+  assert.deepEqual(rawStartTool.inputSchema.properties.service_tier.enum, ['default', 'fast']);
   const denied = await client.callTool({ name: 'codex_start_session', arguments: input() });
   assert.equal(denied.structuredContent.error.code, 'RAW_EXECUTION_NOT_AUTHORIZED');
   const started = await client.callTool({ name: 'codex_start_session', arguments: authorize('start', input()) });

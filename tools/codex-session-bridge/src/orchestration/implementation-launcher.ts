@@ -345,10 +345,11 @@ export class ImplementationLauncher {
 
     this.harness.executionGate('new-side-effect');
     const snapshot = this.current(input);
+    const profile = snapshot.authorization.execution_profile ?? { model: snapshot.policy.model, reasoning: snapshot.policy.reasoning, service_tier: snapshot.policy.service_tier ?? 'default' };
     const prompt = this.prompt(snapshot, input);
     const protection = {
       caller_fingerprint: callerFingerprint, contract, policy: snapshot.policy, authorization: snapshot.authorization,
-      authority_source: snapshot.authority.source,
+      ...(snapshot.authorization.execution_profile ? { execution_profile: profile } : {}), authority_source: snapshot.authority.source,
       ...(snapshot.authority.companion ? { companion_dispatch: snapshot.authority.companion } : {}),
       prompt_context: { references: snapshot.references, current_delta: input.current_delta,
         ...(companionRequest(snapshot.authority) ? { confirmed_request: companionRequest(snapshot.authority) } : {}),
@@ -362,20 +363,21 @@ export class ImplementationLauncher {
       ticket_id: input.ticket_id, request_id: input.request_id, destination: { kind: 'main' },
       expected_workflow_revision: input.expected.workflow_revision, subject_ref: input.expected.subject_ref,
       content_identity: input.expected.content_identity,
-      launch: { cwd: snapshot.ticket.expected_worktree, prompt, sender: 'Emilia', model: snapshot.policy.model,
-        reasoning: snapshot.policy.reasoning, timeout_ms: null, permissions: null },
+      launch: { cwd: snapshot.ticket.expected_worktree, prompt, sender: 'Emilia', model: profile.model,
+        reasoning: profile.reasoning, service_tier: profile.service_tier, timeout_ms: null, permissions: null },
       authorization_boundary: { schema_version: 1, policy_id: snapshot.policy.policy_id,
         decision_ref: snapshot.authorization.authorization_ref, concurrency: { mode: 'single-line', decision_ref: null } },
       implementation: protection,
     });
     try {
       await dispatchWorkItem(this.manager, reserved, { request_id: reserved.runtime.request_id, cwd: snapshot.ticket.expected_worktree,
-        prompt, sender: 'Emilia', model: snapshot.policy.model, reasoning: snapshot.policy.reasoning, timeout_ms: undefined },
+        prompt, sender: 'Emilia', model: profile.model, reasoning: profile.reasoning, service_tier: profile.service_tier, timeout_ms: undefined },
       (dispatch: any) => {
         this.current(input, { authority: snapshot.authority, environment: snapshot.environment });
-        if (dispatch?.config?.model !== snapshot.policy.model || dispatch?.config?.reasoning !== snapshot.policy.reasoning) {
+        if (dispatch?.config?.model !== profile.model || dispatch?.config?.reasoning !== profile.reasoning
+          || (dispatch?.config?.service_tier ?? 'default') !== profile.service_tier) {
           throw new HarnessError('IMPLEMENTATION_MODEL_POLICY_CONFLICT', { expected: {
-            model: snapshot.policy.model, reasoning: snapshot.policy.reasoning,
+            model: profile.model, reasoning: profile.reasoning, service_tier: profile.service_tier,
           }, observed: dispatch?.config ?? null, reprepare_required: true });
         }
         this.harness.executionOperations.guardDispatch(reserved.operation_id, dispatch);

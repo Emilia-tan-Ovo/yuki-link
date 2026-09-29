@@ -67,6 +67,7 @@ test('selected release records launcher flag support and rejects a changed claim
   const unsupported = await prepareDeployment(f.options);
   assert.equal(unsupported.launcherFlags.implementationLaunchAuthority, false);
   assert.equal(unsupported.launcherFlags.reviewLaunchAuthority, false);
+  assert.equal(unsupported.launcherFlags.executionAuthority, false);
   const trusted = path.join(f.directory, 'trusted'); mkdirSync(trusted);
   const authority = path.join(trusted, 'authority.json'); writeFileSync(authority, '{}');
   const config = { node: process.execPath, pwsh: process.execPath, codex: process.execPath,
@@ -78,13 +79,18 @@ test('selected release records launcher flag support and rejects a changed claim
   await assert.rejects(new YcaUnit({ ...config, implementationLaunchAuthority: undefined,
     reviewLaunchAuthority: authority }, host, {}, () => {}, new Events(f.directory)).start(),
   { code: 'DEPLOYMENT_LAUNCHER_UNSUPPORTED' });
-  writeFileSync(path.join(f.bridge, 'src/main.js'), "if (process.argv.includes('--help')) console.log('--implementation-launch-authority ABSOLUTE_JSON_PATH\\n--review-launch-authority ABSOLUTE_JSON_PATH');\n");
+  await assert.rejects(new YcaUnit({ ...config, implementationLaunchAuthority: undefined,
+    executionAuthority: authority }, host, {}, () => {}, new Events(f.directory)).start(),
+  { code: 'DEPLOYMENT_LAUNCHER_UNSUPPORTED' });
+  writeFileSync(path.join(f.bridge, 'src/main.js'), "if (process.argv.includes('--help')) console.log('--implementation-launch-authority ABSOLUTE_JSON_PATH\\n--review-launch-authority ABSOLUTE_JSON_PATH\\n--execution-authority ABSOLUTE_JSON_PATH');\n");
   git(f.repo, 'add', '.'); git(f.repo, 'commit', '-m', 'launcher support'); git(f.repo, 'push', 'origin', 'merged');
   const supported = await prepareDeployment(f.options);
   assert.equal(supported.launcherFlags.implementationLaunchAuthority, true);
   assert.equal(supported.launcherFlags.reviewLaunchAuthority, true);
+  assert.equal(supported.launcherFlags.executionAuthority, true);
   assert.equal((await verifyDeployment(f.root)).launcherFlags.implementationLaunchAuthority, true);
   assert.equal((await verifyDeployment(f.root)).launcherFlags.reviewLaunchAuthority, true);
+  assert.equal((await verifyDeployment(f.root)).launcherFlags.executionAuthority, true);
   const manifestFile = path.join(f.root, 'manifests', supported.commit + '.json');
   const originalManifest = readFileSync(manifestFile, 'utf8');
   const legacy = JSON.parse(originalManifest);
@@ -223,6 +229,8 @@ test('real deployed YCA reports the target commit and YCA-002 contract; preparat
     permission_selection: 'owner-native-default', preflight: { required_paths: [], required_executables: [],
       require_recording: true, model_line: 'single' }, authority_refs: ['fixture-control'],
   }, authorizations: [] }));
+  const executionAuthority = path.join(controlRoot, 'execution-authority.json');
+  writeFileSync(executionAuthority, JSON.stringify({ schema_version: 1, decisions: [], raw_access: [] }));
   const reviewAuthority = path.join(controlRoot, 'review-authority.json');
   writeFileSync(reviewAuthority, JSON.stringify({ schema_version: 1, active_policy: {
     schema_version: 1, policy_id: 'fixture-review-policy', revision: 1, project_key: 'YCA',
@@ -233,7 +241,7 @@ test('real deployed YCA reports the target commit and YCA-002 contract; preparat
   const pwsh = process.env.CC_TEST_PWSH ?? (await run('pwsh.exe', ['-NoProfile', '-Command', '[Console]::Write((Get-Process -Id $PID).Path)'])).output.trim();
   const config = { node: process.execPath, pwsh, codex: process.execPath, entry: path.join(f.bridge, 'src/main.js'), cwd: f.bridge,
     repo: workspace, runtime: path.join(f.directory, 'service'), deploymentRoot: f.root, controlRoots: [controlRoot],
-    implementationLaunchAuthority: authority, reviewLaunchAuthority: reviewAuthority,
+    implementationLaunchAuthority: authority, reviewLaunchAuthority: reviewAuthority, executionAuthority,
     port: await port(), controlPort: await port() };
   const state = {}, host = new WindowsHost(pwsh), events = new Events(f.directory);
   let unit = new YcaUnit(config, host, state, () => {}, events);
@@ -247,6 +255,8 @@ test('real deployed YCA reports the target commit and YCA-002 contract; preparat
       true, 'the owned process receives the configured authority path from the selected release');
     assert.equal((await host.inspect(config.node, [first.entry, '--review-launch-authority', reviewAuthority], running.pid))[0]?.matches,
       true, 'the owned process receives review authority from the selected release');
+    assert.equal((await host.inspect(config.node, [first.entry, '--execution-authority', executionAuthority], running.pid))[0]?.matches,
+      true, 'the owned process receives execution authority from the selected release');
     await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${config.port}/mcp`)));
     const rejected = await client.callTool({ name: 'start_ticket_implementation', arguments: {
       schema_version: 1, ticket_id: randomUUID(), request_id: 'unregistered-ticket', authorization_ref: 'fixture',

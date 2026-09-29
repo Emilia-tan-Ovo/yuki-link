@@ -6,6 +6,7 @@ const id = z.string().uuid();
 const text = z.string().min(1).max(512);
 const hash = z.string().regex(/^[0-9a-f]{64}$/);
 const subjectDigest = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+export const executionProfileSchema = z.object({ model: text, reasoning: text, service_tier: z.enum(['default', 'fast']) }).strict();
 
 export const requestedExecutionDestinationSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('main') }).strict(),
@@ -42,6 +43,7 @@ const executionReserveV1InputSchema = z.object({
     sender: z.string().min(1).max(80).nullable().default(null),
     model: z.string().min(1).max(128).nullable().default(null),
     reasoning: z.string().min(1).max(128).nullable().default(null),
+    service_tier: z.enum(['default', 'fast']).optional(),
     timeout_ms: z.number().int().min(1000).max(1_800_000).nullable().default(null),
     permissions: permissionSelectionSchema.nullable().default(null),
   }).strict(),
@@ -60,7 +62,7 @@ export const implementationPolicySnapshotSchema = z.object({
   schema_version: z.literal(1), policy_id: text, revision: z.number().int().positive(), digest: hash,
   project_key: text, action: z.literal('ticket-implementation'), workflow_phase: z.literal('implementation'),
   supported_contract_versions: z.array(z.number().int().positive()).min(1).max(16),
-  model: text, reasoning: text, permission_selection: z.literal('owner-native-default'),
+  model: text, reasoning: text, service_tier: z.enum(['default', 'fast']).optional(), permission_selection: z.literal('owner-native-default'),
   preflight: z.object({
     required_paths: z.array(text).max(64), required_executables: z.array(text).max(64),
     dependency_packages: z.array(text).max(16).optional(),
@@ -74,6 +76,7 @@ export const implementationAuthorizationSchema = z.object({
   schema_version: z.literal(1), authorization_id: text, ticket_key: text,
   action: z.literal('ticket-implementation'), endpoint: z.literal('implementation'), contract_version: z.literal(1),
   authorization_ref: text, notes: z.object({ path: text, sha256: hash }).strict(),
+  execution_profile: executionProfileSchema.optional(),
   authority_refs: z.array(text).min(1).max(32),
 }).strict();
 
@@ -107,6 +110,7 @@ const deltaSchema = z.object({ ref: text, value: z.string().max(2048).nullable()
 export const implementationExecutionProtectionSchema = z.object({
   caller_fingerprint: hash, contract: implementationLaunchContractSchema,
   policy: implementationPolicySnapshotSchema, authorization: implementationAuthorizationSchema,
+  execution_profile: executionProfileSchema.optional(),
   authority_source: implementationAuthoritySourceIdentitySchema.optional(),
   companion_dispatch: companionDispatchProtectionSchema.optional(),
   prompt_context: z.object({ references: z.array(text).min(1).max(64), current_delta: z.array(deltaSchema).max(32),
@@ -128,7 +132,7 @@ export const reviewPolicySnapshotSchema = z.object({
   schema_version: z.literal(1), policy_id: text, revision: z.number().int().positive(), digest: hash,
   project_key: text, action: z.literal('ticket-review'), workflow_phase: z.literal('review'),
   supported_contract_versions: z.array(z.number().int().positive()).min(1).max(16),
-  model: text, reasoning: text, permission_selection: z.literal('owner-native-default'),
+  model: text, reasoning: text, service_tier: z.enum(['default', 'fast']).optional(), permission_selection: z.literal('owner-native-default'),
   preflight: z.object({ require_recording: z.literal(true), model_line: z.literal('single') }).strict(),
   authority_refs: z.array(text).min(1).max(32),
 }).strict();
@@ -137,11 +141,13 @@ export const reviewAuthorizationSchema = z.object({
   schema_version: z.literal(1), authorization_id: text, ticket_key: text, review_id: text,
   action: z.literal('ticket-review'), endpoint: z.literal('review'), contract_version: z.literal(1),
   contract_digest: hash, authorization_ref: text, subject_ref: text, subject_identity: hash,
-  content_identity: executionContentIdentitySchema, authority_refs: z.array(text).min(1).max(32),
+  content_identity: executionContentIdentitySchema, execution_profile: executionProfileSchema.optional(),
+  authority_refs: z.array(text).min(1).max(32),
 }).strict();
 export const reviewExecutionProtectionSchema = z.object({
   caller_fingerprint: hash, contract: reviewLaunchContractSchema,
   policy: reviewPolicySnapshotSchema, authorization: reviewAuthorizationSchema,
+  execution_profile: executionProfileSchema.optional(),
   authority_source: implementationAuthoritySourceIdentitySchema,
   companion_dispatch: companionDispatchProtectionSchema.optional(),
   prompt_context: z.object({ references: z.array(text).min(1).max(64),
@@ -162,14 +168,15 @@ export const workflowAgentExecutionProtectionSchema = z.object({
     review_policy: z.literal('delegated').nullable() }).strict(),
   policy: z.object({ schema_version: z.literal(1), policy_id: text, revision: z.number().int().positive(),
     digest: hash, project_key: text, action: workflowAgentActionSchema, workflow_phase: text,
-    model: text, reasoning: text, permission_selection: z.literal('owner-native-default'),
+    model: text, reasoning: text, service_tier: z.enum(['default', 'fast']).optional(), permission_selection: z.literal('owner-native-default'),
     preflight: z.object({ require_recording: z.literal(true), model_line: z.literal('single'),
       required_paths: z.array(text).max(64), required_executables: z.array(text).max(64),
       dependency_packages: z.array(text).max(16) }).strict() }).strict(),
   authorization: z.object({ schema_version: z.literal(1), authorization_id: text, ticket_key: text,
     work_item_scope: workItemScopeSchema.optional(),
     action: workflowAgentActionSchema, authorization_ref: text, subject_ref: text,
-    subject_identity: hash.nullable(), authority_refs: z.array(text).min(1).max(32),
+    subject_identity: hash.nullable(), execution_profile: executionProfileSchema.optional(),
+    authority_refs: z.array(text).min(1).max(32),
     agent_required: z.boolean().optional(), review_id: text.optional(), acceptance_id: text.optional(),
     agent_criterion: z.object({ criteria_ref: text, requirement: text,
       behavior: z.literal('agent-session') }).strict().optional(),
@@ -178,6 +185,7 @@ export const workflowAgentExecutionProtectionSchema = z.object({
       fix_baseline: text }).strict().optional(),
     finding_batch: z.array(z.object({ origin_review_id: text, finding_id: text, report_ref: text,
       fix_baseline: text }).strict()).min(2).max(32).optional() }).strict(),
+  execution_profile: executionProfileSchema.optional(),
   authority_source: implementationAuthoritySourceIdentitySchema,
   companion_dispatch: companionDispatchProtectionSchema.optional(),
   prompt_context: z.object({ references: z.array(text).min(1).max(64),
@@ -210,7 +218,7 @@ const executionProtectedIntentV1Schema = z.object({
   launch: z.object({
     cwd: z.string().min(1), prompt_sha256: hash, prompt_utf8_bytes: z.number().int().positive(),
     sender: z.string().max(80).nullable(), model: z.string().max(128).nullable(),
-    reasoning: z.string().max(128).nullable(), timeout_ms: z.number().int().nullable(),
+    reasoning: z.string().max(128).nullable(), service_tier: z.enum(['default', 'fast']).optional(), timeout_ms: z.number().int().nullable(),
     permission_selection: z.tuple([
       z.enum(['read-only', 'workspace-write', 'danger-full-access']),
       z.enum(['on-request', 'never']).nullable(),
@@ -241,7 +249,7 @@ const executionOperationCommon = {
   protected_fingerprint: hash, destination: resolvedExecutionDestinationSchema, state: executionStateSchema,
   revision: z.number().int().positive(), runtime: executionRuntimeSchema,
   binding_id: id.nullable(), dispatch: z.object({
-    model: text, reasoning: text, permissions: z.unknown(), observed_workflow_revision: z.number().int().positive(),
+    model: text, reasoning: text, service_tier: z.enum(['default', 'fast']).optional(), permissions: z.unknown(), observed_workflow_revision: z.number().int().positive(),
     observed_subject_ref: text, observed_content_identity: executionContentIdentitySchema,
   }).strict().nullable(),
   failure: z.object({ code: text, reason: text, reprepare_required: z.boolean() }).strict().nullable(),

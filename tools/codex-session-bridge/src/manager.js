@@ -66,6 +66,7 @@ export class SessionManager {
     if (input.timeout_ms !== undefined && (!Number.isInteger(input.timeout_ms) || input.timeout_ms < 1000 || input.timeout_ms > 1_800_000)) throw new BridgeError('INVALID_TIMEOUT', 'timeout_ms must be 1000–1800000.');
     if (input.sender !== undefined && (typeof input.sender !== 'string' || input.sender.length > 80)) throw new BridgeError('INVALID_SENDER', 'sender must be at most 80 characters.');
     for (const key of ['model', 'reasoning']) if (input[key] !== undefined && (typeof input[key] !== 'string' || input[key].length > 128 || !input[key].length)) throw new BridgeError('INVALID_MODEL_CONFIG', `${key} must be a non-empty string of at most 128 characters.`);
+    if (input.service_tier !== undefined && !['default', 'fast'].includes(input.service_tier)) throw new BridgeError('INVALID_SERVICE_TIER', 'service_tier must be default or fast.');
     validatePermissionSelection(input.permissions);
   }
 
@@ -92,26 +93,30 @@ export class SessionManager {
     const legacyHash = input.permissions === undefined
       ? fingerprint(['start', input.cwd, input.prompt, input.sender ?? 'caller', input.model ?? null, input.reasoning ?? null, input.timeout_ms ?? null])
       : null;
-    const hash = fingerprint(['start', input.cwd, input.prompt, input.sender ?? 'caller', input.model ?? null, input.reasoning ?? null, input.timeout_ms ?? null, permissionKey]);
-    const replay = this.replay(input.request_id, hash, legacyHash ? [legacyHash] : []);
+    const preTierHash = fingerprint(['start', input.cwd, input.prompt, input.sender ?? 'caller', input.model ?? null, input.reasoning ?? null, input.timeout_ms ?? null, permissionKey]);
+    const hash = fingerprint(['start', input.cwd, input.prompt, input.sender ?? 'caller', input.model ?? null, input.reasoning ?? null, input.service_tier ?? null, input.timeout_ms ?? null, permissionKey]);
+    const replay = this.replay(input.request_id, hash, input.service_tier === undefined
+      ? [preTierHash, ...(legacyHash ? [legacyHash] : [])] : []);
     if (replay) return replay;
     const cwd = this.cwd(input.cwd);
     if (!this.permissionResolver) throw new BridgeError('PERMISSION_RESOLUTION_FAILED', 'No Codex permission resolver is configured.');
     // Keep Codex app-server discovery sequential: cold model and permission probes
     // otherwise start two local app-server processes at once and can starve the
     // shorter permission handshake on slower/contended Windows startups.
-    const config = await this.catalog.validate(input.model ?? DEFAULT_MODEL, input.reasoning ?? DEFAULT_REASONING);
+    const catalogConfig = await this.catalog.validate(input.model ?? DEFAULT_MODEL, input.reasoning ?? DEFAULT_REASONING);
+    const config = { ...catalogConfig, service_tier: input.service_tier ?? 'default' };
     const permissions = await this.permissionResolver.resolve(cwd, input.permissions);
     // Recheck after asynchronous capability/config discovery: two clients can retry together.
-    const concurrentReplay = this.replay(input.request_id, hash, legacyHash ? [legacyHash] : []);
+    const concurrentReplay = this.replay(input.request_id, hash, input.service_tier === undefined
+      ? [preTierHash, ...(legacyHash ? [legacyHash] : [])] : []);
     if (concurrentReplay) return concurrentReplay;
-    const session = { id: randomUUID(), codex_thread_id: null, cwd, model: config.model, reasoning: config.reasoning, permissions, created_at: now(), active_run_id: null, last_run_id: null };
+    const session = { id: randomUUID(), codex_thread_id: null, cwd, model: config.model, reasoning: config.reasoning, service_tier: config.service_tier, permissions, created_at: now(), active_run_id: null, last_run_id: null };
     if (guard) {
       const result = guard(Object.freeze({ request_id: input.request_id, fingerprint: hash, cwd,
         config: structuredClone(config), permissions: structuredClone(permissions), launch: Object.freeze({
           prompt_sha256: createHash('sha256').update(input.prompt).digest('hex'),
           prompt_utf8_bytes: Buffer.byteLength(input.prompt, 'utf8'), sender: input.sender ?? null,
-          model: input.model ?? null, reasoning: input.reasoning ?? null, timeout_ms: input.timeout_ms ?? null,
+          model: input.model ?? null, reasoning: input.reasoning ?? null, service_tier: input.service_tier ?? null, timeout_ms: input.timeout_ms ?? null,
           permission_selection: permissionKey,
         }) }));
       if (result && typeof result.then === 'function') throw new BridgeError('INVALID_DISPATCH_GUARD', 'The dispatch guard must not await.');
@@ -129,16 +134,18 @@ export class SessionManager {
   async sendWithGuard(input, guard) {
     if (input.permissions !== undefined) throw new BridgeError('PERMISSION_CHANGE_REQUIRES_NEW_SESSION', 'Create a new session to use a different Codex permission mode.');
     this.validateMessage(input);
-    const hash = fingerprint(['send', input.session_id, input.prompt, input.sender ?? 'caller', input.model ?? null, input.reasoning ?? null, input.timeout_ms ?? null]);
-    const replay = this.replay(input.request_id, hash);
+    const preTierHash = fingerprint(['send', input.session_id, input.prompt, input.sender ?? 'caller', input.model ?? null, input.reasoning ?? null, input.timeout_ms ?? null]);
+    const hash = fingerprint(['send', input.session_id, input.prompt, input.sender ?? 'caller', input.model ?? null, input.reasoning ?? null, input.service_tier ?? null, input.timeout_ms ?? null]);
+    const replay = this.replay(input.request_id, hash, input.service_tier === undefined ? [preTierHash] : []);
     if (replay) return replay;
     const session = this.session(input.session_id);
     sessionPermissionSnapshot(session);
     if (session.active_run_id) throw new BridgeError('SESSION_BUSY', 'This session already has an active run.', { run_id: session.active_run_id });
     if (!session.codex_thread_id) throw new BridgeError('SESSION_NOT_RESUMABLE', 'No Codex thread ID was persisted for this session. Start a new session with a new request_id.');
     this.cwd(session.cwd);
-    const config = await this.catalog.validate(input.model ?? session.model, input.reasoning ?? session.reasoning);
-    const concurrentReplay = this.replay(input.request_id, hash);
+    const catalogConfig = await this.catalog.validate(input.model ?? session.model, input.reasoning ?? session.reasoning);
+    const config = { ...catalogConfig, service_tier: input.service_tier ?? session.service_tier ?? 'default' };
+    const concurrentReplay = this.replay(input.request_id, hash, input.service_tier === undefined ? [preTierHash] : []);
     if (concurrentReplay) return concurrentReplay;
     if (session.active_run_id) throw new BridgeError('SESSION_BUSY', 'This session already has an active run.', { run_id: session.active_run_id });
     if (guard) {
@@ -147,7 +154,7 @@ export class SessionManager {
         permissions: structuredClone(session.permissions), launch: Object.freeze({
           prompt_sha256: createHash('sha256').update(input.prompt).digest('hex'),
           prompt_utf8_bytes: Buffer.byteLength(input.prompt), sender: input.sender ?? null,
-          model: input.model ?? null, reasoning: input.reasoning ?? null, timeout_ms: input.timeout_ms ?? null,
+          model: input.model ?? null, reasoning: input.reasoning ?? null, service_tier: input.service_tier ?? null, timeout_ms: input.timeout_ms ?? null,
           permission_selection: null,
         }) }));
       if (result && typeof result.then === 'function') throw new BridgeError('INVALID_DISPATCH_GUARD', 'The dispatch guard must not await.');
@@ -170,7 +177,7 @@ export class SessionManager {
       this.store.state.runs[run.id] = run;
       Object.defineProperty(this.store.state.requests, input.request_id, { value: { fingerprint: hash, run_id: run.id }, enumerable: true, writable: true, configurable: true });
       session.active_run_id = run.id; session.last_run_id = run.id;
-      this.store.append(run, 'message.sent', { sender: run.sender, text: input.prompt, model: run.model, reasoning: run.reasoning });
+      this.store.append(run, 'message.sent', { sender: run.sender, text: input.prompt, model: run.model, reasoning: run.reasoning, service_tier: run.service_tier });
       this.store.save();
     } catch {
       // save() atomically replaces the snapshot only after all writes succeed.
@@ -206,12 +213,12 @@ export class SessionManager {
 
   accepted(run) {
     const session = this.store.state.sessions[run.session_id];
-    return { session_id: run.session_id, run_id: run.id, status: run.status, model: run.model, reasoning: run.reasoning, permissions: sessionPermissionSnapshot(session), timeout_ms: run.timeout_ms ?? null, deduplicated: false };
+    return { session_id: run.session_id, run_id: run.id, status: run.status, model: run.model, reasoning: run.reasoning, service_tier: run.service_tier ?? 'default', permissions: sessionPermissionSnapshot(session), timeout_ms: run.timeout_ms ?? null, deduplicated: false };
   }
 
   launch(run, session, prompt) {
     run.status = 'running'; run.started_at = now();
-    this.store.append(run, 'run.started', { model: run.model, reasoning: run.reasoning });
+    this.store.append(run, 'run.started', { model: run.model, reasoning: run.reasoning, service_tier: run.service_tier });
     this.store.save();
     const live = { handle: null, timer: null, stopReason: null };
     this.running.set(run.id, live);

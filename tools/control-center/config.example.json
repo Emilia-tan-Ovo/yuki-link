@@ -18,6 +18,7 @@
     "implementationLaunchAuthority": "C:\\ProgramData\\yuki-link\\control\\implementation-authority.json",
     "reviewLaunchAuthority": "C:\\ProgramData\\yuki-link\\control\\review-authority.json",
     "workflowAgentAuthority": "C:\\ProgramData\\yuki-link\\control\\workflow-agent-authority.json",
+    "executionAuthority": "C:\\ProgramData\\yuki-link\\control\\execution-authority.json",
     "companionCardStore": "C:\\Users\\example\\AppData\\Roaming\\Yuki Link Desktop"
   },
   "tunnel": {

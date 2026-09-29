@@ -254,6 +254,7 @@ export class WorkflowAgentLauncher {
     }
     harness.executionGate('new-side-effect');
     const snapshot = this.current(input);
+    const profile = snapshot.authorization.execution_profile ?? { model: snapshot.policy.model, reasoning: snapshot.policy.reasoning, service_tier: snapshot.policy.service_tier ?? 'default' };
     const { phase } = snapshot;
     const narrow = input.action === 'finding-fix' || input.action === 'focused-review';
     const confirmedRequest = narrow ? undefined : companionRequest(snapshot.authority);
@@ -293,7 +294,7 @@ export class WorkflowAgentLauncher {
     const contract = { schema_version: 1, session: 'work-item', destination: phase.destination,
       review_policy: input.action === 'finding-fix' ? 'delegated' : null };
     const protection = { caller_fingerprint: callerFingerprint, action: input.action, contract,
-      policy: snapshot.policy, authorization: snapshot.authorization, authority_source: snapshot.authority.source,
+      policy: snapshot.policy, ...(snapshot.authorization.execution_profile ? { execution_profile: profile } : {}), authorization: snapshot.authorization, authority_source: snapshot.authority.source,
       ...(snapshot.authority.companion ? { companion_dispatch: snapshot.authority.companion } : {}),
       prompt_context: { references, current_delta: currentDelta,
         ...(confirmedRequest ? { confirmed_request: confirmedRequest } : {}) },
@@ -303,18 +304,19 @@ export class WorkflowAgentLauncher {
       ...(input.work_item ? { work_item: input.work_item } : {}),
       destination, expected_workflow_revision: input.expected.workflow_revision,
       subject_ref: input.expected.subject_ref, content_identity: input.expected.content_identity,
-      launch: { cwd: snapshot.cwd, prompt, sender: 'Emilia', model: snapshot.policy.model,
-        reasoning: snapshot.policy.reasoning, timeout_ms: null, permissions: null },
+      launch: { cwd: snapshot.cwd, prompt, sender: 'Emilia', model: profile.model,
+        reasoning: profile.reasoning, service_tier: profile.service_tier, timeout_ms: null, permissions: null },
       authorization_boundary: { schema_version: 1, policy_id: snapshot.policy.policy_id,
         decision_ref: snapshot.authorization.authorization_ref,
         concurrency: { mode: 'single-line', decision_ref: null } }, workflow_agent: protection });
     if (reserved.deduplicated) return { ...harness.executionOperations.reconcile(reserved.operation_id), deduplicated: true };
     try {
       await dispatchWorkItem(manager, reserved, { request_id: reserved.runtime.request_id, cwd: snapshot.cwd,
-        prompt, sender: 'Emilia', model: snapshot.policy.model, reasoning: snapshot.policy.reasoning },
+        prompt, sender: 'Emilia', model: profile.model, reasoning: profile.reasoning, service_tier: profile.service_tier },
       (dispatch: any) => {
         this.current(input, snapshot);
-        if (dispatch?.config?.model !== snapshot.policy.model || dispatch?.config?.reasoning !== snapshot.policy.reasoning) {
+        if (dispatch?.config?.model !== profile.model || dispatch?.config?.reasoning !== profile.reasoning
+          || (dispatch?.config?.service_tier ?? 'default') !== profile.service_tier) {
           throw new HarnessError('WORKFLOW_AGENT_MODEL_POLICY_CONFLICT');
         }
         harness.executionOperations.guardDispatch(reserved.operation_id, dispatch);
