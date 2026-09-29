@@ -32,6 +32,15 @@ export function createHttpServer(manager, computer, observation = {}) {
       let body;
       try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
       catch { response.writeHead(400).end('Invalid JSON'); return; }
+      // This bridge is still a legacy MCP server. Hosted ChatGPT probes modern MCP first;
+      // reject discovery at the JSON-RPC layer so an auto-negotiating client can fall back
+      // to the legacy initialize -> tools/list flow instead of treating HTTP 400 as fatal.
+      if (body?.jsonrpc === '2.0' && body.method === 'server/discover' && body.id !== undefined) {
+        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+          jsonrpc: '2.0', id: body.id, error: { code: -32601, message: 'Method not found' },
+        }));
+        return;
+      }
       // MCP connections are stateless; Codex sessions belong to the shared manager.
       const server = request.url === '/companion-mcp' ? createCompanionMcpServer(manager) : createMcpServer(manager, computer);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
