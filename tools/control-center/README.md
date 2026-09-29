@@ -1,6 +1,6 @@
 # Yuki Link · Control Center V0
 
-独立 Node Supervisor + 原生网页，固定支持本机已核实的 **HTTP YCA + tunnel-client 0.0.14 managed runtime**。不更改 MCP 传输，不管理其他插件，不增加 MCP 工具。先看 [baseline](../../docs/control-center-baseline.md)。
+独立 Node Supervisor + 原生网页，固定支持本机已核实的 **HTTP YCA + tunnel-client 0.0.15 managed runtime**。不更改 MCP 传输，不管理其他插件，不增加 MCP 工具。先看 [baseline](../../docs/control-center-baseline.md)。
 
 ## 打开与本机配置
 
