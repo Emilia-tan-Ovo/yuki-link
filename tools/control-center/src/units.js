@@ -203,8 +203,14 @@ export class YcaUnit {
     // Only an explicitly confirmed operation can hand off its immediate authenticated
     // preflight. Activity is finally decided by the trusted /stop endpoint itself.
     const handedOff = confirm && expectedIdentity;
-    const current = handedOff ? expectedIdentity : await this.observe();
-    if (!current.running) return;
+    let current = handedOff ? expectedIdentity : await this.observe();
+    // A stopped handoff can go stale before this action runs. Confirm OS/port
+    // absence again; if a process appeared, follow the normal stop checks.
+    if (current.running === false) {
+      current = await this.observe();
+      if (current.running === false) return;
+    }
+    if (current.running !== true) throw fail('ACTIVITY_UNKNOWN');
     if (!current.owned) throw fail(current.code === 'ACTIVITY_UNKNOWN' ? 'ACTIVITY_UNKNOWN' : 'OBSERVED_UNOWNED');
     if (handedOff && (current.authenticated !== true || current.instance !== this.state.instance
         || Boolean(current.deployment?.launched) !== Boolean(this.state.deployment)

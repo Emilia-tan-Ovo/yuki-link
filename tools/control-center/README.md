@@ -26,7 +26,7 @@ Control Center 同源提供 `/harness/services`，用于日常查看和启停 YC
 
 日常页直接投影 `Supervisor.snapshot()`：保留每个 unit 的观察来源、时间、stale/unknown、running/healthy/owned/desired/activity，以及 YCA 的 running / selected / remote release。remote 检查失败时旧值只作为 stale 历史提示；tunnel 的本地 live/ready、control-plane reachability 和近期通信证据分层展示，不将其冒充 ChatGPT 端到端成功。所有动作仍只调用 `Supervisor.action(...)` / `updateDeployment(...)`，继续执行既有 ownership、活动任务、observeOnly、release identity 与有限回退检查。
 
-`/api/action` 和 `/api/deployment` 的调用方必须提供一次性 UUID `operation_id`。Control Center 在既有 bounded `events.jsonl` 中记录 `requested` 与 `succeeded | failed` terminal 元数据；重启后仍可恢复。合法响应才形成 succeeded/failed receipt；连接在终态前断开或只有 requested event 时结果为 unknown，页面不会自动重发。operation 轨迹不替代当前 snapshot，也不会写入 Harness 工程 journal。
+`/api/action` 和 `/api/deployment` 的调用方必须提供一次性 UUID `operation_id`。Control Center 在既有 bounded `events.jsonl` 中记录 `requested` 与 `succeeded | failed | unknown` terminal 元数据；重启后仍可恢复。确认动作成功或失败时分别记录 succeeded/failed；服务端无法确认动作结果时持久记录 unknown，连接在终态前断开或只有 requested event 时调用方也应视为 unknown，页面不会自动重发。operation 轨迹不替代当前 snapshot，也不会写入 Harness 工程 journal。
 
 Supervisor 启动 YCA 时只注入 `http://127.0.0.1:<control-center-port>/harness/services`。Harness 严格校验并短时探测该地址，只渲染导航或 unavailable；不代理管理 POST，不共享 cookie、CSRF、token 或配置路径。
 
