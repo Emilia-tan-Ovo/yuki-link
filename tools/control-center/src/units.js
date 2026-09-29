@@ -95,6 +95,7 @@ export class YcaUnit {
     return { running: true, owned, authenticated: Boolean(diagnostic), instance: diagnostic?.instance ?? null,
       pid: p.pid, created: p.created, healthy: Boolean(health && owned && validActivity && !diagnostic.closing && (!expected || verified)), deployment,
       activity: validActivity ? activity : null, tools: validTools ? diagnostic.tools : null, lastBridge: diagnostic?.lastBridge ?? null,
+      lastStop: this.state.lastStop?.pid === p.pid && this.state.lastStop?.created === p.created ? this.state.lastStop : null,
       diagnosticProbe, healthProbe,
       code: identityChanged ? 'OWNERSHIP_CHANGED' : !diagnostic ? (diagnosticCode ?? 'ACTIVITY_UNKNOWN') : !owned ? 'OBSERVED_UNOWNED' : !validActivity ? 'ACTIVITY_UNKNOWN'
         : expected && !runningSource ? 'DEPLOYMENT_OBSERVATION_PENDING' : expected && !verified ? 'DEPLOYMENT_UNVERIFIED'
@@ -198,24 +199,58 @@ export class YcaUnit {
     const p = (await this.host.inspect(this.config.node, this.markers(), child.pid))[0];
     if (p?.matches) { this.state.process = p; this.persist(); }
   }
-  async stop(confirm = false) {
-    const current = await this.observe();
+  async stop(confirm = false, expectedIdentity = null) {
+    // Only an explicitly confirmed operation can hand off its immediate authenticated
+    // preflight. Activity is finally decided by the trusted /stop endpoint itself.
+    const handedOff = confirm && expectedIdentity;
+    const current = handedOff ? expectedIdentity : await this.observe();
     if (!current.running) return;
     if (!current.owned) throw fail(current.code === 'ACTIVITY_UNKNOWN' ? 'ACTIVITY_UNKNOWN' : 'OBSERVED_UNOWNED');
+    if (handedOff && (current.authenticated !== true || current.instance !== this.state.instance
+        || Boolean(current.deployment?.launched) !== Boolean(this.state.deployment)
+        || (this.state.deployment && (current.deployment?.running?.commit !== this.state.deployment.commit
+          || current.deployment.running.dirty !== false
+          || current.tools?.sha256 !== this.state.deployment.tools?.sha256
+          || current.tools?.count !== this.state.deployment.tools?.count)))) throw fail('OWNERSHIP_CHANGED');
     // No blind taskkill fallback: a wedged process whose activity cannot be
     // authenticated needs operator investigation; live tasks are never guessed idle.
     if (!current.activity) throw fail('ACTIVITY_UNKNOWN');
     if (!confirm && Object.values(current.activity).some(n => n > 0)) throw fail('ACTIVE_TASKS');
-    const result = await get(`http://127.0.0.1:${this.config.controlPort}/stop`, { token: this.state.token, method: 'POST', confirm, timeout: YCA_LOCAL_PROBE_TIMEOUT_MS });
-    if (result.status !== 202) throw fail(result.status === 409 ? 'ACTIVE_TASKS' : 'STOP_REJECTED');
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      const p = (await this.host.inspect(this.config.node, this.markers(), current.pid))[0];
-      if (!p) return;
-      if (!matches(p, this.state.process)) throw fail('OWNERSHIP_CHANGED');
-      await sleep(200);
+    const found = await this.host.inspect(this.config.node, this.markers(), current.pid);
+    if (found.length !== 1 || !matches(found[0], current) || !matches(found[0], this.state.process)) throw fail('OWNERSHIP_CHANGED');
+    const record = (state, code = null) => {
+      this.state.lastStop = { instance: this.state.instance, pid: current.pid, created: current.created,
+        at: new Date().toISOString(), state, code }; this.persist();
+    };
+    record('requested');
+    let result;
+    try { result = await get(`http://127.0.0.1:${this.config.controlPort}/stop`, { token: this.state.token, method: 'POST', confirm, timeout: YCA_LOCAL_PROBE_TIMEOUT_MS }); }
+    catch {
+      try { record('unknown', 'STOP_OUTCOME_UNKNOWN'); } catch { /* Preserve unknown even if evidence persistence fails. */ }
+      throw Object.assign(fail('STOP_OUTCOME_UNKNOWN'), { operationOutcome: 'unknown' });
     }
-    throw fail('STOP_TIMEOUT');
+    if (result.status !== 202) {
+      if ([409, 401, 403].includes(result.status)) {
+        const code = result.status === 409 ? 'ACTIVE_TASKS' : 'OBSERVED_UNOWNED';
+        record('rejected', code); throw fail(code);
+      }
+      try { record('unknown', 'STOP_OUTCOME_UNKNOWN'); } catch { /* Preserve uncertainty. */ }
+      throw Object.assign(fail('STOP_OUTCOME_UNKNOWN'), { operationOutcome: 'unknown' });
+    }
+    try {
+      record('accepted');
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        const p = (await this.host.inspect(this.config.node, this.markers(), current.pid))[0];
+        if (!p) { record('stopped'); return; }
+        if (!matches(p, this.state.process) || !matches(p, current)) throw fail('OWNERSHIP_CHANGED');
+        await sleep(200);
+      }
+      throw fail('STOP_TIMEOUT');
+    } catch (error) {
+      try { record('unknown', error.code ?? 'STOP_OUTCOME_UNKNOWN'); } catch { /* Never turn an accepted stop into a known failure. */ }
+      throw Object.assign(error, { operationOutcome: 'unknown' });
+    }
   }
 }
 

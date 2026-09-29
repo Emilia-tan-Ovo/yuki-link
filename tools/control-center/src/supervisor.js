@@ -209,7 +209,7 @@ export class Supervisor {
         if (previous.wasRunning) {
           // A stop may be accepted before the adapter throws while observing its outcome.
           rollbackEligible = true;
-          this.busy = 'yca:update-stop'; await this.units.yca.stop(confirm); this.events.add('yca', 'update-stopped-old');
+          this.busy = 'yca:update-stop'; await this.units.yca.stop(confirm, structuredClone(o)); this.events.add('yca', 'update-stopped-old');
         } else rollbackEligible = true;
         candidate = { commit: prepared.commit, instance: randomUUID() };
         this.busy = 'yca:update-start'; await this.observe(); await this.startOne('yca', { commit: prepared.commit, instance: candidate.instance });
@@ -246,7 +246,9 @@ export class Supervisor {
     try { this.busy = null; this.persist(); if (!switched) await this.observe(); }
     catch (finalizationError) { throw unknownOperation(finalizationError); }
     if (failure) {
-      if (failure.operationOutcome === 'unknown') throw failure;
+      if (failure.operationOutcome === 'unknown') {
+        this.recordOperation(operation, 'unknown', failure.code); throw failure;
+      }
       this.recordOperation(operation, 'failed', failure.code ?? 'ACTION_FAILED');
       throw failure;
     }
@@ -315,7 +317,8 @@ export class Supervisor {
         if (stopping) {
           await this.guardImpact(confirm);
           if (action === 'restart' && selected.includes('yca')) restartCommit = this.currentYcaCommit();
-          for (const key of [...selected].reverse()) { this.busy = `${key}:stop`; await this.units[key].stop(confirm); this.events.add(key, 'stopped'); }
+          const expectedYca = structuredClone(this.observations.yca);
+          for (const key of [...selected].reverse()) { this.busy = `${key}:stop`; await this.units[key].stop(confirm, key === 'yca' ? expectedYca : null); this.events.add(key, 'stopped'); }
         }
         if (action !== 'stop') {
           for (const key of selected) {
@@ -343,7 +346,9 @@ export class Supervisor {
       try { this.busy = null; this.persist(); await this.observe(); }
       catch (finalizationError) { throw unknownOperation(finalizationError); }
       if (failure) {
-        if (failure.operationOutcome === 'unknown') throw failure;
+        if (failure.operationOutcome === 'unknown') {
+          this.recordOperation(operation, 'unknown', failure.code); throw failure;
+        }
         this.recordOperation(operation, 'failed', failure.code ?? 'ACTION_FAILED');
         throw failure;
       }

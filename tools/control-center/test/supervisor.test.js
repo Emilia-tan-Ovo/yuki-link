@@ -908,7 +908,7 @@ test('rollback recheck cannot turn a single healthy candidate sample into succes
   assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested', 'failed']);
 });
 
-test('unknown candidate evidence leaves requested-only and never stops it', async t => {
+test('unknown candidate evidence records uncertainty and never stops it', async t => {
   const x = switchFixture(t), { m, u } = x;
   m.startupMs = 0;
   const observe = u.observe.bind(u);
@@ -920,16 +920,16 @@ test('unknown candidate evidence leaves requested-only and never stops it', asyn
   const operation = { operationId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', action: 'update-and-restart', target: 'yca' };
   await assert.rejects(m.updateDeployment(x.prepare, { restart: true, operation }), e => e.operationOutcome === 'unknown');
   assert.equal(u.stops, 1); assert.equal(u.commit, x.next);
-  assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested']);
+  assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested', 'unknown']);
 });
 
-test('accepted old stop with unknown outcome keeps a requested-only receipt', async t => {
+test('accepted old stop with unknown outcome keeps an explicit unknown receipt', async t => {
   const x = switchFixture(t), { m, u } = x;
   u.stop = async function() { this.stops++; this.running = null; throw fail('STOP_TIMEOUT'); };
   const operation = { operationId: '11111111-1111-4111-8111-111111111111', action: 'update-and-restart', target: 'yca' };
   await assert.rejects(m.updateDeployment(x.prepare, { restart: true, operation }), e => e.operationOutcome === 'unknown');
   assert.equal(u.stops, 1); assert.equal(u.starts, 0);
-  assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested']);
+  assert.deepEqual(new Events(x.f.root).items.filter(e => e.operation_id === operation.operationId).map(e => e.outcome), ['requested', 'unknown']);
 });
 
 test('accepted old stop that then errors restores the verified previous release', async t => {
