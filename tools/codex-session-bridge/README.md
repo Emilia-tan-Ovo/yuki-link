@@ -125,6 +125,8 @@ Windows 常驻服务可以显式传入 `--codex-bin 'C:\path\to\codex.exe'`，�
 
 正常 Repository Engineer 执行统一使用 `start_workflow_agent`。`action` 限定职责；ExecutionOperations 根据持久化 work item、受信授权、对象与 session generation 推导 `fresh / continue / replace`，不接受调用者指定执行方式。首次职责切换 fresh；同一未完成工作项的 terminal run 不关闭工作项，后续请求须携带 `work_item: {work_item_id, revision}` 继续 usable session。相关问题只增补 issue set，正常编辑/commit 只更新 content version。implementation/review 兼容 wrapper 同样受此 gate 约束。
 
+模型执行配置分两层：policy 只定义 action 的默认 model / reasoning / service_tier；受信任的 Ticket authorization 可选 `execution_profile`: { model, reasoning, service_tier } 覆盖当前 Work Item。service_tier 仅允许 default 或 `fast`，并作为 Work Item authority 与 launch identity 的一部分持久化；因此某张 Ticket 选择 Astra/high/fast 不会修改其他 Ticket 或用户全局 Codex 配置。
+
 policy 与 Ticket authorization 仍由相应的 implementation/review/workflow authority 提供；缺少授权时拒绝执行。职责交接、修复等待验证、验证失败恢复与 reviewer 追加预算由 `transition_work_item` 应用受信决定；unknown 先用 `reconcile_work_item` 核对原操作，不重发模型执行。新 scope 必须在受信 authorization 中提供 `work_item_scope: {scope_ref, parent_work_item_id, decision_ref}`，不能靠换 ID 绕过原工作项。默认 focused review 预算为一个 review round（结论周期）：尚无结论的同对象审查可在原 round 续发；一旦记录 passed/findings/incomplete，下一轮即使内容相同也消耗追加授权预算。每轮使用独立 Review/report identity，继续同一 reviewer work item、可用 generation 与隔离 conversation；轮次及结论从 journal 恢复，聊天切换不能重置。未结束的 round 不允许静默切换内容对象。
 
 repair 与 reviewer 完成必须校验真实 managed reviewer operation、generation、run、destination、当前 ConversationHistory 隔离及报告文件证据；snapshot 的 isolated/status 本身不能放行，未归属的 external/legacy report 也不能放行。issue set 永久保留成员，已验证项逐项关联各自仍适用的 Review、subject/content identity 和报告；待验证项可分批复核，不要求历史成员共用最后一份报告。任何旧验证失效时必须先恢复对应修复/验证状态。
@@ -149,8 +151,8 @@ repair 与 reviewer 完成必须校验真实 managed reviewer operation、genera
 | `harness_record_workflow` | `ticket_id, request_id, expected_revision, schema_version: 1, snapshot` | `workflow_revision, event_id, cursor, deduplicated, applicability, recording` |
 | `harness_associate_child_conversation` | `ticket_id, request_id, session_id, run_id, relation` | `conversation_id, parent_conversation_id, binding_id, isolation, event_id, cursor, deduplicated, recording` |
 | `codex_list_models` | `refresh?` | 本机模型、各自 reasoning 档位、查询时间 |
-| `codex_start_session` | 精确受信 `authorization_ref` 与 `request_id, cwd, prompt, permissions?, sender?, model?, reasoning?, timeout_ms?` | 仅获准 raw 路径返回 session/run 回执 |
-| `codex_send_message` | 精确受信 `authorization_ref` 与 `request_id, session_id, prompt, sender?, model?, reasoning?, timeout_ms?` | 同上；禁止续发受管工作项 session，权限仍固定继承 session |
+| `codex_start_session` | 精确受信 `authorization_ref` 与 `request_id, cwd, prompt, permissions?, sender?, model?, reasoning?, service_tier?, timeout_ms?` | 仅获准 raw 路径返回 session/run 回执 |
+| `codex_send_message` | 精确受信 `authorization_ref` 与 `request_id, session_id, prompt, sender?, model?, reasoning?, service_tier?, timeout_ms?` | 同上；禁止续发受管工作项 session，权限仍固定继承 session |
 | `codex_get_status` | `session_id? / run_id?`，至少一个 | session、选定 run、当前 session 状态 |
 | `codex_get_output` | `run_id, cursor?, limit?, wait_ms?` | 事件、`next_cursor`、`has_more`、状态、最终回复、`return_reason` |
 | `codex_stop_session` | `session_id` | 停止进度，需继续查状态 |
@@ -291,7 +293,7 @@ Git 只提供 status 和单文件 diff；仓库根也必须在允许读取目录
 
 首次创建默认 `gpt-5.6-sol / medium`。模型目录来自当前 `codex app-server model/list`，含分页，缓存五分钟，可显式刷新；目录查询失败不猜测、不静默降级。新增模型无需修改 session 逻辑。
 
-后续消息未指定的 model/reasoning 字段分别继承 session。只指定新 model 时 reasoning 仍继承原值；组合不支持就明确报错。每个 run 记录本轮传给 CLI 的配置；session 在 Codex 返回 thread ID 后更新配置。`config_source` 区分新 session 的 `session_permission_snapshot` 与旧 session 的 `legacy_explicit_codex_cli_arguments`；权限值来自 Codex 原生配置解析和持久化快照，不依靠模型自述。
+后续消息未指定的 model/reasoning/service_tier 字段分别继承 session。`service_tier` 支持 `default` 与 `fast`；只指定新 model 时 reasoning 与 service_tier 仍继承原值，组合不支持就明确报错。每个 run 记录本轮传给 CLI 的配置；session 在 Codex 返回 thread ID 后更新配置。`config_source` 区分新 session 的 `session_permission_snapshot` 与旧 session 的 `legacy_explicit_codex_cli_arguments`；权限值来自 Codex 原生配置解析和持久化快照，不依靠模型自述。
 
 `start/send` 校验并持久化后立即返回，不等待模型生成。能力目录过期时可能先花数秒刷新，超时则报 `CAPABILITY_UNAVAILABLE`。同一 session 最多一个 active run；并发提交不同请求返回 `SESSION_BUSY`，不会暗中排队。
 

@@ -139,7 +139,7 @@ export class ExecutionOperations {
       content_identity: input.content_identity,
       launch: { cwd, prompt_sha256: sha256(input.launch.prompt), prompt_utf8_bytes: promptBytes,
         sender: input.launch.sender, model: input.launch.model, reasoning: input.launch.reasoning,
-        timeout_ms: input.launch.timeout_ms,
+        service_tier: input.launch.service_tier, timeout_ms: input.launch.timeout_ms,
         permission_selection: permissionSelectionFingerprint(input.launch.permissions ?? undefined) },
       authorization_boundary: input.authorization_boundary,
       ...('implementation' in input ? { implementation: input.implementation } : {}),
@@ -438,9 +438,9 @@ export class ExecutionOperations {
   }
 
   guardDispatch(operationId: string, dispatch: { request_id: string; fingerprint: string; cwd: string; session_id?: string;
-    config: { model: string; reasoning: string }; permissions: unknown; launch: {
+    config: { model: string; reasoning: string; service_tier?: 'default' | 'fast' }; permissions: unknown; launch: {
       prompt_sha256: string; prompt_utf8_bytes: number; sender: string | null; model: string | null;
-      reasoning: string | null; timeout_ms: number | null; permission_selection: unknown;
+      reasoning: string | null; service_tier?: 'default' | 'fast' | null; timeout_ms: number | null; permission_selection: unknown;
     } }) {
     const current = this.operation(operationId);
     if (current.state !== 'reserved') throw new HarnessError('EXECUTION_STATE_CONFLICT', { state: current.state });
@@ -482,6 +482,9 @@ export class ExecutionOperations {
         throw new HarnessError('LAUNCH_IDENTITY_CONFLICT', { field });
       }
     }
+    if ((dispatch.launch.service_tier ?? 'default') !== (current.protected_intent.launch.service_tier ?? 'default')) {
+      throw new HarnessError('LAUNCH_IDENTITY_CONFLICT', { field: 'service_tier' });
+    }
     const others = [...this.operations.values()].filter(value => value.operation_id !== current.operation_id
       && this.runtimeClaim(value) !== 'released');
     const sameDestination = others.find(value => destinationKey(value.ticket_id, value.destination)
@@ -507,7 +510,7 @@ export class ExecutionOperations {
     }
     const operation = this.transition(current, { state: 'dispatching',
       runtime: { ...current.runtime, fingerprint: dispatch.fingerprint },
-      dispatch: { model: dispatch.config.model, reasoning: dispatch.config.reasoning,
+      dispatch: { model: dispatch.config.model, reasoning: dispatch.config.reasoning, service_tier: dispatch.config.service_tier ?? 'default',
         permissions: structuredClone(dispatch.permissions), observed_workflow_revision: workflow.workflow_revision,
         observed_subject_ref: workflow.snapshot.subject.subject_id, observed_content_identity: currentIdentity.data },
     }, 'dispatch');

@@ -10,6 +10,7 @@ import { resolveCodexExecutable } from '../../codex-session-bridge/src/codex-exe
 import { FileImplementationLaunchAuthoritySource } from '../../codex-session-bridge/src/orchestration/implementation-launcher.ts';
 import { FileReviewLaunchAuthoritySource } from '../../codex-session-bridge/src/orchestration/review-launcher.ts';
 import { FileWorkflowAgentAuthoritySource } from '../../codex-session-bridge/src/orchestration/workflow-agent-launcher.ts';
+import { FileExecutionAuthority } from '../../codex-session-bridge/src/orchestration/execution-authority.ts';
 import { redact } from '../../codex-session-bridge/src/errors.js';
 
 const CRASH_TAIL_BYTES = 16 * 1024;
@@ -124,6 +125,12 @@ export class YcaUnit {
         forbiddenRoots: [this.config.repo, this.config.deploymentRoot],
       }).snapshot('', 'ticket-design', '');
     }
+    if (this.config.executionAuthority) {
+      if (!deployment?.launcherFlags?.executionAuthority) throw fail('DEPLOYMENT_LAUNCHER_UNSUPPORTED');
+      new FileExecutionAuthority(this.config.executionAuthority, {
+        forbiddenRoots: [this.config.repo, this.config.deploymentRoot],
+      });
+    }
     if (this.config.companionCardStore) {
       if (!deployment?.launcherFlags?.companionCardStore) throw fail('DEPLOYMENT_LAUNCHER_UNSUPPORTED');
       if (!existsSync(path.join(this.config.companionCardStore,'engineering-cards.sqlite')))
@@ -165,6 +172,7 @@ export class YcaUnit {
     if (this.config.implementationLaunchAuthority) args.push('--implementation-launch-authority', this.config.implementationLaunchAuthority);
     if (this.config.reviewLaunchAuthority) args.push('--review-launch-authority', this.config.reviewLaunchAuthority);
     if (this.config.workflowAgentAuthority) args.push('--workflow-agent-authority', this.config.workflowAgentAuthority);
+    if (this.config.executionAuthority) args.push('--execution-authority', this.config.executionAuthority);
     if (this.config.companionCardStore) args.push('--companion-card-store', this.config.companionCardStore);
     const child = this.spawnProcess(this.config.node, args, { cwd, shell: false, windowsHide: true, detached: true,
       env: { ...process.env, YUKI_CONTROL_TOKEN: this.state.token }, stdio: ['ignore', 'ignore', 'pipe'] });

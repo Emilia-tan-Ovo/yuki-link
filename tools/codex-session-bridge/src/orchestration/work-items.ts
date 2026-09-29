@@ -66,9 +66,12 @@ export class WorkItems {
     const scopeRef = authorization.work_item_scope?.scope_ref ?? 'delivery';
     const scope = workDigest({ delivery: input.ticket_id, subject: input.subject_ref, cwd: realpathSync(input.launch.cwd), scopeRef });
     // Content versions and the issue set evolve; neither is session authority.
+    const executionProfile = 'execution_profile' in protection ? protection.execution_profile : undefined;
     const authority = workDigest({ ref: authorization.authorization_ref, id: authorization.authorization_id, refs: authorization.authority_refs,
       policy: protection.policy.policy_id, policy_revision: protection.policy.revision, policy_digest: protection.policy.digest,
-      model: protection.policy.model, reasoning: protection.policy.reasoning,
+      model: executionProfile?.model ?? protection.policy.model, reasoning: executionProfile?.reasoning ?? protection.policy.reasoning,
+      ...(executionProfile ? { service_tier: executionProfile.service_tier }
+        : protection.policy.service_tier ? { service_tier: protection.policy.service_tier } : {}),
       permissions: protection.policy.permission_selection, scope: authorization.work_item_scope ?? null });
     const existing = [...this.items.values()].filter(item => item.delivery_item_id === input.ticket_id
       && item.purpose === purpose && item.scope_ref === scopeRef);

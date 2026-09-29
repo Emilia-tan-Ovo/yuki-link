@@ -7,6 +7,7 @@ const legacyArguments = (run, session) => [
   '-a', 'never', 'exec', '--json', '--ignore-user-config',
   '-s', 'read-only', '-C', session.cwd,
   '-m', run.model, '-c', `model_reasoning_effort=${JSON.stringify(run.reasoning)}`,
+  '-c', `service_tier=${JSON.stringify(run.service_tier ?? 'default')}`,
   '-c', 'web_search="disabled"',
   '-c', 'features.apps=false', '-c', 'features.plugins=false', '-c', 'features.hooks=false',
   '-c', 'features.browser_use=false', '-c', 'features.computer_use=false',
@@ -47,6 +48,7 @@ export function execArguments(run, session) {
         '-C', session.cwd,
         '-m', run.model,
         '-c', `model_reasoning_effort=${JSON.stringify(run.reasoning)}`,
+        '-c', `service_tier=${JSON.stringify(run.service_tier ?? 'default')}`,
       ];
   if (session.codex_thread_id) args.push('resume', session.codex_thread_id);
   args.push('-');

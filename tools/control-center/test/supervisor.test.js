@@ -84,6 +84,12 @@ test('optional Harness port keeps legacy config valid and participates in local 
     workflowAgentAuthority: path.join(root, 'workflow-agent-authority.json') } }), 'utf8');
   assert.equal(loadConfig(file).yca.workflowAgentAuthority, path.join(root, 'workflow-agent-authority.json'));
   writeFileSync(file, JSON.stringify({ ...config, yca: { ...config.yca,
+    executionAuthority: 'relative-execution-authority.json' } }), 'utf8');
+  assert.throws(() => loadConfig(file), { code: 'ABSOLUTE_PATH_REQUIRED' });
+  writeFileSync(file, JSON.stringify({ ...config, yca: { ...config.yca,
+    executionAuthority: path.join(root, 'execution-authority.json') } }), 'utf8');
+  assert.equal(loadConfig(file).yca.executionAuthority, path.join(root, 'execution-authority.json'));
+  writeFileSync(file, JSON.stringify({ ...config, yca: { ...config.yca,
     companionCardStore: 'relative-card-store' } }), 'utf8');
   assert.throws(() => loadConfig(file), { code: 'ABSOLUTE_PATH_REQUIRED' });
   writeFileSync(file, JSON.stringify({ ...config, yca: { ...config.yca,

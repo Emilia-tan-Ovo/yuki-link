@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -84,17 +84,19 @@ function fixture(t: test.TestContext, action: 'ticket-design' | 'finding-fix' | 
       confirmed_request: companionText };
   } } : authority;
   let starts = 0, sends = 0, lastPrompt = '';
+  let lastLaunch: { model: string; reasoning: string; service_tier: string } | null = null;
   const manager = { get harness() { return harness; }, workflowAgentAuthority: trustedAuthority,
     async startGuarded(input: any, guard: (dispatch: any) => unknown) {
     starts++; lastPrompt = input.prompt;
+    lastLaunch = { model: input.model, reasoning: input.reasoning, service_tier: input.service_tier ?? 'default' };
     assert.equal(input.permissions, undefined);
     const fingerprint = sha256(input.request_id);
     guard({ request_id: input.request_id, fingerprint, cwd: input.cwd,
-      config: { model: input.model, reasoning: input.reasoning },
+      config: { model: input.model, reasoning: input.reasoning, service_tier: input.service_tier ?? 'default' },
       permissions: { sandbox_mode: 'danger-full-access', approval_policy: 'on-request' },
       launch: { prompt_sha256: sha256(input.prompt), prompt_utf8_bytes: Buffer.byteLength(input.prompt),
         sender: input.sender ?? null, model: input.model ?? null, reasoning: input.reasoning ?? null,
-        timeout_ms: null, permission_selection: null } });
+        service_tier: input.service_tier ?? 'default', timeout_ms: null, permission_selection: null } });
     const session_id = randomUUID(), run_id = randomUUID();
     sessions.set(session_id, { id: session_id, cwd: input.cwd, codex_thread_id: randomUUID() });
     runs.set(run_id, { id: run_id, session_id, status: 'running' });
@@ -102,13 +104,14 @@ function fixture(t: test.TestContext, action: 'ticket-design' | 'finding-fix' | 
       status: 'running' });
   }, async sendGuarded(input: any, guard: (dispatch: any) => unknown) {
     sends++; lastPrompt = input.prompt;
+    lastLaunch = { model: input.model, reasoning: input.reasoning, service_tier: input.service_tier ?? 'default' };
     const fingerprint = sha256(input.request_id);
     guard({ request_id: input.request_id, fingerprint, cwd: repo, session_id: input.session_id,
-      config: { model: input.model, reasoning: input.reasoning },
+      config: { model: input.model, reasoning: input.reasoning, service_tier: input.service_tier ?? 'default' },
       permissions: { sandbox_mode: 'danger-full-access', approval_policy: 'on-request' },
       launch: { prompt_sha256: sha256(input.prompt), prompt_utf8_bytes: Buffer.byteLength(input.prompt),
         sender: input.sender ?? null, model: input.model ?? null, reasoning: input.reasoning ?? null,
-        timeout_ms: null, permission_selection: null } });
+        service_tier: input.service_tier ?? 'default', timeout_ms: null, permission_selection: null } });
     const run_id = randomUUID();
     runs.set(run_id, { id: run_id, session_id: input.session_id, status: 'running' });
     requests.set(input.request_id, { request_id: input.request_id, fingerprint, session_id: input.session_id,
@@ -134,7 +137,8 @@ function fixture(t: test.TestContext, action: 'ticket-design' | 'finding-fix' | 
     authorityPath, authorization, workflow, policy,
     runtime: path.join(root, 'runtime'),
     get harness() { return harness; }, set harness(value: Harness) { harness = value; },
-    get starts() { return starts; }, get sends() { return sends; }, get lastPrompt() { return lastPrompt; } };
+    get starts() { return starts; }, get sends() { return sends; }, get lastPrompt() { return lastPrompt; },
+    get lastLaunch() { return lastLaunch; } };
 }
 
 test('typed contract rejects unsupported actions and caller-selected permissions', t => {
@@ -151,6 +155,18 @@ test('typed contract rejects unsupported actions and caller-selected permissions
   assert.equal(startWorkflowAgentInputSchema.safeParse({ ...narrow, action: 'finding-fix',
     finding: { origin_review_id: 'r', finding_id: 'f', report_ref: 'report', fix_baseline: 'base' },
     confirmed_request: 'x'.repeat(20000) }).success, false);
+});
+
+test('Ticket authorization selects Astra high Fast without mutating the global policy', async t => {
+  const f = fixture(t, 'ticket-design');
+  const document = JSON.parse(readFileSync(f.authorityPath, 'utf8'));
+  document.authorizations[0].execution_profile = { model: 'gpt-6-astra', reasoning: 'high', service_tier: 'fast' };
+  writeFileSync(f.authorityPath, JSON.stringify(document), 'utf8');
+  await f.makeLauncher().start(f.input());
+  assert.deepEqual(f.lastLaunch, { model: 'gpt-6-astra', reasoning: 'high', service_tier: 'fast' });
+  assert.equal(f.policy.model, 'gpt-6-sol');
+  assert.equal(f.policy.reasoning, 'medium');
+  assert.equal(f.policy.service_tier, undefined);
 });
 
 test('terminal run keeps its work item active and the next request continues the usable generation', async t => {

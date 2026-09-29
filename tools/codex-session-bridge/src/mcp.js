@@ -42,6 +42,7 @@ export function createMcpServer(manager, computer) {
     sender: z.string().max(80).optional().describe('Observable sender label, e.g. Assistant. This is not an authenticated identity.'),
     model: z.string().min(1).max(128).optional().describe(`Exact model from codex_list_models. Start default: ${DEFAULT_MODEL}; send default: inherit session.`),
     reasoning: z.string().min(1).max(128).optional().describe(`Exact supported reasoning from codex_list_models. Start default: ${DEFAULT_REASONING}; send default: inherit session.`),
+    service_tier: z.enum(['default', 'fast']).optional().describe('Codex service tier for this run. Start default: default; send default: inherit session. Use fast for Codex Fast mode.'),
     timeout_ms: z.number().int().min(1000).max(1800000).optional().describe('Explicit hard execution deadline for this run. Omit for no wall-clock execution deadline.'),
   };
   const permissions = z.object({
