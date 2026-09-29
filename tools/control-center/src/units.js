@@ -291,7 +291,7 @@ export class TunnelUnit {
   constructor(config, host, state, persist, events, invoke = run) { Object.assign(this, { config, host, state, persist, events, invoke }); }
   async verifyVersion() {
     const r = await this.invoke(this.config.bin, ['--version']);
-    if (r.code !== 0 || !r.output.startsWith('0.0.14+0f870e50a973fa820d4c409000059e181e8d242b')) throw fail('VERSION_UNSUPPORTED');
+    if (r.code !== 0 || !r.output.startsWith('0.0.15+a390c168ff1b2d14e73a95991c186c6aba3ff5a0')) throw fail('VERSION_UNSUPPORTED');
   }
   records() {
     const alias = readJson(path.join(this.config.stateRoot, 'aliases.yaml'))[this.config.alias];
@@ -337,7 +337,7 @@ export class TunnelUnit {
     if (!existsSync(this.config.bin)) throw fail('PATH_MISSING');
     await this.verifyVersion();
     const { profile } = this.records();
-    // Fixed v0.0.14 connect rewrites its generated profile. Refuse extra settings
+    // Fixed v0.0.15 connect rewrites its generated profile. Refuse extra settings
     // rather than silently discard custom authentication/proxy/transport options.
     const expected = ['admin_ui', 'config_version', 'control_plane', 'health', 'log', 'mcp'];
     if (Object.keys(profile).some(k => !expected.includes(k)) || Object.keys(profile.control_plane).some(k => !['api_key', 'base_url', 'tunnel_id'].includes(k))
@@ -365,7 +365,7 @@ export class TunnelUnit {
     if (!o.owned) throw fail('OBSERVED_UNOWNED');
     await this.verifyVersion();
     // Recheck both native metadata and OS creation identity immediately before
-    // native stop (which, in 0.0.14, otherwise only trusts the saved PID).
+    // native stop (which, in 0.0.15, otherwise only trusts the saved PID).
     const { p } = this.records();
     if (p.pid !== o.pid || !matches((await this.host.inspect(this.config.bin, [], p.pid))[0], this.state.process)) throw fail('OWNERSHIP_CHANGED');
     const result = await this.invoke(this.config.bin, ['runtimes', 'stop', this.config.alias, '--json'], { cwd: path.dirname(this.config.bin), env: tunnelRuntimeEnv(this.config.stateRoot), timeout: 15_000, limit: 2 * 1024 * 1024 });

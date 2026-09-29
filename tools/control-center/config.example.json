@@ -22,7 +22,7 @@
     "companionCardStore": "C:\\Users\\example\\AppData\\Roaming\\Yuki Link Desktop"
   },
   "tunnel": {
-    "bin": "D:\\tools\\openai-tunnel-client\\v0.0.14\\tunnel-client.exe",
+    "bin": "D:\\tools\\openai-tunnel-client\\v0.0.15\\tunnel-client.exe",
     "alias": "codex-session-bridge",
     "profile": "C:\\projects\\yuki-link\\tools\\codex-session-bridge\\runtime\\tunnel\\codex-session-bridge.yaml",
     "stateRoot": "C:\\Users\\example\\.local\\state\\tunnel-client",

@@ -31,7 +31,7 @@ test('native runtime adapter reuses a fixed tunnel, validates identity and refus
   t.after(() => { server.close(); server.closeAllConnections(); assert.ok(root.startsWith(path.join(os.tmpdir(), 'yuki-cc-tunnel-'))); rmSync(root, { recursive: true, force: true }); });
   const host = { inspect: async (exe, markers, pid) => actual && (!pid || pid === actual.pid) ? [actual] : [] };
   const invoke = async (bin, args, options) => {
-    if (args[0] === '--version') return { code: 0, output: '0.0.14+0f870e50a973fa820d4c409000059e181e8d242b' };
+    if (args[0] === '--version') return { code: 0, output: '0.0.15+a390c168ff1b2d14e73a95991c186c6aba3ff5a0' };
     calls.push(args); callOptions.push(options);
     if (args[1] === 'connect') {
       actual = { pid: 12345, created: new Date().toISOString(), matches: true };
