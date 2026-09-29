@@ -10,7 +10,7 @@ import { Events, saveJson, readJson } from '../src/common.js';
 test('native runtime adapter reuses a fixed tunnel, validates identity and refuses PID reuse/custom profile loss', async t => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'yuki-cc-tunnel-'));
   const alias = 'codex-session-bridge', target = 'http://127.0.0.1:17391/mcp';
-  const profileFile = path.join(root, alias + '.yaml'), state = {}, calls = [];
+  const profileFile = path.join(root, alias + '.yaml'), state = {}, calls = [], callOptions = [];
   mkdirSync(path.join(root, 'health')); mkdirSync(path.join(root, 'logs'));
   const profile = { config_version: 1, admin_ui: { open_browser: false },
     control_plane: { tunnel_id: 'tunnel_test_fixture', base_url: 'https://api.openai.com', api_key: 'file:never-open-this-fixture-reference' },
@@ -30,9 +30,9 @@ test('native runtime adapter reuses a fixed tunnel, validates identity and refus
   writeFileSync(profile.health.url_file, `http://127.0.0.1:${server.address().port}`);
   t.after(() => { server.close(); server.closeAllConnections(); assert.ok(root.startsWith(path.join(os.tmpdir(), 'yuki-cc-tunnel-'))); rmSync(root, { recursive: true, force: true }); });
   const host = { inspect: async (exe, markers, pid) => actual && (!pid || pid === actual.pid) ? [actual] : [] };
-  const invoke = async (bin, args) => {
+  const invoke = async (bin, args, options) => {
     if (args[0] === '--version') return { code: 0, output: '0.0.14+0f870e50a973fa820d4c409000059e181e8d242b' };
-    calls.push(args);
+    calls.push(args); callOptions.push(options);
     if (args[1] === 'connect') {
       actual = { pid: 12345, created: new Date().toISOString(), matches: true };
       saveJson(path.join(root, 'processes.yaml'), { [alias]: { pid: actual.pid, target_value: target, tunnel_id: profile.control_plane.tunnel_id } });
@@ -44,6 +44,9 @@ test('native runtime adapter reuses a fixed tunnel, validates identity and refus
   readyBody = 'ready (mcp startup probe timed out: mcp probe timed out after 2s: context deadline exceeded)';
   o = await unit.observe(); assert.equal(o.healthy, true, 'a known native startup warning does not negate HTTP 200 readiness');
   assert.equal(calls[0][1], 'connect'); assert.ok(calls[0].includes('--tunnel-id')); assert.ok(!calls[0].includes('create'));
+  assert.equal(callOptions[0].env.HTTP_PROXY, undefined);
+  assert.equal(callOptions[0].env.http_proxy, undefined);
+  assert.equal(callOptions[0].env.TUNNEL_CLIENT_STATE_DIR, root);
   assert.ok(!JSON.stringify(o).includes('sk-')); assert.ok(!JSON.stringify(o).includes('tunnel_test_fixture'));
   await unit.start(); assert.equal(calls.length, 1);
   poison = true; assert.equal((await unit.observe()).healthy, false); poison = false;
