@@ -129,7 +129,7 @@ export class WeChatService {
       this.revoke(); return this.update('unavailable');
     }
     if (this.store.epoch() !== epoch || this.store.paused()) return this.snapshot();
-    if (result?.ret !== 0 || !Array.isArray(result.msgs) || !valid(result.get_updates_buf, 100000)) { this.active = false; await this.store.setPaused(true, epoch); return this.update('protocol_mismatch'); }
+    if (!result || typeof result !== 'object' || (result.ret !== undefined && result.ret !== 0) || (result.msgs !== undefined && !Array.isArray(result.msgs))) { this.active = false; await this.store.setPaused(true, epoch); return this.update('protocol_mismatch'); }
     this.update('connected'); // Only an authenticated getupdates response establishes availability.
     for (const msg of result.msgs ?? []) {
       signal.throwIfAborted();
@@ -145,7 +145,7 @@ export class WeChatService {
     }
     const resolved = (result.msgs ?? []).every(msg => !eligible(msg, auth, this.store.boundAt()) ||
       ['handled', 'committed', 'unknown'].includes(this.store.record(msg.message_id, epoch)?.status));
-    if (this.store.epoch() === epoch && !this.store.paused() && resolved) await this.store.setCursor(result.get_updates_buf, epoch);
+    if (this.store.epoch() === epoch && !this.store.paused() && resolved && valid(result.get_updates_buf, 100000)) await this.store.setCursor(result.get_updates_buf, epoch);
     return this.snapshot();
   }
 }

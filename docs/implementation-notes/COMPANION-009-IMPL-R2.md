@@ -61,3 +61,10 @@ Candidate-only legacy slice: `a57723d31d939becf71852cff9a55da33951d5d4` (merge-b
 - **定向验证：**`node --test test/wechat-conversation.test.mjs test/wechat-transport.test.mjs` 20/20 通过；`node --test test/wechat-worker.test.mjs test/renderer.test.mjs` 41/41 通过；`npm run check` 与 `git diff --check` 通过。新增交错测试覆盖暂停时 processing 写入、改绑时投递意图写入、旧 QR 渲染晚完成、部分投递和无可信 content-length 的超限响应。
 - **Review policy 与状态：**本轮 finding-fix 交给上层按原 review cycle 启动独立 focused re-review；六条 finding 均标记为已修复、待独立核验，不声称 Review 或真实微信 Acceptance 通过。真实扫码、DeepSeek、手机可见与 Windows 安装包仍未在本轮执行。
 - **Commit 与下一步：**精确修复提交、最终 Git 状态与内容身份见当前 worktree 的 `.local/workflow-state/COMPANION-009-IMPL-R2.md` post-commit 记录；本轮不 push、部署或合并。复核只需基线至修复提交的 delta、本节、原 Review 报告和上述测试结果。
+### 真实 Acceptance 协议兼容修复（2026-09-29）
+
+- Owner 完成真实个人微信扫码 + 本机确认后，首次点击“连接”稳定进入 `protocol_mismatch`；本地 `conversation.sqlite` 未新增消息/operation receipt，说明失败发生在 backend admission 前。
+- 对照 pinned AAAAGENT `2752349bcc7f7137b8b9e4ff9cccf34026d77aad` 的 `wechat/service.ts` / `wechat/api.ts`：`WeChatUpdates.ret`、`msgs`、`get_updates_buf` 均为可选；上游仅在 `msgs !== undefined` 时要求数组，仅在 cursor 为合法非空字符串时更新 cursor。当前 009 错误地要求 `ret === 0`、`msgs` 必须数组、cursor 必须存在，因此会把合法空 long-poll 回包误判为协议不可信。
+- 最小修复：仍拒绝显式非零 `ret` 和非数组 `msgs`；允许缺失 `ret/msgs/cursor` 的已认证空 update，`msgs ?? []` 处理，只有合法 cursor 才持久推进。消息级 owner/bot/epoch/create_time/context-token 检查保持不变，不因本次真实兼容问题放宽。
+- Regression：新增 `authenticated empty update may omit ret, msgs, and cursor`；`node --test test/wechat-transport.test.mjs test/wechat-conversation.test.mjs` 21/21 通过，`npm run check` 通过，`git diff --check` 通过。
+- 该修复改变真实协议边界，原 focused review 对这 2 文件变化不再覆盖；提交后必须 fresh focused review，再重启当前 Desktop 继续真实 Acceptance。现有微信绑定凭据保留，不要求重新扫码。

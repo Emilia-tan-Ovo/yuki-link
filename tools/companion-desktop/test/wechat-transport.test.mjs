@@ -54,6 +54,15 @@ test('local confirmation, owner filtering, durable claim, and binding scope', as
   assert.equal(reopened.record('18446744073709551615'), null);
 });
 
+test('authenticated empty update may omit ret, msgs, and cursor', async t => {
+  const { store } = await fixture(t);
+  await store.bind(auth, 1000);
+  const service = new WeChatService({ store, api: { updates: async () => ({}) }, receive: async () => { throw Error('empty update must not dispatch'); }, now: () => 1000 });
+  await service.resume();
+  assert.equal(service.snapshot().status, 'connected');
+  assert.equal(store.cursor(), '');
+});
+
 test('QR expiry, transport outage, and auth expiry retain truthful states', async t => {
   const { store } = await fixture(t);
   let now = 1000, failure = new WeChatApiError('network');
