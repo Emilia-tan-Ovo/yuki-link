@@ -36,7 +36,7 @@ export function createHttpServer(manager, computer, observation = {}) {
       // reject discovery at the JSON-RPC layer so an auto-negotiating client can fall back
       // to the legacy initialize -> tools/list flow instead of treating HTTP 400 as fatal.
       if (body?.jsonrpc === '2.0' && body.method === 'server/discover' && body.id !== undefined) {
-        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+        response.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({
           jsonrpc: '2.0', id: body.id, error: { code: -32601, message: 'Method not found' },
         }));
         return;
