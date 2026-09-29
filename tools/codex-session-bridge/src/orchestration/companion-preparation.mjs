@@ -386,6 +386,7 @@ export class CompanionPreparationService {
       observed_at:new Date().toISOString() };
   }
   async prepare(input) {
+    if (this.store.workStop(input.card_id,input.revision)) return this.get(input);
     const card = this.known(input);
     if (card.preparationStatus !== 'authorized') return this.get(input);
     const config = this.projects.find(project => project.projectKey === card.content.projectKey
@@ -432,6 +433,7 @@ export class CompanionPreparationService {
       record = this.update(record,value => ({...value,
         stepReceipts:{...value.stepReceipts,issueCreate:{state:'attempted',at:new Date().toISOString()}},
         unknownSideEffects:['github-issue-create']}));
+      this.store.assertWorkAllowed(card.cardId,card.revision);
       try { issue = await this.issues.create(request); }
       catch { issue = await this.issues.reconcile(request).catch(() => null); }
       if (!issue) return this.get(input);
@@ -441,12 +443,14 @@ export class CompanionPreparationService {
       stepReceipts:{...value.stepReceipts,issueCreate:{state:'verified',issueId:issue.id}} }));
     if (!record.bindings.worktree) record = this.update(record,value => ({...value,
       bindings:{...value.bindings,worktree:git.freeze(value.preparationId)}}));
+    this.store.assertWorkAllowed(card.cardId,card.revision);
     const worktree = git.ensure(record.bindings.worktree);
     const harness = this.manager.harness;
     const baseline = harness.changes.facts.capture(worktree.path,worktree.oid);
     if (baseline.integrity !== 'complete' || baseline.start_observation.integrity !== 'complete'
       || baseline.start_observation.head !== worktree.oid) return this.get(input);
     const ticketKey = `ISSUE-${issue.number}`;
+    this.store.assertWorkAllowed(card.cardId,card.revision);
     const registration = harness.register({project_key:card.content.projectKey,
       project_name:card.content.projectKey,ticket_key:ticketKey,title:issue.title,
       reference:issue.url,expected_worktree:worktree.path,fixed_point:worktree.oid});
@@ -480,6 +484,7 @@ export class CompanionPreparationService {
         workflow = saved;
       } else if (saved) throw Error('PREPARATION_WORKFLOW_CONFLICT');
       else {
+        this.store.assertWorkAllowed(card.cardId,card.revision);
         const receipt = harness.recordWorkflow({ticket_id:ticket.id,
           request_id:`companion-preparation:${record.preparationId}:workflow`,
           expected_revision:null,schema_version:1,snapshot});
@@ -532,6 +537,7 @@ export class CompanionPreparationService {
     try {
       const launcher = this.launch ?? new WorkflowAgentLauncher({manager:this.manager,harness,
         workflowAuthority:this.authority(input,record,issue,policy,snapshot)});
+      this.store.assertWorkAllowed(card.cardId,card.revision);
       const result = await launcher.start(launcherInput);
       record = this.update(record,value => ({...value,unknownSideEffects:[],
         stepReceipts:{...value.stepReceipts,launch:{state:'accepted',operationId:result.operation_id ?? null,
@@ -540,6 +546,7 @@ export class CompanionPreparationService {
     return this.get(input);
   }
   async finalizeDesign(input,record,issue,worktree,workflow) {
+    this.store.assertWorkAllowed(record.cardId,record.revision);
     if (record.bindings.design) return this.get(input);
     const operation = this.manager.harness.executionOperations.findByRequest(record.bindings.harness.ticketId,
       `companion-prep:${record.preparationId}:ticket-design`);
@@ -577,6 +584,7 @@ export class CompanionPreparationService {
       record = this.update(record,value => ({...value,
         stepReceipts:{...value.stepReceipts,mirror:{state:'attempted',digest:document.digest.slice(7)}},
         unknownSideEffects:['github-issue-mirror']}));
+      this.store.assertWorkAllowed(record.cardId,record.revision);
       try { mirror = await this.issues.publishMirror(record.bindings.issue,request,content,document.digest.slice(7)); }
       catch { return this.get(input); }
     }
@@ -592,6 +600,7 @@ export class CompanionPreparationService {
       snapshot.artifacts.push({artifact_id:'implementation-notes',role:'implementation-notes',
         kind:'file',location:absolute,revision:document.digest.slice(7),source_schema:'context-plan-v0',
         source:'companion-preparation',observed_at:new Date().toISOString(),integrity:'observed'});
+      this.store.assertWorkAllowed(record.cardId,record.revision);
       const saved = harness.recordWorkflow({ticket_id:ticket.id,request_id:requestId,
         expected_revision:current.workflow_revision,schema_version:1,snapshot});
       if (saved.applicability?.state !== 'verified') return this.get(input);
@@ -609,6 +618,7 @@ export class CompanionPreparationService {
     const service = this;
     return {snapshot(ticketKey,action,authorizationRef) {
       const card = service.known(input), current = service.store.preparation(card.cardId,card.revision);
+      service.store.assertWorkAllowed(card.cardId,card.revision);
       if (!current || card.preparationStatus !== 'authorized' || current.payloadDigest !== record.payloadDigest
         || current.bindings.issue?.id !== issue.id || current.bindings.harness?.ticketKey !== ticketKey
         || current.unknownSideEffects.some(item => item !== 'ticket-design-launch')

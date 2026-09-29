@@ -10,8 +10,44 @@ import {CompanionContinuationService} from '../src/orchestration/companion-conti
 import {CompanionEvidenceAdapter,companionResultIdentity} from '../src/orchestration/companion-evidence.mjs';
 import {CompanionMechanicalAdapter} from '../src/orchestration/companion-mechanical.mjs';
 import {WorkflowSource} from '../src/harness/workflow-source.ts';
+import {WorkflowAgentLauncher} from '../src/orchestration/workflow-agent-launcher.ts';
 
 const digest=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex');
+
+test('implementation authority rejects stop committed after action admission',async t=>{
+  const dir=mkdtempSync(join(tmpdir(),'companion-final-stop-'));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const notes='notes.md'; writeFileSync(join(dir,notes),'ready','utf8');
+  const card:any={cardId:'card',revision:1,content:{endpoint:'to-pr'}};
+  const ticket:any={id:'11111111-1111-4111-8111-111111111111',key:'COMPANION-008',
+    reference:'https://github.com/Emilia-tan-Ovo/yuki-link/issues/133',expected_worktree:dir,
+    comparison_baseline:'baseline'};
+  const workflow:any={workflow_revision:1,snapshot:{subject:{subject_id:'subject'}}};
+  const policy:any={policy_id:'policy',revision:1,digest:'a'.repeat(64),
+    workflow_phase:'implementation',permission_selection:'owner-native-default'};
+  let stopped=false,launchError:any=null;
+  const service=Object.create(CompanionContinuationService.prototype) as any;
+  service.store={assertWorkAllowed:()=>{if(stopped) throw Error('COMPANION_WORK_STOPPED');},
+    continuationAction:()=>null,claimContinuationAction:()=>{stopped=true;return {deduplicated:false};},
+    updateContinuationAction:()=>({conflict:false})};
+  service.manager={implementationLaunchAuthority:{snapshot:()=>({policy})},
+    harness:{workflowHistory:{current:{get:()=>workflow},source:{assess:()=>({state:'verified'})}},
+      changes:{facts:{currentIdentity:()=>({scheme:'git',version:1,scope:'all',
+        completeness:'complete',digest:'b'.repeat(64)})}}}};
+  service.requireUsageCheckpoint=()=>{};
+  service.resultIdentity=()=>({result_path:join(dir,'result.json')});
+  service.locator=()=>({card,ticket});
+  service.recordModelLaunchFailure=(_context:any,_slot:any,error:any)=>{launchError=error;};
+  service.get=async()=>({});
+  const original=WorkflowAgentLauncher.prototype.start;
+  WorkflowAgentLauncher.prototype.start=async function(this:any,input:any) {
+    this.dependencies.implementationAuthority.snapshot(ticket.key,input.authorization_ref);
+  };
+  t.after(()=>{WorkflowAgentLauncher.prototype.start=original;});
+  await service.startModel({card_id:card.cardId,revision:1},{card,ticket},
+    'implementation','implementation',{notes:{path:notes,sha256:digest('ready')}});
+  assert.match(String(launchError),/COMPANION_WORK_STOPPED/);
+});
 const issueCriteria=[
   '确认目标与终点后常规阶段连续推进；只设计样例不实现，授权到 PR 样例交付真实 PR，不擅自合并/部署。',
   '沿用 006 的准备及授权交接，不退回 ChatGPT 人工预制工程状态；每一步根据既有事实选择对应能力，不另存一套竞争工程 phase。',

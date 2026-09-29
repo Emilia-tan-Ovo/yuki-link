@@ -35,6 +35,26 @@ test('known preparation path conflict yields a typed blocked receipt', async () 
     .preparation.preparation_for_ticket_design.state,'unknown');
 });
 
+test('stop intent wins admission across two card-store connections and survives reopen', async t => {
+  const dir=await fixture(t), first=new EngineeringCardStore(dir), second=new EngineeringCardStore(dir);
+  const repo='Emilia-tan-Ovo/yuki-link';
+  const card=first.create({original:'实现 #133',projectKey:'yuki-link',repository:repo,
+    ticket:{id:133,number:133,url:`https://github.com/${repo}/issues/133`,scope:{digest:'a'.repeat(64)}},
+    resolution:{status:'verified_existing'},desiredPhase:'implementation',endpoint:'to-pr',
+    extraAuthorization:{merge:false,deploy:false}});
+  first.confirm(card.cardId,1,'desktop-user-action');
+  const controlId='11111111-1111-4111-8111-111111111111';
+  assert.equal(first.requestWorkStop(card.cardId,1,controlId).deduplicated,false);
+  assert.equal(second.requestWorkStop(card.cardId,1,controlId).deduplicated,true);
+  assert.equal(second.claim(card.cardId,1,first.get(card.cardId).dispatchId,{request_id:'test'}).stopped,true);
+  assert.equal(second.producerAttempt(card.cardId,1,first.get(card.cardId).dispatchId).conflict,true);
+  assert.throws(()=>second.assertWorkAllowed(card.cardId,1),/COMPANION_WORK_STOPPED/u);
+  first.close(); second.close();
+  const reopened=new EngineeringCardStore(dir);
+  assert.equal(reopened.workStop(card.cardId,1).control_id,controlId);
+  reopened.close();
+});
+
 test('content revisions are immutable; confirmation, edit and revoke check revision and state atomically across reopen', async t => {
   const dir = await fixture(t); let store = new EngineeringCardStore(dir);
   const content = { original: '给 yuki-link 的 004 做到 PR', summary: '处理 004', projectKey: 'yuki-link', repository: 'Emilia-tan-Ovo/yuki-link', ticket: issue('Emilia-tan-Ovo/yuki-link', 129), resolution: { status: 'verified_existing', source: 'github', observedAt: '2026-09-26' }, desiredPhase: 'implementation', endpoint: 'to-pr', extraAuthorization: { merge: false, deploy: false } };

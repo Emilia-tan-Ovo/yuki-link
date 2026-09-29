@@ -57,6 +57,15 @@ export class BackendSession {
       return await this.cards.confirm(data.cardId,data.expectedRevision,'desktop-user-action');
     }
     if (data.action === 'revoke') return this.cards.revoke(data.cardId,data.expectedRevision);
+    if (data.action === 'stop') {
+      const accepted=this.cardStore.requestWorkStop(data.cardId,data.expectedRevision,data.id);
+      if (accepted.conflict) return {conflict:true,card:this.cardStore.get(data.cardId)};
+      const card=this.cardStore.get(data.cardId);
+      return {card,engineeringStatus:this.engineering
+        ? await this.engineering.stop(card,accepted.stop.control_id)
+        : {schema_version:1,control:{control_id:accepted.stop.control_id,state:'unknown',
+          reason:'YCA_UNAVAILABLE'}}};
+    }
     if (data.action === 'refresh') { const card = await this.cards.refresh(data.cardId);
       return { card, engineeringStatus: this.engineering ? await this.engineering.status(card) : null }; }
     throw Error('工程卡片操作无效。');

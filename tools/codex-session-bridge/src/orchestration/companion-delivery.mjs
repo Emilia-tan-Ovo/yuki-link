@@ -131,10 +131,12 @@ export class CompanionDeliveryAdapter {
     if (before.length) return {state:'blocked',reason:'COMPANION_PR_EXISTING_CONFLICT'};
     await this.observeAuthority(locator,frozen);
     if (await this.identity(frozen)!==frozen.actor) throw error('COMPANION_PR_SUBJECT_CHANGED');
+    this.store.assertWorkAllowed?.(locator.card_id,locator.revision);
     const attempt=this.store.updateContinuationAction(locator.card_id,locator.revision,
       'pr-delivery','reserved','attempted');
     if (attempt.conflict) return this.reconcile(locator);
     try {
+      this.store.assertWorkAllowed?.(locator.card_id,locator.revision);
       const response=await this.transport.create(frozen.repository,frozen);
       if (Number.isSafeInteger(response?.number)) this.store.updateContinuationAction(
         locator.card_id,locator.revision,'pr-delivery','attempted','unknown',

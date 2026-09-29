@@ -96,8 +96,9 @@ export class HarnessControls {
       state: 'recording-failed', reason: 'CONTROL_RECORD_NOT_SAVED', observed_at: now(), source_id: this.journal.sourceId } };
   }
 
-  stopRun(ticketId: string, runId: string) {
+  stopRun(ticketId: string, runId: string, exactBindingId?: string) {
     const binding = [...this.bindings.values()].find(value => value.ticket_id === ticketId
+      && (!exactBindingId || value.id === exactBindingId)
       && (value.scope === 'session' || value.run_id === runId)
       && this.source.runs(value.session_id).some(run => run.id === runId));
     if (!binding) throw new HarnessError('RUN_NOT_FOUND');

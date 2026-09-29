@@ -45,6 +45,7 @@ export class CompanionMechanicalAdapter {
     return "& npm --prefix tools/codex-session-bridge test\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n& npm --prefix tools/companion-desktop test\nexit $LASTEXITCODE";
   }
   async fullSuite(locator,ticket,subjectKey) {
+    this.store.assertWorkAllowed?.(locator.card_id,locator.revision);
     const slot=`full-suite:${subjectKey}`;
     const cwd=ticket.expected_worktree;
     const files=this.changed(cwd),content=this.content(cwd,files),head=git(cwd,'rev-parse','HEAD');
@@ -60,10 +61,12 @@ export class CompanionMechanicalAdapter {
     if (action.attempt_state==='verified') return {state:'passed',...action.receipt};
     if (action.attempt_state==='unknown') return {state:'unknown',reason:'COMPANION_TEST_TASK_UNKNOWN'};
     if (action.attempt_state==='reserved') {
+      this.store.assertWorkAllowed?.(locator.card_id,locator.revision);
       if (!this.computer?.tasks) return {state:'blocked',reason:'COMPANION_OWNED_TASK_UNAVAILABLE'};
       const marked=this.store.updateContinuationAction(locator.card_id,locator.revision,slot,'reserved','attempted');
       if (marked.conflict) return {state:'unknown',reason:'COMPANION_TEST_TASK_CONFLICT'};
       try {
+        this.store.assertWorkAllowed?.(locator.card_id,locator.revision);
         const epoch=this.computer.tasks.status().service_epoch;
         const started=this.computer.tasks.start({service_epoch:epoch,request_id:requestId,
           cwd,script,timeout_ms:1_800_000,ticket_id:ticket.id},id=>{
@@ -85,7 +88,8 @@ export class CompanionMechanicalAdapter {
         exit_code:task.exit_code};
     if (git(cwd,'rev-parse','HEAD')!==head || JSON.stringify(this.content(cwd,files))!==JSON.stringify(content))
       return {state:'blocked',reason:'COMPANION_TEST_SUBJECT_CHANGED'};
-    const receipt={task_id:task.task_id,exit_code:0,head,content_digest:hash(JSON.stringify(content))};
+    const receipt={task_id:task.task_id,service_epoch:current.receipt.service_epoch,
+      exit_code:0,head,content_digest:hash(JSON.stringify(content))};
     this.store.updateContinuationAction(locator.card_id,locator.revision,slot,'attempted','verified',receipt);
     return {state:'passed',...receipt};
   }
@@ -116,6 +120,7 @@ export class CompanionMechanicalAdapter {
     } catch { return false; }
   }
   commit(locator,ticket,subjectKey,files,tests) {
+    this.store.assertWorkAllowed?.(locator.card_id,locator.revision);
     const slot=`commit:${subjectKey}`,cwd=ticket.expected_worktree;
     if (tests?.state!=='passed' || !Array.isArray(files) || !files.length
       || new Set(files).size!==files.length || files.some(value=>!pathAllowed(value)))
@@ -174,6 +179,7 @@ export class CompanionMechanicalAdapter {
     const marked=this.store.updateContinuationAction(locator.card_id,locator.revision,slot,'reserved','attempted',
       {tree,parent:intent.parent});
     if (marked.conflict) return {state:'unknown',reason:'COMPANION_COMMIT_ATTEMPT_CONFLICT'};
+    this.store.assertWorkAllowed?.(locator.card_id,locator.revision);
     try { git(cwd,'commit','--no-verify','-m',`feat: 完成 ${ticket.key} 的已验证实现`); }
     catch { /* Git may have advanced HEAD before its receipt was lost. */ }
     return this.reconcileCommit(locator,ticket,subjectKey);
@@ -198,6 +204,7 @@ export class CompanionMechanicalAdapter {
     return {state:'committed',...receipt};
   }
   push(locator,ticket,subjectKey,commit) {
+    this.store.assertWorkAllowed?.(locator.card_id,locator.revision);
     const slot=`push:${subjectKey}`,cwd=ticket.expected_worktree;
     if (commit?.state!=='committed') throw fail('COMPANION_PUSH_COMMIT_UNVERIFIED');
     const repository=/^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/issues\/[1-9][0-9]*$/u
@@ -229,6 +236,7 @@ export class CompanionMechanicalAdapter {
     }
     const attempted=this.store.updateContinuationAction(locator.card_id,locator.revision,slot,'reserved','attempted');
     if (attempted.conflict) return {state:'unknown',reason:'COMPANION_PUSH_ATTEMPT_CONFLICT'};
+    this.store.assertWorkAllowed?.(locator.card_id,locator.revision);
     try { git(cwd,'push','origin',`HEAD:${ref}`); }
     catch { /* A network error may follow a successful push. */ }
     return this.reconcilePush(locator,ticket,subjectKey);

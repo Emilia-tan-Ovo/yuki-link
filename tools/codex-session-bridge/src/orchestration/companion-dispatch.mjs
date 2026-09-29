@@ -113,6 +113,7 @@ export class CompanionDispatchService {
     const service = this;
     return { snapshot(ticketKey, actionOrRef, maybeRef) {
       service.assertStore();
+      service.store.assertWorkAllowed(claim.card_id,claim.revision);
       const received = service.store.received(claim.card_id,claim.revision,claim.dispatch_id);
       if (!received || sha(received) !== sha(claim) || service.store.get(claim.card_id)?.state !== 'confirmed')
         fail('COMPANION_CLAIM_CONFLICT');
@@ -292,7 +293,7 @@ export class CompanionDispatchService {
       if (existsSync(path.dirname(result.result_path))) fail('COMPANION_RESULT_PATH_OCCUPIED');
       mkdirSync(path.dirname(result.result_path),{recursive:true});
     }
-    try { await this.launch(proposed); }
+    try { this.store.assertWorkAllowed(input.card_id,input.revision); await this.launch(proposed); }
     catch { return this.receipt(input,proposed,false); }
     return this.receipt(input,proposed,false);
   }

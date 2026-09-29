@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runCompanionTurn, validateDshConfig } from './dsh/runner.mjs';
 import { getEngineeringReceipt, prepareNewRequirement, getPreparationReceipt,
-  getContinuationReceipt, preparationConflictSources } from './yca-engineering-client.mjs';
+  getContinuationReceipt, getCompanionWorkStatus, requestCompanionWorkStop,
+  preparationConflictSources } from './yca-engineering-client.mjs';
 
 const preparationConflict = error => {
   const value = typeof error?.code === 'string' ? error.code : error?.message;
@@ -19,10 +20,12 @@ export function loadEngineeringConfig(directory) {
 export class EngineeringCoordinator {
   constructor({ store, config, runTurn = runCompanionTurn, receipt = getEngineeringReceipt,
     prepareRequirement = prepareNewRequirement, preparationReceipt = getPreparationReceipt,
-    continuationReceipt = getContinuationReceipt }) {
+    continuationReceipt = getContinuationReceipt, workStatus=getCompanionWorkStatus,
+    workStop=requestCompanionWorkStop }) {
     this.store = store; this.config = config; this.runTurn = runTurn; this.receipt = receipt;
     this.prepareRequirement = prepareRequirement; this.preparationReceipt = preparationReceipt;
     this.continuationReceipt = continuationReceipt;
+    this.workStatus=workStatus; this.workStop=workStop;
   }
   input(card) {
     const envelope = this.store.envelope(card.cardId,card.revision);
@@ -56,26 +59,31 @@ export class EngineeringCoordinator {
     }
   }
   async status(card) {
+    let current=null;
+    if (card.state==='confirmed') {
+      try { current=await this.workStatus(this.config.ycaUrl,this.preparationInput(card)); }
+      catch { current={observation:{state:'unavailable',source:'yca-work-status',observed_at:new Date().toISOString()}}; }
+    }
     const continuationInput=this.preparationInput(card);
     let continuation=null;
     try { if (card.state==='confirmed') continuation=await this.continuationReceipt(this.config.ycaUrl,continuationInput); }
     catch { /* An unavailable projection does not change the original dispatch/preparation fact. */ }
     if (card.content.resolution?.status === 'explicit_new_requirement') {
-      try { return { preparation:await this.preparationReceipt(this.config.ycaUrl,this.preparationInput(card)),
+      try { return { preparation:await this.preparationReceipt(this.config.ycaUrl,this.preparationInput(card)),current,
         continuation,endpoint:continuation?.endpoint ?? card.content.endpoint,
         workflow:continuation?.workflow ?? null,acceptance:continuation?.acceptance ?? null,
         pr_delivery:continuation?.pr_delivery ?? {state:'unknown'},
         run:continuation?.initial_run ?? null }; }
-      catch { return { preparation:{ preparation_for_ticket_design:{state:'unknown',
+      catch { return {current, preparation:{ preparation_for_ticket_design:{state:'unknown',
         blockers:['PREPARATION_RECEIPT_UNAVAILABLE']},unknown_side_effects:[] } }; }
     }
     const input = this.input(card);
-    if (!input) return { card_dispatch:'not-dispatched', dsh_turn:'not-started', engineering_operation:null,
+    if (!input) return { current,card_dispatch:'not-dispatched', dsh_turn:'not-started', engineering_operation:null,
       run:null, workflow:null, acceptance:null, pr_delivery:{state:'unknown'} };
     let receipt = null;
     try { receipt = await this.receipt(this.config.ycaUrl,input); } catch { /* Outcome remains unknown. */ }
     const dispatch = this.store.dispatch(card.cardId,card.revision);
-    return { card_dispatch:this.store.get(card.cardId)?.dispatchStatus ?? 'unknown',
+    return { current,card_dispatch:this.store.get(card.cardId)?.dispatchStatus ?? 'unknown',
       dsh_turn:dispatch?.producer_state ?? 'unknown', dsh_receipt:dispatch?.producer_receipt ? JSON.parse(dispatch.producer_receipt) : null,
       engineering_operation:receipt ? { id:receipt.operation_id,state:receipt.operation_state,
         reconciliation:receipt.reconciliation } : null,
@@ -99,5 +107,11 @@ export class EngineeringCoordinator {
     this.store.producerOutcome(card.cardId,card.revision,card.dispatchId,turn.state,turn);
     return { state:turn.state, dsh_turn:{ state:turn.state, exit_code:turn.exit_code,
       summary:turn.summary }, status:await this.status(card) };
+  }
+  async stop(card,controlId) {
+    const input={...this.preparationInput(card),control_id:controlId};
+    try { return await this.workStop(this.config.ycaUrl,input); }
+    catch { return {schema_version:1,control:{control_id:controlId,state:'unknown',
+      reason:'YCA_UNAVAILABLE'},observation:{state:'unavailable',source:'yca-work-control'}}; }
   }
 }

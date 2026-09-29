@@ -18,6 +18,9 @@ test('companion endpoint exposes typed dispatch and no-ticket preparation action
   },companionContinuation:{
     advance:async()=>{calls.push('advance');return {schema_version:1,endpoint:'to-pr'};},
     get:async()=>{calls.push('continuation-get');return {schema_version:1,endpoint:'to-pr'};},
+  },companionControls:{
+    get:async()=>{calls.push('work-status');return {schema_version:1,control:null};},
+    requestStop:async()=>{calls.push('work-stop');return {schema_version:1,control:{state:'requested'}};},
   }};
   const server = createHttpServer(manager,null);
   server.listen(0,'127.0.0.1'); await once(server,'listening');
@@ -31,7 +34,7 @@ test('companion endpoint exposes typed dispatch and no-ticket preparation action
   assert.deepEqual(tools.tools.map(tool=>tool.name).sort(),['advance_companion_engineering',
     'dispatch_confirmed_engineering_card','get_companion_continuation_receipt',
     'get_companion_engineering_receipt','get_companion_preparation_receipt',
-    'prepare_companion_new_requirement']);
+    'get_companion_work_status','prepare_companion_new_requirement','request_companion_work_stop']);
   const input = {schema_version:1,card_store_id:'00000000-0000-4000-8000-000000000001',
     card_id:'00000000-0000-4000-8000-000000000002',revision:1,
     dispatch_id:'00000000-0000-4000-8000-000000000003'};
@@ -41,12 +44,15 @@ test('companion endpoint exposes typed dispatch and no-ticket preparation action
     card_store_id:input.card_store_id,card_id:input.card_id,revision:input.revision}});
   assert.equal((prepared.structuredContent as {preparation_id?: string})?.preparation_id,'new');
   const locator={card_store_id:input.card_store_id,card_id:input.card_id,revision:input.revision};
+  const workStatus=await client.callTool({name:'get_companion_work_status',
+    arguments:{schema_version:1,...locator}});
+  assert.equal((workStatus.structuredContent as {schema_version?:number})?.schema_version,1);
   const advanced=await client.callTool({name:'advance_companion_engineering',
     arguments:{schema_version:1,...locator}});
   assert.equal(advanced.isError,undefined);
   assert.equal((advanced.structuredContent as {endpoint?: string})?.endpoint,'to-pr');
   assert.equal((await getContinuationReceipt(`http://127.0.0.1:${address.port}/companion-mcp`,locator) as {endpoint?:string}).endpoint,'to-pr');
-  assert.deepEqual(calls,['get','prepare','advance','continuation-get']);
+  assert.deepEqual(calls,['get','prepare','work-status','advance','continuation-get']);
 });
 
 test('preparation conflict code survives Companion MCP and Desktop client decoding', async t => {
