@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { childRelationSchema, isolationAssessmentSchema } from './conversation-model.ts';
+import { workItemReferenceSchema, workItemExecutionSchema, workItemScopeSchema } from './work-item-model.ts';
 
 const id = z.string().uuid();
 const text = z.string().min(1).max(512);
@@ -29,6 +30,7 @@ const permissionSelectionSchema = z.object({
 }).strict();
 
 const executionReserveV1InputSchema = z.object({
+  work_item: workItemReferenceSchema.optional(),
   ticket_id: id,
   request_id: z.string().min(1).max(128).regex(/^[A-Za-z0-9._:-]+$/),
   destination: requestedExecutionDestinationSchema,
@@ -51,7 +53,7 @@ const executionReserveV1InputSchema = z.object({
 
 export const implementationLaunchContractSchema = z.object({
   schema_version: z.literal(1), kind: z.literal('ticket-implementation'),
-  review_policy: z.literal('delegated'), destination: z.literal('main'), session: z.literal('fresh'),
+  review_policy: z.literal('delegated'), destination: z.literal('main'), session: z.enum(['fresh', 'work-item']),
 }).strict();
 
 export const implementationPolicySnapshotSchema = z.object({
@@ -68,6 +70,7 @@ export const implementationPolicySnapshotSchema = z.object({
 }).strict();
 
 export const implementationAuthorizationSchema = z.object({
+  work_item_scope: workItemScopeSchema.optional(),
   schema_version: z.literal(1), authorization_id: text, ticket_key: text,
   action: z.literal('ticket-implementation'), endpoint: z.literal('implementation'), contract_version: z.literal(1),
   authorization_ref: text, notes: z.object({ path: text, sha256: hash }).strict(),
@@ -119,7 +122,7 @@ export const implementationExecutionProtectionSchema = z.object({
 
 export const reviewLaunchContractSchema = z.object({
   schema_version: z.literal(1), kind: z.literal('ticket-review'),
-  destination: z.literal('review-child'), participant: z.literal('coordinator'), session: z.literal('fresh'),
+  destination: z.literal('review-child'), participant: z.literal('coordinator'), session: z.enum(['fresh', 'work-item']),
 }).strict();
 export const reviewPolicySnapshotSchema = z.object({
   schema_version: z.literal(1), policy_id: text, revision: z.number().int().positive(), digest: hash,
@@ -130,6 +133,7 @@ export const reviewPolicySnapshotSchema = z.object({
   authority_refs: z.array(text).min(1).max(32),
 }).strict();
 export const reviewAuthorizationSchema = z.object({
+  work_item_scope: workItemScopeSchema.optional(),
   schema_version: z.literal(1), authorization_id: text, ticket_key: text, review_id: text,
   action: z.literal('ticket-review'), endpoint: z.literal('review'), contract_version: z.literal(1),
   contract_digest: hash, authorization_ref: text, subject_ref: text, subject_identity: hash,
@@ -153,7 +157,7 @@ export const workflowAgentActionSchema = z.enum([
 export const workflowAgentExecutionProtectionSchema = z.object({
   caller_fingerprint: hash,
   action: workflowAgentActionSchema,
-  contract: z.object({ schema_version: z.literal(1), session: z.literal('fresh'),
+  contract: z.object({ schema_version: z.literal(1), session: z.enum(['fresh', 'work-item']),
     destination: z.enum(['main', 'review-child', 'acceptance-child']),
     review_policy: z.literal('delegated').nullable() }).strict(),
   policy: z.object({ schema_version: z.literal(1), policy_id: text, revision: z.number().int().positive(),
@@ -163,6 +167,7 @@ export const workflowAgentExecutionProtectionSchema = z.object({
       required_paths: z.array(text).max(64), required_executables: z.array(text).max(64),
       dependency_packages: z.array(text).max(16) }).strict() }).strict(),
   authorization: z.object({ schema_version: z.literal(1), authorization_id: text, ticket_key: text,
+    work_item_scope: workItemScopeSchema.optional(),
     action: workflowAgentActionSchema, authorization_ref: text, subject_ref: text,
     subject_identity: hash.nullable(), authority_refs: z.array(text).min(1).max(32),
     agent_required: z.boolean().optional(), review_id: text.optional(), acceptance_id: text.optional(),
@@ -195,6 +200,7 @@ export const executionReserveInputSchema = z.union([executionReserveV1InputSchem
   executionReserveV3InputSchema, executionReserveV4InputSchema]);
 
 const executionProtectedIntentV1Schema = z.object({
+  work_item: workItemReferenceSchema.optional(),
   ticket_id: id, destination: requestedExecutionDestinationSchema,
   expected_workflow_revision: z.number().int().positive(), subject_ref: text,
   content_identity: executionContentIdentitySchema,
@@ -230,6 +236,7 @@ export const executionRuntimeSchema = z.object({
 }).strict();
 
 const executionOperationCommon = {
+  work_item: workItemExecutionSchema.optional(),
   operation_id: id, ticket_id: id, request_id: z.string().min(1).max(128),
   protected_fingerprint: hash, destination: resolvedExecutionDestinationSchema, state: executionStateSchema,
   revision: z.number().int().positive(), runtime: executionRuntimeSchema,

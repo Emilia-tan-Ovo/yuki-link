@@ -11,6 +11,8 @@ import { startTicketImplementationInputSchema } from './orchestration/implementa
 import { DEFAULT_MODEL, DEFAULT_REASONING } from './model-policy.js';
 import { startTicketReviewInputSchema } from './orchestration/review-launcher.ts';
 import { WorkflowAgentLauncher, startWorkflowAgentInputSchema } from './orchestration/workflow-agent-launcher.ts';
+import { executeRaw } from './orchestration/execution-authority.ts';
+import { workItemReferenceSchema } from './harness/work-item-model.ts';
 import { EngineeringMemoryStore, RuleAuthorityVerifier, memoryDraft, memoryQuery } from './orchestration/engineering-memory.ts';
 import { companionDispatchInputSchema } from './orchestration/companion-contract.mjs';
 
@@ -165,8 +167,29 @@ export function createMcpServer(manager, computer) {
       reviewAuthority: manager.reviewLaunchAuthority,
       workflowAuthority: manager.workflowAgentAuthority });
   };
-  register('manage-existing', 'start_workflow_agent', 'Preferred high-level typed Workflow Agent launcher. Fixes fresh session, destination, phase policy and Owner native permissions; returns one durable execution receipt.',
+  register('manage-existing', 'start_workflow_agent', 'Managed Workflow execution. Derives fresh, continue or generation replacement from durable work item facts; preserves Owner native permissions.',
     startWorkflowAgentInputSchema, input => workflowAgent().start(input));
+  register('observe', 'get_work_item', 'Read a durable work item and its session generations; run completion does not close the item.',
+    z.object({ work_item_id: z.string().uuid() }).strict(), input => {
+      if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
+      return manager.harness.executionOperations.workItems.get(input.work_item_id);
+    }, true);
+  register('record-only', 'transition_work_item', 'Apply one trusted, evidence-bound lifecycle decision. Caller cannot supply state, completion evidence or review budget.',
+    workItemReferenceSchema.extend({ decision_ref: z.string().min(1).max(512) }).strict(), input => {
+      if (!manager.executionAuthority || !manager.harness) throw new HarnessError('WORK_ITEM_TRANSITION_NOT_AUTHORIZED');
+      const operations = manager.harness.executionOperations;
+      const item = operations.workItems.get(input.work_item_id);
+      const ticket = manager.harness.tickets.get(item.delivery_item_id);
+      const decision = manager.executionAuthority.decision(input.decision_ref, ticket.expected_worktree);
+      if (decision.work_item_id !== input.work_item_id || decision.expected_revision !== input.revision)
+        throw new HarnessError('WORK_ITEM_REVISION_CONFLICT');
+      return operations.transitionWorkItem(decision);
+    });
+  register('record-only', 'reconcile_work_item', 'Reconcile the recorded operation against exact runtime request facts; never launch or replay execution.',
+    workItemReferenceSchema, input => {
+      if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');
+      return manager.harness.executionOperations.reconcileWorkItem(input);
+    });
   register('manage-existing', 'dispatch_confirmed_engineering_card', 'Receive one confirmed Desktop card revision and dispatch only its prepared current Workflow phase through the existing launcher.',
     companionDispatchInputSchema, input => {
       if (!manager.companionDispatch) throw new HarnessError('COMPANION_DISPATCH_UNAVAILABLE');
@@ -208,12 +231,14 @@ export function createMcpServer(manager, computer) {
     startTicketReviewInputSchema, input => {
       return workflowAgent().start({ ...input, action: 'review' });
     });
-  register('new-side-effect', 'codex_start_session', 'Compatibility, diagnostic or administrator path. Normal Repository Engineer Workflow uses start_workflow_agent. Start a managed Codex conversation and freeze effective native permissions.', {
+  register('new-side-effect', 'codex_start_session', 'Compatibility, diagnostic or administrator path requiring a trusted exact-payload authorization_ref. Normal Repository Engineer Workflow uses start_workflow_agent. Freeze effective native permissions at creation.', {
+    authorization_ref: z.string().min(1).max(512).optional(),
     cwd: z.string().min(1).describe('Absolute existing working directory inside the administrator allowlist.'), permissions, ...message,
-  }, input => manager.start(input));
-  register('new-side-effect', 'codex_send_message', 'Submit a new turn to the specified bridge session using its exact saved Codex thread ID. One active run per session. Model/reasoning change only when explicitly provided. Permissions are frozen at session creation; supplying permissions here is rejected.', {
+  }, input => executeRaw(manager, 'start', input));
+  register('new-side-effect', 'codex_send_message', 'Raw continuation requires a trusted exact-payload authorization_ref; managed work item sessions must use start_workflow_agent with their work_item reference. Permissions remain frozen at creation.', {
+    authorization_ref: z.string().min(1).max(512).optional(),
     session_id: z.string().uuid(), permissions: z.unknown().optional(), ...message,
-  }, input => manager.send(input));
+  }, input => executeRaw(manager, 'send', input));
   register('observe', 'codex_get_status', 'Read current session configuration, selected run state, timestamps, completion/error and final reply. completed/failed/stopped/timed_out/interrupted are terminal run states.', {
     session_id: z.string().uuid().optional(), run_id: z.string().uuid().optional(),
   }, input => manager.status(input), true);

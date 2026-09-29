@@ -59,7 +59,7 @@ const schemaIssues = (error: ZodError): WorkflowValidationIssue[] => error.issue
 });
 
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const subjectIdentity = (subject: WorkflowSnapshotRecord['snapshot']['subject']) => {
+export const subjectIdentity = (subject: WorkflowSnapshotRecord['snapshot']['subject']) => {
   const compare = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
   const files = (values: typeof subject.staged) => values
     .map(file => ({ path: file.path.replaceAll('\\', '/'), sha256: file.sha256 }))

@@ -18,6 +18,7 @@ import { createHarnessRuntime, createHarnessServer } from './harness/runtime.ts'
 import { FileImplementationLaunchAuthoritySource } from './orchestration/implementation-launcher.ts';
 import { FileReviewLaunchAuthoritySource } from './orchestration/review-launcher.ts';
 import { FileWorkflowAgentAuthoritySource } from './orchestration/workflow-agent-launcher.ts';
+import { FileExecutionAuthority } from './orchestration/execution-authority.ts';
 
 const toolRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const { values } = parseArgs({ options: {
@@ -37,6 +38,7 @@ const { values } = parseArgs({ options: {
   'implementation-launch-authority': { type: 'string' },
   'review-launch-authority': { type: 'string' },
   'workflow-agent-authority': { type: 'string' },
+  'execution-authority': { type: 'string' },
   'companion-card-store': { type: 'string' },
   'companion-preparation-config': { type: 'string' },
 } });
@@ -47,6 +49,7 @@ if (values.help) {
   console.log('--implementation-launch-authority ABSOLUTE_JSON_PATH (trusted versioned policy and Ticket authorization source for start_ticket_implementation)');
   console.log('--review-launch-authority ABSOLUTE_JSON_PATH (trusted versioned policy and Ticket authorization source for start_ticket_review)');
   console.log('--workflow-agent-authority ABSOLUTE_JSON_PATH (trusted policies and Ticket authorizations for the unified Workflow Agent launcher)');
+  console.log('--execution-authority ABSOLUTE_JSON_PATH (trusted work item transitions and exact raw diagnostic grants; defaults to no raw access)');
   console.log('--companion-card-store ABSOLUTE_DIRECTORY (trusted Desktop engineering card store; existing SQLite required)');
   console.log('--companion-preparation-config ABSOLUTE_JSON_PATH (trusted repository, base ref and worktree root for new requirements)');
   console.log('Yuki Computer Agent\n--transport stdio|http (default stdio)\n--port 7391 (HTTP binds only 127.0.0.1)\n--allow-cwd ABSOLUTE_PATH (repeatable; required; Codex cwd and filesystem write roots)\n--read-root ABSOLUTE_PATH (repeatable; optional additional read roots)\n--runtime ABSOLUTE_PATH (default tools/codex-session-bridge/runtime)\n--codex-bin EXECUTABLE (default codex)\n--pwsh-bin EXECUTABLE (default pwsh.exe on Windows)');
@@ -84,6 +87,7 @@ if (values.help) {
       ...(values['implementation-launch-authority'] ? [values['implementation-launch-authority']] : []),
       ...(values['review-launch-authority'] ? [values['review-launch-authority']] : []),
       ...(values['workflow-agent-authority'] ? [values['workflow-agent-authority']] : []),
+      ...(values['execution-authority'] ? [values['execution-authority']] : []),
       ...(values['companion-preparation-config'] ? [values['companion-preparation-config']] : []),
       ...(values['companion-card-store'] ? [values['companion-card-store']] : [])].some(p => !path.isAbsolute(p))) throw new Error('Runtime, allowlist and authority paths must be absolute.');
     const port = Number(values.port);
@@ -94,6 +98,8 @@ if (values.help) {
     // Codex capability discovery is lazy; unavailable Codex must not block computer tools.
     store = new RuntimeStore(values.runtime);
     manager = new SessionManager({ store, catalog, executor: new CodexExecutor(values['codex-bin']), permissionResolver: new PermissionResolver(values['codex-bin']), allowedCwds: values['allow-cwd'] });
+    manager.executionAuthority = values['execution-authority']
+      ? new FileExecutionAuthority(values['execution-authority'], { forbiddenRoots: values['allow-cwd'] }) : null;
     manager.implementationLaunchAuthority = values['implementation-launch-authority']
       ? new FileImplementationLaunchAuthoritySource(values['implementation-launch-authority'], {
         forbiddenRoots: values['allow-cwd'],

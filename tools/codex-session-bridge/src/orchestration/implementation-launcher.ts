@@ -4,6 +4,8 @@ import path from 'node:path';
 import { companionRequest, companionRequestPrompt } from './companion-request.ts';
 import { inspectDependency, inspectHostCapabilities } from './preflight.ts';
 import { z } from 'zod';
+import { workItemReferenceSchema } from '../harness/work-item-model.ts';
+import { dispatchWorkItem } from './dispatch-work-item.ts';
 import { HarnessError } from '../harness/model.ts';
 import { companionDispatchProtectionSchema, executionContentIdentitySchema, implementationAuthorizationSchema, implementationAuthoritySourceIdentitySchema,
   implementationExecutableIdentitySchema, implementationLaunchContractSchema,
@@ -18,6 +20,7 @@ const authorizationFileSchema = z.object({
 }).strict();
 
 export const startTicketImplementationInputSchema = z.object({
+  work_item: workItemReferenceSchema.optional(),
   schema_version: z.literal(1), ticket_id: z.string().uuid(),
   request_id: z.string().min(1).max(128).regex(/^[A-Za-z0-9._:-]+$/),
   authorization_ref: text,
@@ -210,7 +213,7 @@ export class HostImplementationEnvironmentSource implements EnvironmentSource {
 }
 
 const contract = implementationLaunchContractSchema.parse({ schema_version: 1, kind: 'ticket-implementation',
-  review_policy: 'delegated', destination: 'main', session: 'fresh' });
+  review_policy: 'delegated', destination: 'main', session: 'work-item' });
 
 function same(left: unknown, right: unknown) { return stable(left) === stable(right); }
 
@@ -319,7 +322,7 @@ export class ImplementationLauncher {
       `环境事实：${JSON.stringify(snapshot.environment.capabilities ?? null)}`,
       `依赖事实：${JSON.stringify(snapshot.environment.dependencies ?? [])}`,
       '当前 delta：', ...input.current_delta.map(value => `- ${value.ref}: ${value.value ?? 'null'}`),
-      '结构化 workflow contract：review_policy=delegated；destination=Ticket Main；session=fresh。',
+      '结构化 workflow contract：review_policy=delegated；destination=Ticket Main；session 由受管工作项绑定决定。',
       (snapshot.authority as any).companion_result_path
         ? `Companion 结果产物：写 ${(snapshot.authority as any).companion_result_path}，UTF-8 JSON，字段 schema_version=1、action="implementation"、status="completed"|"blocked"|"incomplete"、report_ref、blockers 字符串数组、files（本票修改的 repo-relative 路径数组）。身份字段 request_id、subject_ref、subject_identity 按 ${JSON.stringify((snapshot.authority as any).companion_result_identity)} 写入；operation_id、run_id 由 Harness 根据真实运行回执绑定，无需写入结果文件。报告文件须置于结果文件同目录。完成最小定向测试与 Implementation Handoff 后停止。Git commit、push、full suite 和 PR 由 Emilia/YCA 执行；不要执行 Review。`
         : '完成实现、最小定向测试、commit 与 Implementation Handoff 后停止；不要执行 Review。',
@@ -355,6 +358,7 @@ export class ImplementationLauncher {
         notes: snapshot.authorization.notes, environment: snapshot.environment },
     };
     const reserved = this.harness.executionOperations.reserve({
+      ...(input.work_item ? { work_item: input.work_item } : {}),
       ticket_id: input.ticket_id, request_id: input.request_id, destination: { kind: 'main' },
       expected_workflow_revision: input.expected.workflow_revision, subject_ref: input.expected.subject_ref,
       content_identity: input.expected.content_identity,
@@ -365,7 +369,7 @@ export class ImplementationLauncher {
       implementation: protection,
     });
     try {
-      await this.manager.startGuarded({ request_id: reserved.runtime.request_id, cwd: snapshot.ticket.expected_worktree,
+      await dispatchWorkItem(this.manager, reserved, { request_id: reserved.runtime.request_id, cwd: snapshot.ticket.expected_worktree,
         prompt, sender: 'Emilia', model: snapshot.policy.model, reasoning: snapshot.policy.reasoning, timeout_ms: undefined },
       (dispatch: any) => {
         this.current(input, { authority: snapshot.authority, environment: snapshot.environment });

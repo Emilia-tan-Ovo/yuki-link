@@ -77,6 +77,10 @@ export class Harness {
     this.executionOperations = new ExecutionOperations(this.journal, {
       ticket: id => this.ticket(id), bindings: this.bindings, source: this.source,
       health: () => this.health(), workflow: id => this.workflowHistory.current.get(id),
+      assessWorkflow: id => {
+        const current = this.workflowHistory.current.get(id);
+        return current ? this.workflowHistory.source.assess(this.ticket(id), current.snapshot) : { state: 'unknown' };
+      },
       currentIdentity: ticket => ticket.comparison_baseline ? this.changes.facts.currentIdentity(ticket.comparison_baseline) : null,
       existingChild: (ticketId, relation) => this.conversations.relations.get(ticketId + ':' + relation.kind + ':'
         + (relation.kind === 'review' ? relation.review_id + ':' + relation.participant : relation.acceptance_id)),

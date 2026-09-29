@@ -11,6 +11,8 @@ import { ImplementationLauncher, HostImplementationEnvironmentSource,
 import { ReviewLauncher, startTicketReviewInputSchema } from './review-launcher.ts';
 import { ContextAssembler } from './context-assembler.ts';
 import { HarnessContextFactsSource } from './harness-context-source.ts';
+import { workItemReferenceSchema } from '../harness/work-item-model.ts';
+import { dispatchWorkItem } from './dispatch-work-item.ts';
 
 const text = z.string().min(1).max(512);
 const hash = z.string().regex(/^[0-9a-f]{64}$/);
@@ -32,6 +34,7 @@ const inside = (root: string, candidate: string) => {
 };
 
 const genericInput = z.object({ schema_version: z.literal(1), action: workflowAgentActionSchema,
+  work_item: workItemReferenceSchema.optional(),
   ticket_id: z.string().uuid(), request_id: z.string().min(1).max(128).regex(/^[A-Za-z0-9._:-]+$/),
   authorization_ref: text,
   expected: z.object({ workflow_revision: z.number().int().positive(), subject_ref: text,
@@ -201,7 +204,10 @@ export class WorkflowAgentLauncher {
       if (!origin || new Set(batch.map(value => value.finding_id)).size !== batch.length
         || batch.some(finding => finding.origin_review_id !== origin
           || !snapshot.findings?.some((value: any) => value.origin_review_id === origin
-            && value.finding_id === finding.finding_id && ['open','fixed-unverified'].includes(value.status))))
+            && value.finding_id === finding.finding_id && ['open','fixed','fixed-unverified'].includes(value.status)))
+        || snapshot.findings?.some((value: any) => value.origin_review_id === origin
+          && ['open', 'fixed', 'fixed-unverified'].includes(value.status)
+          && !batch.some(finding => finding.finding_id === value.finding_id)))
         throw new HarnessError('WORKFLOW_AGENT_FINDING_CONFLICT');
     }
     if (input.action === 'focused-review') {
@@ -278,13 +284,13 @@ export class WorkflowAgentLauncher {
       ...criterion, '当前 delta：', ...currentDelta.map(value => `- ${value.ref}: ${value.value ?? 'null'}`),
       ...( (snapshot.authority as any).companion_result_path
         ? [`Companion 结果产物：写 ${(snapshot.authority as any).companion_result_path}，UTF-8 JSON，字段 schema_version=1、action="${input.action}"、status="completed"|"blocked"|"incomplete"、report_ref、blockers 字符串数组；身份字段 request_id、subject_ref、subject_identity 按 ${JSON.stringify((snapshot.authority as any).companion_result_identity)} 写入；operation_id、run_id 由 Harness 根据真实运行回执绑定，无需写入结果文件。报告文件须置于结果文件同目录。ticket-design 必须先在 canonical docs/implementation-notes/<ticket.key>.md 写 ## Acceptance Evidence Plan，紧随一个 json fence：schema_version=1、issue_ref=当前 Ticket Issue URL、criteria_sha256=按 Issue checklist 顺序排列的 {criteria_ref,text} JSON 的 SHA-256、criteria=全部 checklist 的有序数组（每项只含 criteria_ref=AC1...、与 Issue 完全一致的 text、source_kind=repository-test/git-subject/harness-run/review/external-observation/agent-session）。不得使用 pr-delivery 或猜测来源；不确定则报告 incomplete。design 另填 product_decision_required 布尔值、product_decisions 数组与 acceptance_plan（每项 criteria_ref、source_kind，仅候选，可与 Notes 相同或增加 external-observation 要求，不写 passed）；finding-fix 另填 files 路径数组且仅可报告 fixed-unverified；focused-review 另填 axes:{standards,spec} 与 verified_finding_ids 数组。`] : []),
-      `结构化 contract：session=fresh；destination=${phase.destination}；Owner native permissions。`, instruction].join('\n');
+      `结构化 contract：session 由受管工作项绑定决定；destination=${phase.destination}；Owner native permissions。`, instruction].join('\n');
     const destination = phase.destination === 'main' ? { kind: 'main' }
       : input.action === 'focused-review' ? { kind: 'child', relation: { kind: 'review',
         review_id: input.review_id, participant: 'coordinator' } }
         : { kind: 'child', relation: { kind: 'acceptance',
           acceptance_id: input.action === 'acceptance-agent' ? input.acceptance_id : undefined } };
-    const contract = { schema_version: 1, session: 'fresh', destination: phase.destination,
+    const contract = { schema_version: 1, session: 'work-item', destination: phase.destination,
       review_policy: input.action === 'finding-fix' ? 'delegated' : null };
     const protection = { caller_fingerprint: callerFingerprint, action: input.action, contract,
       policy: snapshot.policy, authorization: snapshot.authorization, authority_source: snapshot.authority.source,
@@ -294,6 +300,7 @@ export class WorkflowAgentLauncher {
       preflight: { workflow_revision: input.expected.workflow_revision, subject_ref: input.expected.subject_ref,
         subject_identity: input.expected.subject_identity, environment: snapshot.environment } };
     const reserved = harness.executionOperations.reserve({ ticket_id: input.ticket_id, request_id: input.request_id,
+      ...(input.work_item ? { work_item: input.work_item } : {}),
       destination, expected_workflow_revision: input.expected.workflow_revision,
       subject_ref: input.expected.subject_ref, content_identity: input.expected.content_identity,
       launch: { cwd: snapshot.cwd, prompt, sender: 'Emilia', model: snapshot.policy.model,
@@ -303,7 +310,7 @@ export class WorkflowAgentLauncher {
         concurrency: { mode: 'single-line', decision_ref: null } }, workflow_agent: protection });
     if (reserved.deduplicated) return { ...harness.executionOperations.reconcile(reserved.operation_id), deduplicated: true };
     try {
-      await manager.startGuarded({ request_id: reserved.runtime.request_id, cwd: snapshot.cwd,
+      await dispatchWorkItem(manager, reserved, { request_id: reserved.runtime.request_id, cwd: snapshot.cwd,
         prompt, sender: 'Emilia', model: snapshot.policy.model, reasoning: snapshot.policy.reasoning },
       (dispatch: any) => {
         this.current(input, snapshot);

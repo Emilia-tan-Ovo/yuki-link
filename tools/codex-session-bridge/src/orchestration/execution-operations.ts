@@ -8,6 +8,9 @@ import { executionContentIdentitySchema, executionOperationSchema, executionRese
 import type { ExecutionContentIdentity, ExecutionOperation, ExecutionReserveInput, RequestedExecutionDestination,
   ResolvedExecutionDestination } from '../harness/execution-model.ts';
 import type { IsolationAssessment } from '../harness/conversation-model.ts';
+import { WorkItems, workDigest } from './work-items.ts';
+import { verifyManagedReview } from './review-evidence.ts';
+import { workItemDecisionSchema, workItemReferenceSchema } from '../harness/work-item-model.ts';
 
 type ChildRelation = Extract<RequestedExecutionDestination, { kind: 'child' }>['relation'];
 
@@ -55,6 +58,7 @@ interface ExecutionDependencies {
   health(): { state: string; reason: string | null; source_id?: string | null };
   workflow(ticketId: string): { workflow_revision: number; snapshot: { subject: { subject_id: string } } } | undefined;
   currentIdentity(ticket: Ticket): unknown;
+  assessWorkflow?(ticketId: string): { state: string };
   existingChild?(ticketId: string, relation: ChildRelation): {
     conversation_id: string; parent_conversation_id: string; relation: ChildRelation; created_at: string;
   } | undefined;
@@ -64,6 +68,8 @@ interface ExecutionDependencies {
 }
 
 export class ExecutionOperations {
+  workItems: WorkItems;
+  rawExecutions = new Map<string, Extract<RecordEntry['data'], { kind: 'raw_execution' }>>();
   journal: Journal;
   dependencies: ExecutionDependencies;
   operations = new Map<string, ExecutionOperation>();
@@ -75,14 +81,22 @@ export class ExecutionOperations {
 
   constructor(journal: Journal, dependencies: ExecutionDependencies) {
     this.journal = journal; this.dependencies = dependencies;
+    this.workItems = new WorkItems(dependencies.source);
     for (const record of journal.records) this.apply(record, true);
   }
 
   private apply(record: RecordEntry, replaying = false) {
     const data = record.data;
+    if (data.kind === 'raw_execution') { this.rawExecutions.set(data.request_id, data); return; }
+    if (data.kind === 'work_item_transitioned') {
+      if (this.workItems.get(data.item.work_item_id).revision !== data.previous_revision)
+        throw new HarnessError('WORK_ITEM_JOURNAL_INVALID');
+      this.workItems.apply(data.item); return;
+    }
     if (data.kind !== 'execution_operation_reserved' && data.kind !== 'execution_operation_transitioned'
       && data.kind !== 'execution_operation_bound') return;
     const operation = data.operation;
+    if ('work_item' in operation && operation.work_item) this.workItems.apply(operation.work_item.item);
     const prior = this.operations.get(operation.operation_id);
     if (data.kind === 'execution_operation_reserved') {
       if (prior || operation.revision !== 1 || operation.state !== 'reserved') throw new HarnessError('EXECUTION_JOURNAL_INVALID');
@@ -119,6 +133,7 @@ export class ExecutionOperations {
       throw new HarnessError('INVALID_EXECUTION_REQUEST', { field: 'launch.prompt' });
     }
     const intent = {
+      ...(input.work_item ? { work_item: input.work_item } : {}),
       ticket_id: input.ticket_id, destination: input.destination,
       expected_workflow_revision: input.expected_workflow_revision, subject_ref: input.subject_ref,
       content_identity: input.content_identity,
@@ -173,6 +188,7 @@ export class ExecutionOperations {
       if (prior.protected_fingerprint !== fingerprint) throw new HarnessError('REQUEST_CONFLICT', { operation_id: prior.operation_id });
       return this.receipt(prior, true);
     }
+    this.assertRawIdle();
     if (this.uncertainRecording || this.journal.failure) throw new HarnessError('RECORDING_OUTCOME_UNKNOWN', {
       phase: 'reserve', reason: this.journal.failure ?? 'prior append outcome unknown; checked restart required',
     });
@@ -193,7 +209,7 @@ export class ExecutionOperations {
     }
     const existing = this.reservations.get(key);
     const timestamp = now();
-    const destination: ResolvedExecutionDestination = input.destination.kind === 'main'
+    let destination: ResolvedExecutionDestination = input.destination.kind === 'main'
       ? { kind: 'main', conversation_id: ticket.main_conversation_id }
       : existing?.kind === 'child' ? existing : (() => {
         const legacy = this.dependencies.existingChild?.(input.ticket_id, input.destination.relation);
@@ -206,8 +222,20 @@ export class ExecutionOperations {
     const implementation = 'implementation' in input;
     const review = 'review' in input;
     const workflowAgent = 'workflow_agent' in input;
+    const workItem = this.workItems.prepare(input, this.operations, this.reviewObservations(input.ticket_id));
+    // Review rounds have distinct report identities but keep the same isolated
+    // work-item conversation; they never move a session into another owner's child.
+    if (workItem?.item.purpose === 'focused-review' && workItem.item.operation_id && destination.kind === 'child') {
+      const previous = this.operations.get(workItem.item.operation_id);
+      if (!previous || previous.destination.kind !== 'child') throw new HarnessError('WORK_ITEM_RECONCILIATION_REQUIRED');
+      destination = { ...destination, conversation_id: previous.destination.conversation_id,
+        parent_conversation_id: previous.destination.parent_conversation_id, created_at: previous.destination.created_at };
+    }
+    const operationId = randomUUID();
+    if (workItem) workItem.item.operation_id = operationId;
     const operation = executionOperationSchema.parse({
-      schema_version: workflowAgent ? 4 : review ? 3 : implementation ? 2 : 1, operation_id: randomUUID(), ticket_id: input.ticket_id, request_id: input.request_id,
+      ...(workItem ? { work_item: workItem } : {}),
+      schema_version: workflowAgent ? 4 : review ? 3 : implementation ? 2 : 1, operation_id: operationId, ticket_id: input.ticket_id, request_id: input.request_id,
       fingerprint_version: workflowAgent ? 'execution-protected-v4' : review ? 'execution-protected-v3' : implementation ? 'execution-protected-v2' : 'execution-protected-v1',
       protected_fingerprint: fingerprint, protected_intent: intent,
       destination, state: 'reserved', revision: 1,
@@ -224,6 +252,108 @@ export class ExecutionOperations {
     const operation = this.operations.get(operationId);
     if (!operation) throw new HarnessError('EXECUTION_OPERATION_NOT_FOUND');
     return this.receipt(operation, false);
+  }
+
+  // Called only with a decision loaded from the trusted authority adapter.
+  private reviewObservations(ticketId: string) {
+    const records = this.journal.records.flatMap(record => record.data.kind === 'workflow_snapshot'
+      && record.data.workflow.ticket_id === ticketId ? [record.data.workflow] : []);
+    const current = this.dependencies.workflow(ticketId);
+    return current ? [...records, current] : records;
+  }
+
+  transitionWorkItem(raw: unknown) {
+    if (this.uncertainRecording || this.journal.failure) throw new HarnessError('RECORDING_OUTCOME_UNKNOWN');
+    const decision = workItemDecisionSchema.parse(raw);
+    const item = this.workItems.get(decision.work_item_id);
+    const workflow = this.dependencies.workflow(item.delivery_item_id);
+    if (this.dependencies.assessWorkflow?.(item.delivery_item_id).state !== 'verified')
+      throw new HarnessError('WORK_ITEM_EVIDENCE_CONFLICT');
+    const identity = this.dependencies.currentIdentity(this.dependencies.ticket(item.delivery_item_id)) as any;
+    if (!workflow || workflow.workflow_revision !== decision.workflow_revision
+      || workflow.snapshot.subject.subject_id !== item.subject_ref || item.subject_ref !== decision.subject_ref
+      || identity?.completeness !== 'complete' || identity.digest !== decision.content_version)
+      throw new HarnessError('WORK_ITEM_EVIDENCE_CONFLICT');
+    const observations = this.reviewObservations(item.delivery_item_id);
+    const next = this.workItems.transition(item, decision, workflow.snapshot, this.operations,
+      (owner, review, snapshot) => verifyManagedReview(owner, review, snapshot, identity.digest, {
+        items: this.workItems, operations: this.operations, bindings: this.dependencies.bindings,
+        source: this.dependencies.source, assessChild: this.dependencies.assessChild, observations }), observations);
+    this.append({ kind: 'work_item_transitioned', previous_revision: item.revision, item: next,
+      decision_ref: decision.decision_ref }, 'work-item-transition');
+    return this.workItems.get(item.work_item_id);
+  }
+
+  reconcileWorkItem(raw: unknown) {
+    const reference = workItemReferenceSchema.parse(raw);
+    const item = this.workItems.get(reference.work_item_id);
+    if (item.revision !== reference.revision) throw new HarnessError('WORK_ITEM_REVISION_CONFLICT');
+    if (!item.operation_id) throw new HarnessError('WORK_ITEM_RECONCILIATION_REQUIRED');
+    const operation = this.operation(item.operation_id);
+    if (operation.state === 'reserved') {
+      if (!this.dependencies.source.lookupRequest || this.dependencies.source.lookupRequest(operation.runtime.request_id))
+        throw new HarnessError('WORK_ITEM_RECONCILIATION_REQUIRED');
+      return this.failReserved(operation.operation_id, 'RESERVATION_NOT_DISPATCHED', 'Recovered before runtime dispatch');
+    }
+    if (operation.state === 'failed' || operation.state === 'bound') return this.reconcile(operation.operation_id);
+    const lookup = this.lookup(operation);
+    if (lookup.state !== 'matched' || !lookup.observation
+      || !['queued', 'running', 'stopping', 'completed', 'failed', 'stopped', 'timed_out', 'interrupted'].includes(lookup.observation.status))
+      throw new HarnessError('WORK_ITEM_RECONCILIATION_REQUIRED');
+    this.markStarted(operation.operation_id);
+    this.replayedDispatching.delete(operation.operation_id);
+    return this.bind(operation.operation_id);
+  }
+
+  private assertRawIdle(except?: string) {
+    for (const record of this.rawExecutions.values()) {
+      if (record.request_id === except || record.state === 'failed') continue;
+      const observation = this.dependencies.source.lookupRequest?.(record.request_id);
+      if (!observation || !['completed', 'failed', 'stopped', 'timed_out', 'interrupted'].includes(observation.status))
+        throw new HarnessError('RAW_EXECUTION_RECONCILIATION_REQUIRED');
+    }
+  }
+  reserveRaw(input: any, grant: any) {
+    if (this.uncertainRecording || this.journal.failure) throw new HarnessError('RECORDING_OUTCOME_UNKNOWN');
+    this.assertRawOwnership(input);
+    const prior = this.rawExecutions.get(input.request_id);
+    if (prior) {
+      if (prior.payload_digest !== workDigest(input) || prior.authorization_ref !== grant.authorization_ref)
+        throw new HarnessError('REQUEST_CONFLICT');
+      if (prior.state === 'dispatching' && !this.dependencies.source.lookupRequest?.(input.request_id))
+        throw new HarnessError('RAW_EXECUTION_RECONCILIATION_REQUIRED');
+      return;
+    }
+    this.assertRawIdle();
+    if ([...this.operations.values()].some(operation => this.runtimeClaim(operation) !== 'released')
+      || !this.dependencies.source.activeRuns || this.dependencies.source.activeRuns().length)
+      throw new HarnessError('MODEL_LINE_BUSY');
+    this.append({ kind: 'raw_execution', request_id: input.request_id, payload_digest: workDigest(input),
+      authority_digest: grant.authority_digest, authorization_ref: grant.authorization_ref,
+      category: grant.category, action: grant.action, state: 'reserved', reason: grant.reason }, 'raw-reserve');
+  }
+  guardRaw(input: any, grant: any) {
+    if (this.uncertainRecording || this.journal.failure || this.dependencies.health().state !== 'recording')
+      throw new HarnessError('RECORDING_OUTCOME_UNKNOWN');
+    this.assertRawOwnership(input);
+    this.assertRawIdle(input.request_id);
+    const prior = this.rawExecutions.get(input.request_id);
+    if (!prior || !['reserved', 'failed'].includes(prior.state) || prior.payload_digest !== workDigest(input)
+      || prior.authority_digest !== grant.authority_digest) throw new HarnessError('RAW_EXECUTION_NOT_AUTHORIZED');
+    if ([...this.operations.values()].some(operation => this.runtimeClaim(operation) !== 'released')
+      || !this.dependencies.source.activeRuns || this.dependencies.source.activeRuns().length)
+      throw new HarnessError('MODEL_LINE_BUSY');
+    this.append({ ...prior, state: 'dispatching' }, 'raw-dispatch');
+  }
+  rawFailure(requestId: string) {
+    const prior = this.rawExecutions.get(requestId);
+    if (prior?.state === 'reserved') this.append({ ...prior, state: 'failed' }, 'raw-rejected');
+  }
+
+  private assertRawOwnership(input: { session_id?: string }) {
+    if (input.session_id && [...this.workItems.items.values()].some(item =>
+      item.generations.some(binding => binding.session_id === input.session_id)))
+      throw new HarnessError('MANAGED_SESSION_REQUIRES_WORK_ITEM_GATE');
   }
 
   byRequest(ticketId: string, requestId: string) {
@@ -245,6 +375,9 @@ export class ExecutionOperations {
     const review = operation.schema_version === 3 ? operation.protected_intent.review : null;
     const workflowAgent = operation.schema_version === 4 ? operation.protected_intent.workflow_agent : null;
     return { operation_id: operation.operation_id, ticket_id: operation.ticket_id, request_id: operation.request_id,
+      work_item: 'work_item' in operation && operation.work_item ? structuredClone(operation.work_item.item) : null,
+      execution_mode: 'work_item' in operation ? operation.work_item?.mode ?? 'fresh' : 'fresh',
+      continuation_session_id: 'work_item' in operation ? operation.work_item?.session_id ?? null : null,
       protected_fingerprint: operation.protected_fingerprint, fingerprint_version: operation.fingerprint_version,
       state: operation.state, effective_state: effective, destination: structuredClone(operation.destination),
       runtime: structuredClone(operation.runtime), binding_id: operation.binding_id,
@@ -304,14 +437,17 @@ export class ExecutionOperations {
     return operation;
   }
 
-  guardDispatch(operationId: string, dispatch: { request_id: string; fingerprint: string; cwd: string;
+  guardDispatch(operationId: string, dispatch: { request_id: string; fingerprint: string; cwd: string; session_id?: string;
     config: { model: string; reasoning: string }; permissions: unknown; launch: {
       prompt_sha256: string; prompt_utf8_bytes: number; sender: string | null; model: string | null;
       reasoning: string | null; timeout_ms: number | null; permission_selection: unknown;
     } }) {
     const current = this.operation(operationId);
     if (current.state !== 'reserved') throw new HarnessError('EXECUTION_STATE_CONFLICT', { state: current.state });
+    this.assertRawIdle();
     if (dispatch.request_id !== current.runtime.request_id) throw new HarnessError('RUNTIME_REQUEST_CONFLICT');
+    if ('work_item' in current && current.work_item)
+      this.workItems.guard(current.work_item, dispatch.session_id, dispatch.permissions);
     const health = this.dependencies.health();
     if (health.state !== 'recording') throw new HarnessError(health.state === 'recording-failed' ? 'RECORDING_FAILED' : 'COLLECTION_FAILED', { recording: health });
     const workflow = this.dependencies.workflow(current.ticket_id);
@@ -395,7 +531,7 @@ export class ExecutionOperations {
   markStarted(operationId: string, observation?: RuntimeRequestObservation | null) {
     const current = this.operation(operationId);
     if (current.state === 'started' || current.state === 'bound') return this.receipt(current, true);
-    if (current.state !== 'dispatching') throw new HarnessError('EXECUTION_STATE_CONFLICT', { state: current.state });
+    if (!['dispatching', 'reconciliation-required'].includes(current.state)) throw new HarnessError('EXECUTION_STATE_CONFLICT', { state: current.state });
     const lookup = this.lookup(current, observation);
     if (lookup.state !== 'matched' || !lookup.observation) throw new HarnessError('RUNTIME_ACCEPTANCE_UNCONFIRMED', { lookup: lookup.state });
     const operation = this.transition(current, { state: 'started', runtime: {
@@ -430,6 +566,8 @@ export class ExecutionOperations {
       ? this.dependencies.assessChild?.(binding.session_id, binding.run_id, conversationId) ?? null : null;
     if (isolation?.state === 'mismatch') throw new HarnessError('ATTRIBUTION_CONFLICT', { isolation });
     const operation = executionOperationSchema.parse({ ...current, state: 'bound', revision: current.revision + 1,
+      ...('work_item' in current && current.work_item ? { work_item: this.workItems.bind(current.work_item,
+        lookup.observation.session_id, current.dispatch?.permissions) } : {}),
       destination: current.destination.kind === 'child' && isolation
         ? { ...current.destination, isolation } : current.destination,
       binding_id: binding.id, runtime: { ...current.runtime, status: lookup.observation.status }, updated_at: timestamp });
