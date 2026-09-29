@@ -278,6 +278,15 @@ export function tunnelHealth(health, ready, system, at = Date.now()) {
     code: authRequired ? 'AUTH_REQUIRED' : !alive ? 'HEALTH_FAILED' : !readyOK ? 'MCP_NOT_READY' : null };
 }
 
+function tunnelRuntimeEnv(stateRoot) {
+  const env = { ...process.env, TUNNEL_CLIENT_STATE_DIR: stateRoot };
+  // This managed tunnel always targets a loopback HTTP MCP server. Do not let a
+  // workstation-wide HTTP proxy route 127.0.0.1 away from the local YCA.
+  delete env.HTTP_PROXY;
+  delete env.http_proxy;
+  return env;
+}
+
 export class TunnelUnit {
   constructor(config, host, state, persist, events, invoke = run) { Object.assign(this, { config, host, state, persist, events, invoke }); }
   async verifyVersion() {
@@ -344,7 +353,7 @@ export class TunnelUnit {
     const result = await this.invoke(this.config.bin, ['runtimes', 'connect', '--alias', this.config.alias, '--profile', this.config.alias,
       '--profile-dir', path.dirname(this.config.profile), '--tunnel-id', profile.control_plane.tunnel_id,
       '--runtime-api-key', profile.control_plane.api_key, '--mcp-server-url', this.config.target, '--control-plane-base-url', profile.control_plane.base_url, '--json'], {
-      cwd: path.dirname(this.config.bin), env: { ...process.env, TUNNEL_CLIENT_STATE_DIR: this.config.stateRoot }, timeout: 45_000, limit: 2 * 1024 * 1024,
+      cwd: path.dirname(this.config.bin), env: tunnelRuntimeEnv(this.config.stateRoot), timeout: 45_000, limit: 2 * 1024 * 1024,
     });
     this.events.add('tunnel', 'native-connect', result.code === 0 ? null : 'NATIVE_CONNECT_FAILED', result.code);
     if (result.code !== 0) throw fail('NATIVE_CONNECT_FAILED');
@@ -359,7 +368,7 @@ export class TunnelUnit {
     // native stop (which, in 0.0.14, otherwise only trusts the saved PID).
     const { p } = this.records();
     if (p.pid !== o.pid || !matches((await this.host.inspect(this.config.bin, [], p.pid))[0], this.state.process)) throw fail('OWNERSHIP_CHANGED');
-    const result = await this.invoke(this.config.bin, ['runtimes', 'stop', this.config.alias, '--json'], { cwd: path.dirname(this.config.bin), env: { ...process.env, TUNNEL_CLIENT_STATE_DIR: this.config.stateRoot }, timeout: 15_000, limit: 2 * 1024 * 1024 });
+    const result = await this.invoke(this.config.bin, ['runtimes', 'stop', this.config.alias, '--json'], { cwd: path.dirname(this.config.bin), env: tunnelRuntimeEnv(this.config.stateRoot), timeout: 15_000, limit: 2 * 1024 * 1024 });
     if (result.code !== 0) throw fail('NATIVE_STOP_FAILED');
     if ((await this.host.inspect(this.config.bin, [], o.pid)).length) throw fail('STOP_TIMEOUT');
   }
