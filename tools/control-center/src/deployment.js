@@ -158,10 +158,11 @@ export async function selectDeployment(root, commit, node = process.execPath) {
 
 // Preparing never stops a service or rewrites a published release. Selection is
 // consumed only at a subsequent Control Center start; the old process stays put.
-export async function prepareDeployment({ repo, root, node = process.execPath, npmCli = path.join(path.dirname(node), 'node_modules/npm/bin/npm-cli.js') }) {
+export async function prepareDeployment({ repo, root, expectedCommit = null, node = process.execPath, npmCli = path.join(path.dirname(node), 'node_modules/npm/bin/npm-cli.js') }) {
   repo = path.resolve(repo); root = path.resolve(root);
   noLinks(root);
   const { remote, branch, commit } = await deploymentSource(repo);
+  if (expectedCommit !== null && commit !== expectedCommit) throw fail('DEPLOYMENT_SOURCE_CHANGED');
   if (!existsSync(root)) {
     mkdirSync(path.dirname(root), { recursive: true });
     // Exclusive creation prevents two first-time preparers claiming one root.
@@ -186,6 +187,12 @@ export async function prepareDeployment({ repo, root, node = process.execPath, n
     let manifest, dependencies;
     if (existsSync(manifestFile)) {
       manifest = await verifyDeployment(root, commit, node);
+      // The same release may have been prepared by an older Control Center whose
+      // schema did not know a new launcher flag. Explicit preparation refreshes
+      // this derived metadata; normal start still requires the sealed claim.
+      manifest.launcherFlags = await probeLauncherFlags(node, manifest.cwd);
+      await cleanRelease(root, commit);
+      saveJson(manifestFile, manifest);
       dependencies = 'reused';
     } else {
       mkdirSync(path.dirname(release), { recursive: true });
