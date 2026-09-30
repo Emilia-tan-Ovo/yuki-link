@@ -10,7 +10,7 @@
 - 新建、续发、拆分、交接、换代或恢复工程执行前，读取所选同根 engineering-workflow 的工作项生命周期协议；仓库版本源为 [.workflow/skills/engineering-workflow](.workflow/skills/engineering-workflow/SKILL.md)，全局目录仅为安装产物。不同版本不可混用。
 - 通用状态机、恢复和领域职责在 Skill 包维护，本文件不重复定义。Work Item runtime gate 的接口、适配要求与验收级别见 [Bridge 工具契约](tools/codex-session-bridge/README.md#工具)；不能把文档规则或契约测试误报为生产链路已验收。
 - 当前 Ticket 范围以 Ticket/Spec 的目标和 Acceptance Criteria 为边界；相邻风险、压力测试、drift/recovery、额外 fixture 矩阵、工作流研究如果不直接阻塞当前验收，只记录 follow-up，不在当前票执行。
-- **模型路由固定为：Sol 主力、Astra 升级。** 普通 ticket-design / implementation / finding fix / focused review 默认使用 `gpt-6-sol medium`；复杂跨模块实现或 full review 可使用 `gpt-6-sol high`。只有 Sol high 明显不足，或任务本身属于最困难的并发/一致性/安全/跨系统疑难问题时，才允许升级到 `gpt-6-astra`，且启动前必须向 Owner 说明理由并取得明确批准。默认禁止 `xhigh/max/ultra`；`gpt-5.6-luna` 与 `gpt-5.6-terra` 禁止使用；其他未列模型只有 Owner 明确改变策略后才可使用。
+- **模型路由固定为：GPT-6.1 Sol high 主力、Astra 升级。** 普通 ticket-design / implementation / finding fix / focused review / full review 默认使用 `gpt-6.1-sol high`。只有 6.1 Sol high 明显不足，或任务本身属于最困难的并发/一致性/安全/跨系统疑难问题时，才允许升级到 `gpt-6-astra`，且启动前必须向 Owner 说明理由并取得明确批准。默认禁止 `xhigh/max/ultra`；`gpt-5.6-luna` 与 `gpt-5.6-terra` 禁止使用；其他未列模型只有 Owner 明确改变策略后才可使用。
 - Full Access 只表示执行能力，不扩大任务授权：scope、不可逆操作、GitHub merge/deploy、生产配置等仍受 Ticket/Owner gate 约束。权限能力与行为授权分开管理。
 - **默认最多一条活跃 Codex 模型工作线。** “允许并发”只表示上限，不是默认行为；第二条模型线必须有明确关键路径收益，并在启动前取得 Owner 明确批准。YCA 的确定性工具调用不算模型并发。
 - fresh worktree 默认建立在仓库 allowlist 内的 `.local/worktrees/<ticket-or-maintenance>`；Context Plan / prompt 中代码与测试入口必须写完整 repo-relative path，不依赖隐含 cwd。
