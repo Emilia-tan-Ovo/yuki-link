@@ -7,6 +7,8 @@ import { loadConfig } from './config.js';
 import { Events, run, claimStateDirectory, readJson, fail } from './common.js';
 import { WindowsHost } from './host.js';
 import { YcaUnit, TunnelUnit } from './units.js';
+import { WindowsMcpUnit } from './windows-mcp-unit.js';
+import { ProfileTunnelUnit } from './profile-tunnel-unit.js';
 import { Supervisor } from './supervisor.js';
 import { createServer } from './server.js';
 import { Startup } from './startup.js';
@@ -49,7 +51,9 @@ try {
       yca: new YcaUnit({ ...c.yca, node: c.node, pwsh: c.pwsh, codex: c.codex,
         servicesUrl: `http://127.0.0.1:${c.port}/harness/services`,
         controlRoots: [path.dirname(configFile), c.stateDir, ...(c.yca.deploymentRoot ? [c.yca.deploymentRoot] : [])] }, host, state.units.yca.ownership, persist, events),
-      tunnel: new TunnelUnit({ ...c.tunnel, backupDir: c.stateDir }, host, state.units.tunnel.ownership, persist, events),
+      tunnel: new TunnelUnit({ ...c.tunnel, backupDir: c.stateDir, component: 'tunnel' }, host, state.units.tunnel.ownership, persist, events),
+      windowsMcp: new WindowsMcpUnit(c.windowsMcp, host, state.units.windowsMcp.ownership, persist, events),
+      windowsTunnel: new ProfileTunnelUnit(c.windowsTunnel, host, state.units.windowsTunnel.ownership, persist, events),
     }),
   });
   supervisor.identity = { name: 'yuki-control-center', pid: process.pid, startedAt: new Date().toISOString(), instance: randomUUID(), configId: createHash('sha256').update(configFile.toLowerCase()).digest('hex') };

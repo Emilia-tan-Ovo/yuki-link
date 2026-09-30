@@ -27,5 +27,16 @@
     "profile": "C:\\projects\\yuki-link\\tools\\codex-session-bridge\\runtime\\tunnel\\codex-session-bridge.yaml",
     "stateRoot": "C:\\Users\\example\\.local\\state\\tunnel-client",
     "target": "http://127.0.0.1:7391/mcp"
+  },
+  "windowsMcp": {
+    "python": "C:\\Users\\example\\AppData\\Local\\uv\\cache\\archive-v0\\WINDOWS_MCP\\Scripts\\python.exe",
+    "port": 8000
+  },
+  "windowsTunnel": {
+    "bin": "D:\\tools\\openai-tunnel-client\\v0.0.15\\tunnel-client.exe",
+    "profile": "C:\\Users\\example\\AppData\\Roaming\\tunnel-client\\yuki-windows.yaml",
+    "profileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "stateDir": "C:\\Users\\example\\AppData\\Local\\YukiLink\\control\\windows-tunnel",
+    "target": "http://127.0.0.1:8000/mcp"
   }
 }

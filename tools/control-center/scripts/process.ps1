@@ -2,7 +2,13 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 $taskRequest = [Console]::In.ReadToEnd() | ConvertFrom-Json
-$taskFilter = if ($taskRequest.pid) { 'ProcessId=' + [int]$taskRequest.pid } else { "Name='node.exe' OR Name='tunnel-client.exe'" }
+if ($taskRequest.pid) {
+    $taskFilter = 'ProcessId=' + [int]$taskRequest.pid
+} else {
+    $taskName = [IO.Path]::GetFileName([string]$taskRequest.executable)
+    if ($taskName -notmatch '^[A-Za-z0-9_.-]+$') { throw 'INVALID_EXECUTABLE_NAME' }
+    $taskFilter = "Name='$taskName'"
+}
 $taskProcesses = @(Get-CimInstance Win32_Process -Filter $taskFilter)
 $taskOutput = @()
 foreach ($taskProcess in $taskProcesses) {

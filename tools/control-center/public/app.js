@@ -1,14 +1,17 @@
 let state, busy = false;
 const $ = s => document.querySelector(s);
-const messages = { ACTIVE_TASKS: '存在活动任务。停止或重启可能中断任务，任务不会自动重放。', ACTIVITY_UNKNOWN: '当前活动任务不可观测，不能默认空闲。', LEGACY_RUNTIME_LOCK: '发现未受管的旧锁，请先核验并备份处理。', DEPLOYMENT_CONFIRMATION_REQUIRED: '当前为观察模式，正式启停待授权。', STARTUP_CONFIRMATION_REQUIRED: '自启配置修改尚待授权。', OBSERVED_UNOWNED: '发现外部启动的实例，仅观察，不接管。', RECOVERY_BUDGET_EXHAUSTED: '已达本轮恢复上限；核查失败原因后可手动重试。', YCA_NOT_READY: '等待 YCA 本地健康检查通过。', YCA_RECOVERY_FAILED: 'YCA 恢复预算已用尽，请核查失败原因。', DEPLOYMENT_NOT_CONFIGURED: '当前未配置受管 YCA deployment。', DEPLOYMENT_SOURCE_CHANGED: '检查与抓取期间远端分支发生变化，本次未切换版本，请重新检查。', DEPLOYMENT_CURRENT_UNKNOWN: '无法可靠确定当前 YCA release，拒绝隐式切换。', DEPLOYMENT_CURRENT_CHANGED: '准备更新期间当前 YCA release 已变化，本次停止。', DEPLOYMENT_SWITCH_UNVERIFIED: '新 release 启动后未通过运行健康与版本核验，已尝试回退。', DEPLOYMENT_ROLLBACK_FAILED: '新版本切换失败且旧 release 未能自动恢复，请保留现场检查。', DEPLOYMENT_ROLLBACK_CONFLICT: '回退时发现并非本次候选的运行实例，已停止自动处理并保留现场。' };
+const messages = { ACTIVE_TASKS: '存在活动任务。停止或重启可能中断任务，任务不会自动重放。', ACTIVITY_UNKNOWN: '当前活动任务不可观测，不能默认空闲。', LEGACY_RUNTIME_LOCK: '发现未受管的旧锁，请先核验并备份处理。', DEPLOYMENT_CONFIRMATION_REQUIRED: '当前为观察模式，正式启停待授权。', STARTUP_CONFIRMATION_REQUIRED: '自启配置修改尚待授权。', OBSERVED_UNOWNED: '发现外部启动的实例，仅观察，不接管。', RECOVERY_BUDGET_EXHAUSTED: '已达本轮恢复上限；核查失败原因后可手动重试。', YCA_NOT_READY: '等待 YCA 本地健康检查通过。', YCA_RECOVERY_FAILED: 'YCA 恢复预算已用尽，请核查失败原因。', WINDOWS_MCP_NOT_READY: '等待 Yuki Windows 本地 MCP 恢复。', WINDOWS_MCP_RECOVERY_FAILED: 'Yuki Windows MCP 恢复预算已用尽，请核查失败原因。', PROFILE_CHANGED: 'Yuki Windows tunnel profile 已变化，已停止自动处理。', DEPLOYMENT_NOT_CONFIGURED: '当前未配置受管 YCA deployment。', DEPLOYMENT_SOURCE_CHANGED: '检查与抓取期间远端分支发生变化，本次未切换版本，请重新检查。', DEPLOYMENT_CURRENT_UNKNOWN: '无法可靠确定当前 YCA release，拒绝隐式切换。', DEPLOYMENT_CURRENT_CHANGED: '准备更新期间当前 YCA release 已变化，本次停止。', DEPLOYMENT_SWITCH_UNVERIFIED: '新 release 启动后未通过运行健康与版本核验，已尝试回退。', DEPLOYMENT_ROLLBACK_FAILED: '新版本切换失败且旧 release 未能自动恢复，请保留现场检查。', DEPLOYMENT_ROLLBACK_CONFLICT: '回退时发现并非本次候选的运行实例，已停止自动处理并保留现场。' };
 messages.OPERATION_RESULT_UNKNOWN = '操作结果未知；终态回执缺失或不匹配。请重新检测与核对事件，操作不会自动重试。';
 messages.STOP_TIMEOUT = 'YCA 已接受停止请求，但进程未在期限内退出；请保留现场检查关闭流程，重复重启不会解决。';
 messages.STOP_OUTCOME_UNKNOWN = '停止请求的结果无法确认；请核对原实例，不能当作已停止，也不会自动再启动。';
 messages.DEPLOYMENT_SWITCH_UNKNOWN = '版本切换结果无法确认；请查看停止记录和实例身份，暂不继续切换。';
-function unitExplanation(o, id, yca) {
-  if (id === 'tunnel' && o.blocked === 'YCA_NOT_READY' && yca) return 'Tunnel 等待本地 YCA 恢复：' + unitExplanation(yca, 'yca');
+function unitExplanation(o, id, units = {}) {
+  const yca = units.yca ?? units;
+  if (id === 'tunnel' && o.blocked === 'YCA_NOT_READY' && yca) return 'YCA Tunnel 等待本地 YCA 恢复：' + unitExplanation(yca, 'yca', units);
+  if (id === 'windowsTunnel' && o.blocked === 'WINDOWS_MCP_NOT_READY' && units.windowsMcp) return 'Yuki Windows Tunnel 等待本地 MCP 恢复：' + unitExplanation(units.windowsMcp, 'windowsMcp', units);
   if (o.running && ['accepted', 'unknown'].includes(o.lastStop?.state)) return messages[o.lastStop.code] ?? '原实例已接受停止请求，正在核对进程退出结果。';
-  return messages[o.blocked ?? o.code] ?? o.blocked ?? o.code ?? (o.stale ? '证据已过期' : id === 'tunnel' && o.healthy && o.status === '降级' ? '本地就绪；远端通信证据不足，不等于断线' : '已取得本地证据');
+  const tunnel = id === 'tunnel' || id === 'windowsTunnel';
+  return messages[o.blocked ?? o.code] ?? o.blocked ?? o.code ?? (o.stale ? '证据已过期' : tunnel && o.healthy && o.status === '降级' ? '本地就绪；远端通信证据不足，不等于断线' : '已取得本地证据');
 }
 function operationOutcome(ok, receipt, operationId) {
   if (receipt?.operation_id !== operationId || !['succeeded', 'failed'].includes(receipt.outcome)) return 'unknown';
@@ -46,11 +49,11 @@ async function refresh() {
     if (state.initializing) return;
     $('#overall').textContent = state.observeOnly ? '本地观察模式 · 正式启停待授权' : state.busy ? '正在执行服务操作…' : '本地状态 · 以各层证据为准';
     $('#checked').textContent = '最近检测：' + new Date(state.at).toLocaleTimeString();
-    for (const id of ['yca', 'tunnel']) {
+    for (const id of ['yca', 'tunnel', 'windowsMcp', 'windowsTunnel']) {
       const o = state.units[id], card = $('#' + id);
       const ownership = o.owned ? '由控制中心管理' : o.running && o.code === 'ACTIVITY_UNKNOWN' ? '实例存在，归属暂不可验证' : o.running ? '观察到外部实例' : '未发现受管进程';
       card.querySelector('.status').textContent = o.status; card.querySelector('.status').dataset.status = o.status;
-      card.querySelector('.evidence').textContent = `期望${o.desired === 'running' ? '运行' : '停止'} · ${ownership} · ${unitExplanation(o, id, state.units.yca)}`;
+      card.querySelector('.evidence').textContent = `期望${o.desired === 'running' ? '运行' : '停止'} · ${ownership} · ${unitExplanation(o, id, state.units)}`;
       card.querySelector('pre').textContent = JSON.stringify(o, null, 2);
     }
     $('#official').hidden = !state.units.tunnel.ui; if (state.units.tunnel.ui) $('#official').href = state.units.tunnel.ui;
@@ -75,7 +78,7 @@ async function refresh() {
 async function perform(fn) { if (busy) return; busy = true; $('#notice').textContent = ''; try { await fn(); } catch (e) { $('#notice').textContent = messages[e.code] ?? e.code ?? '操作未完成，请重新检测。'; } finally { busy = false; await refresh(); } }
 document.querySelectorAll('[data-action]').forEach(b => b.onclick = () => perform(async () => {
   const body = { id: b.dataset.id, action: b.dataset.action };
-  if (['stop', 'restart'].includes(body.action)) {
+  if (['stop', 'restart'].includes(body.action) && ['yca', 'tunnel', 'all'].includes(body.id)) {
     const active = state.units.yca.activity;
     if (state.units.yca.running !== false && (!active || Object.values(active).some(n => n > 0))) {
       if (!confirm('存在活动任务或活动状态未知。操作可能中断请求，且不会自动重放任务。确认继续？')) return;

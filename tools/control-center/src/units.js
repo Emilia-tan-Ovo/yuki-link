@@ -355,7 +355,7 @@ export class TunnelUnit {
       '--runtime-api-key', profile.control_plane.api_key, '--mcp-server-url', this.config.target, '--control-plane-base-url', profile.control_plane.base_url, '--json'], {
       cwd: path.dirname(this.config.bin), env: tunnelRuntimeEnv(this.config.stateRoot), timeout: 45_000, limit: 2 * 1024 * 1024,
     });
-    this.events.add('tunnel', 'native-connect', result.code === 0 ? null : 'NATIVE_CONNECT_FAILED', result.code);
+    this.events.add(this.config.component ?? 'tunnel', 'native-connect', result.code === 0 ? null : 'NATIVE_CONNECT_FAILED', result.code);
     if (result.code !== 0) throw fail('NATIVE_CONNECT_FAILED');
     await this.observe();
   }

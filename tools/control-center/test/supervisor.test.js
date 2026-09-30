@@ -14,7 +14,7 @@ function setup(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'yuki-cc-test-'));
   t.after(() => { assert.ok(root.startsWith(path.join(os.tmpdir(), 'yuki-cc-test-'))); rmSync(root, { recursive: true, force: true }); });
   let time = Date.now();
-  const units = Object.fromEntries(['yca', 'tunnel'].map(id => [id, {
+  const units = Object.fromEntries(['yca', 'tunnel', 'windowsMcp', 'windowsTunnel'].map(id => [id, {
     running: false, healthy: false, owned: true, activity: { codex: 0, computer: 0, requests: 0 }, starts: 0, stops: 0,
     async observe() { return { running: this.running, healthy: this.healthy, owned: this.owned, activity: this.activity, code: this.code, controlPlane: { state: 'healthy' } }; },
     async start() { this.starts++; if (this.failure) throw fail(this.failure); this.running = true; this.healthy = true; },
@@ -58,6 +58,9 @@ test('optional Harness port keeps legacy config valid and participates in local 
     yca: { entry: process.execPath, cwd: root, repo: root, runtime: path.join(root, 'runtime'), port: 7391, controlPort: 7393 },
     tunnel: { bin: process.execPath, alias: 'codex-session-bridge', profile: path.join(root, 'profile.json'),
       stateRoot: path.join(root, 'tunnel'), target: 'http://127.0.0.1:7391/mcp' },
+    windowsMcp: { python: process.execPath, port: 8000 },
+    windowsTunnel: { bin: process.execPath, profile: path.join(root, 'yuki-windows.yaml'), stateDir: path.join(root, 'windows-tunnel'),
+      target: 'http://127.0.0.1:8000/mcp', profileSha256: 'a'.repeat(64) },
   };
   writeFileSync(file, JSON.stringify(config), 'utf8');
   assert.equal(loadConfig(file).yca.harnessPort, undefined, 'existing config remains valid');
@@ -543,7 +546,7 @@ test('v1 recovery policy migrates once and a later explicit disable remains dura
   const f = setup(t);
   f.manager.state.version = 1; f.manager.state.autoRecovery = false; f.manager.persist();
   const migrated = new Supervisor(f.options);
-  assert.equal(migrated.state.version, 2);
+  assert.equal(migrated.state.version, 3);
   assert.equal(migrated.state.autoRecovery, true);
   await migrated.setRecovery(false);
   assert.equal(new Supervisor(f.options).state.autoRecovery, false);
@@ -988,4 +991,50 @@ test('verified switch ignores noncritical reporting failure and terminal failure
   await assert.rejects(y.m.updateDeployment(y.prepare, { restart: true, operation: {
     operationId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', action: 'update-and-restart', target: 'yca' } }), e => e.operationOutcome === 'unknown');
   assert.equal(y.u.stops, 1); assert.equal(y.u.commit, y.next);
+});
+
+
+
+
+test('Windows MCP recovery precedes the dependent Windows tunnel', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  await m.action('windowsMcp', 'start');
+  await m.action('windowsTunnel', 'start');
+  await m.setRecovery(true);
+  assert.equal(u.windowsMcp.starts, 1);
+  assert.equal(u.windowsTunnel.starts, 1);
+
+  u.windowsMcp.running = false; u.windowsMcp.healthy = false;
+  u.windowsTunnel.running = false; u.windowsTunnel.healthy = false;
+  await m.tick();
+  assert.ok(m.state.units.windowsMcp.nextAt);
+  assert.equal(m.state.units.windowsTunnel.blocked, 'WINDOWS_MCP_NOT_READY');
+  assert.equal(u.windowsTunnel.starts, 1);
+
+  const order = [];
+  const startMcp = u.windowsMcp.start.bind(u.windowsMcp), startTunnel = u.windowsTunnel.start.bind(u.windowsTunnel);
+  u.windowsMcp.start = async function(...args) { order.push('windowsMcp'); return startMcp(...args); };
+  u.windowsTunnel.start = async function(...args) { order.push('windowsTunnel'); return startTunnel(...args); };
+
+  f.advance(2000); await m.tick();
+  assert.equal(u.windowsMcp.starts, 2);
+  assert.equal(u.windowsTunnel.starts, 2);
+  assert.deepEqual(order, ['windowsMcp', 'windowsTunnel'], 'dependent tunnel starts only after MCP recovery is healthy');
+  assert.equal(m.state.units.windowsTunnel.blocked, null);
+});
+
+test('a live owned Windows tunnel is never restarted for network/control-plane degradation', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  await m.action('windowsMcp', 'start');
+  await m.action('windowsTunnel', 'start');
+  await m.setRecovery(true);
+
+  u.windowsTunnel.healthy = false;
+  u.windowsTunnel.code = 'HEALTH_FAILED';
+  for (let i = 0; i < 8; i++) { f.advance(5000); await m.tick(); }
+
+  assert.equal(u.windowsTunnel.running, true);
+  assert.equal(u.windowsTunnel.starts, 1);
+  assert.equal(u.windowsTunnel.stops, 0);
+  assert.equal(u.windowsMcp.starts, 1);
 });

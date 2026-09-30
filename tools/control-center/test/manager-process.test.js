@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { saveJson, readJson, run, sleep, get } from '../src/common.js';
 
 async function port() { const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; }
@@ -28,10 +28,15 @@ test('actual supervisor process crash, duplicate opener and persisted stop with 
   const pwsh = process.env.CC_TEST_PWSH ?? (await run('pwsh.exe', ['-NoProfile', '-Command', '[Console]::Write((Get-Process -Id $PID).Path)'])).output.trim();
   const bridge = fileURLToPath(new URL('../../codex-session-bridge/', import.meta.url));
   const alias = 'codex-session-bridge', file = path.join(root, 'config.json'), profile = path.join(root, alias + '.yaml');
+  const windowsProfile = path.join(root, 'yuki-windows.yaml'); writeFileSync(windowsProfile, 'fixture');
+  const windowsProfileSha256 = createHash('sha256').update('fixture').digest('hex');
   const config = { version: 1, observeOnly: false, allowStartupChanges: false, port: await port(), stateDir: path.join(root, 'state'), node: process.execPath, pwsh, codex: process.execPath,
     yca: { entry: path.join(bridge, 'src/main.js'), cwd: bridge, repo: path.join(root, 'workspace'), runtime: path.join(root, 'yca'), port: await port(), controlPort: await port() },
-    tunnel: { bin: process.execPath, stateRoot: root, profile, alias } };
+    tunnel: { bin: process.execPath, stateRoot: root, profile, alias },
+    windowsMcp: { python: process.execPath, port: await port() },
+    windowsTunnel: { bin: process.execPath, profile: windowsProfile, profileSha256: windowsProfileSha256, stateDir: path.join(root, 'windows-tunnel') } };
   config.tunnel.target = `http://127.0.0.1:${config.yca.port}/mcp`;
+  config.windowsTunnel.target = `http://127.0.0.1:${config.windowsMcp.port}/mcp`;
   saveJson(file, config); saveJson(profile, { control_plane: { tunnel_id: 'fixture', api_key: 'file:never-read' }, mcp: { server_urls: [{ url: config.tunnel.target }] }, health: { listen_addr: '127.0.0.1:0' }, log: { file: path.join(root, 'missing.log') } });
   saveJson(path.join(root, 'aliases.yaml'), { [alias]: { profile_path: profile, tunnel_id: 'fixture' } }); saveJson(path.join(root, 'processes.yaml'), {});
   const children = [];

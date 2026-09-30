@@ -142,3 +142,11 @@ npm.cmd test
 ```
 
 Control Center 测试使用临时目录、随机端口、模拟 native runtime 命令及独立真实 YCA。`CC_TEST_PWSH` 可指定已验证的 PowerShell 7 路径。详见 [验收记录](../../docs/control-center-acceptance.md)：隔离测试与已完成的真实待机、断网、登录及人工 ChatGPT 验收分开记录。断网事实来自用户操作，恢复轨迹来自 tunnel/Control Center；额外 Windows 网络事件查询被平台拦截，无独立 Event Log 网络证据。长期稳定性、计划任务实际失败重试耗尽、完整回滚及 Codex 账号/模型调用仍未验证。
+
+### Yuki Windows 生命周期接管（#165）
+
+Control Center 同时管理 windowsMcp 与 windowsTunnel。windowsMcp 复用机器上已经安装的 Windows-MCP Python 环境，但只接管由自身启动并以 PID + creation time 记录的实例；旧 windows-mcp-server 计划任务启动的实例只观察、不接管。首次受管启动执行一次 MCP initialize 深探针并记录 Windows-MCP server version，日常高频轮询不重复创建 MCP session。
+
+windowsTunnel 不迁移既有 %APPDATA%\tunnel-client\yuki-windows.yaml，也不复制其中认证或代理配置。生产配置只持久化 tunnel-client 原生 exe、profile 绝对路径、profile SHA-256 与 Control Center 自己的本地 runtime 目录；启动使用 tunnel-client run --profile-file。profile 字节变化时 fail-closed，需要重新核对并更新摘要。活着的 tunnel 遇到 control-plane / 网络波动由 tunnel-client 自己重试，Supervisor 不因此重启 tunnel 或 Windows MCP；只有已确认退出的受管进程才进入 bounded recovery。
+
+登录自启仍只有一个 YukiLink-ControlCenter-V0 任务。Supervisor 根据 durable desired state 恢复两条依赖链：yca -> tunnel 与 windowsMcp -> windowsTunnel。迁移前先验证新配置与 release，再显式停止并禁用旧 windows-mcp-server 登录任务，之后才由 Control Center 首次建立 ownership。ChatGPT 端到端可用性不从本地状态推断，需分别通过 YCA / Yuki Windows connector 做真实只读调用。
