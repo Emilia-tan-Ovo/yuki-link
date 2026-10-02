@@ -112,9 +112,7 @@ export class YcaUnit {
         : expected && !runningSource ? 'DEPLOYMENT_OBSERVATION_PENDING' : expected && !verified ? 'DEPLOYMENT_UNVERIFIED'
           : !engineeringReady ? 'ENGINEERING_CAPABILITY_UNAVAILABLE' : !health ? 'HEALTH_FAILED' : deploymentCode };
   }
-  async start({ commit = null, recovery = false, instance = null, exactCommit = false } = {}) {
-    const before = await this.observe();
-    if (before.running) { if (before.owned) return; throw fail(before.code ?? 'OBSERVED_UNOWNED'); }
+  async preflightStart({ commit = null, recovery = false, exactCommit = false } = {}) {
     const pinnedCommit = commit ?? (recovery ? this.state.deployment?.commit : null);
     if ((commit || recovery) && this.config.deploymentRoot && !pinnedCommit) throw fail('DEPLOYMENT_EXPLICIT_START_REQUIRED');
     let deployment = null;
@@ -176,7 +174,23 @@ export class YcaUnit {
     }
     const entry = deployment?.entry ?? this.config.entry, cwd = deployment?.cwd ?? this.config.cwd;
     for (const [name, file] of Object.entries({ NODE: this.config.node, YCA_ENTRY: entry, PWSH: this.config.pwsh })) if (!existsSync(file)) throw fail(`${name}_PATH_MISSING`);
-    this.codexResolution = resolveCodexExecutable(this.config.codex);
+    const codexResolution = resolveCodexExecutable(this.config.codex);
+    return { deployment, entry, cwd, codexResolution };
+  }
+  async start({ commit = null, recovery = false, instance = null, exactCommit = false, plan = null } = {}) {
+    const before = await this.observe();
+    if (before.running) { if (before.owned) return; throw fail(before.code ?? 'OBSERVED_UNOWNED'); }
+    const prepared = plan ?? await this.preflightStart({ commit, recovery, exactCommit });
+    const { deployment, entry, cwd } = prepared;
+    // A sealed plan is prepared before stopping the old runtime. Recheck its
+    // bytes and the live DB before using it; do not silently choose a new one.
+    if (plan?.deployment) {
+      const sealed = await verifyDeployment(this.config.deploymentRoot, plan.deployment.commit, this.config.node);
+      assertCardCompatibility(sealed.databaseContract, inspectCardDatabase(this.config.companionCardStore));
+      if (sealed.entry !== plan.entry || sealed.cwd !== plan.cwd || sealed.tools?.sha256 !== plan.deployment.tools?.sha256)
+        throw fail('DEPLOYMENT_UNVERIFIED');
+    }
+    this.codexResolution = prepared.codexResolution;
     await this.host.free(this.config.port); await this.host.free(this.config.controlPort);
     if (this.config.harnessPort !== undefined) await this.host.free(this.config.harnessPort);
     const lockFile = path.join(this.config.runtime, 'bridge.lock');

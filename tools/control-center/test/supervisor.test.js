@@ -44,6 +44,7 @@ test('live supervisor lease prevents takeover; dead owner and reused PID permit 
   m.state.units.yca.ownership.lease = { supervisorInstance: 'old-supervisor',
     supervisorProcess: { pid: 900, created: 'old-owner' }, process: processInfo, generation: 1,
     expiresAt: 0 };
+  m.persist();
   let oldCreated = 'old-owner';
   u.yca.host = { inspect: async () => [{ pid: 900, created: oldCreated, matches: true }] };
   await m.observe();
@@ -64,6 +65,55 @@ test('unknown external process remains untouched by an Owner restart command', a
   u.yca.stop = async () => { stopped++; };
   await assert.rejects(m.action('yca', 'restart', true), { code: 'OBSERVED_UNOWNED' });
   assert.equal(stopped, 0);
+});
+
+test('recover preflights a sealed YCA start before cleaning up an unhealthy runtime or dependent', async t => {
+  const { manager: m, units: u } = setup(t);
+  u.yca.running = true; u.yca.healthy = false;
+  u.tunnel.running = true; u.tunnel.healthy = false;
+  u.yca.observe = async () => ({ running: true, healthy: false, owned: true, code: 'HEALTH_FAILED',
+    activity: { codex: 0, computer: 0, requests: 0 }, deployment: { state: 'unmanaged' } });
+  let preflighted = 0;
+  u.yca.preflightStart = async () => { preflighted++; throw fail('DB_COMPATIBLE_RELEASE_UNAVAILABLE'); };
+  await assert.rejects(m.action('all', 'recover'), { code: 'DB_COMPATIBLE_RELEASE_UNAVAILABLE' });
+  assert.equal(preflighted, 1);
+  assert.equal(u.yca.stops, 0);
+  assert.equal(u.tunnel.stops, 0);
+});
+
+test('live foreign lease blocks Owner stop and update preparation despite shared unit ownership', async t => {
+  const { manager: m, units: u } = setup(t);
+  m.identity = { instance: 'new-owner' };
+  const lease = { supervisorInstance: 'old-owner', supervisorProcess: { pid: 900, created: 'old-process' } };
+  u.yca.host = { inspect: async () => [{ pid: 900, created: 'old-process', matches: true }] };
+  u.tunnel.running = true; u.tunnel.healthy = true;
+  m.persist();
+  const durable = JSON.parse(readFileSync(m.stateFile, 'utf8'));
+  durable.units.tunnel.ownership.lease = { ...lease, generation: 2 };
+  writeFileSync(m.stateFile, JSON.stringify(durable), 'utf8');
+  await assert.rejects(m.action('tunnel', 'stop', true), { code: 'LIVE_SUPERVISOR_OWNER' });
+  assert.equal(u.tunnel.stops, 0);
+  durable.units.yca.ownership.lease = { ...lease, generation: 3 };
+  writeFileSync(m.stateFile, JSON.stringify(durable), 'utf8');
+  let prepared = false;
+  await assert.rejects(m.updateDeployment(async () => { prepared = true; return {}; }), { code: 'LIVE_SUPERVISOR_OWNER' });
+  assert.equal(prepared, false);
+});
+
+test('lease generation acquired during preflight blocks the later cleanup side effect', async t => {
+  const { manager: m, units: u } = setup(t);
+  m.identity = { instance: 'new-owner', process: { pid: 901, created: 'new-process' } };
+  u.yca.host = { inspect: async () => [{ pid: 900, created: 'old-process', matches: true }] };
+  u.yca.observe = async () => ({ running: true, healthy: false, owned: true, pid: 100, created: 'runtime',
+    code: 'HEALTH_FAILED', activity: { codex: 0, computer: 0, requests: 0 }, deployment: { state: 'unmanaged' } });
+  u.yca.preflightStart = async () => {
+    const durable = JSON.parse(readFileSync(m.stateFile, 'utf8'));
+    durable.units.yca.ownership.lease = { supervisorInstance: 'old-owner',
+      supervisorProcess: { pid: 900, created: 'old-process' }, generation: 99 };
+    writeFileSync(m.stateFile, JSON.stringify(durable), 'utf8');
+  };
+  await assert.rejects(m.action('yca', 'retry', true), { code: 'LIVE_SUPERVISOR_OWNER' });
+  assert.equal(u.yca.stops, 0);
 });
 
 test('confirmed restart replaces a known managed orphan using its recorded release', async t => {
@@ -887,6 +937,48 @@ function switchFixture(t) {
   };
   return { f, m, u, old, next, oldTools, nextTools, prepare: async () => ({ commit: next, branch: 'main', tools: nextTools }) };
 }
+
+test('prepared crash keeps the healthy old reader and selected release when DB has not migrated', async t => {
+  const x = switchFixture(t), { m, u, f } = x;
+  const rollback = 'c'.repeat(40);
+  u.target = x.old;
+  m.deploymentOps.inspectCardDatabase = () => ({ configured: true, version: 5 });
+  m.deploymentOps.deploymentTarget = () => ({ commit: u.target });
+  m.deploymentOps.verifyDeployment = async () => { throw fail('ROLLBACK_READER_SHOULD_NOT_BE_USED'); };
+  m.state.updateTransaction = { operationId: 'abbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', phase: 'prepared',
+    previousCommit: x.old, previousProcess: { pid: u.pid, created: u.created },
+    selectedCommitBefore: x.old, databaseVersionBefore: 5, rollbackCommit: rollback,
+    candidateCommit: x.next, tunnelDesired: 'stopped', confirm: true };
+  m.persist();
+  const restarted = new Supervisor(f.options);
+  await restarted.reconcileStartup();
+  assert.equal(restarted.state.updateTransaction, null);
+  assert.equal(u.commit, x.old);
+  assert.equal(u.target, x.old);
+  assert.equal(u.stops, 0);
+  assert.equal(u.starts, 0);
+});
+
+test('crash reconciliation gives ordinary operations durable terminal outcomes without replay', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  u.yca.running = true; u.yca.healthy = true;
+  u.windowsMcp.running = false; u.windowsMcp.code = 'PATH_MISSING';
+  u.tunnel.running = true; u.tunnel.healthy = true;
+  m.state.units.windowsMcp.blocked = 'PATH_MISSING';
+  const ids = ['aaaaaaaa-aaaa-4aaa-8aaa-111111111111', 'aaaaaaaa-aaaa-4aaa-8aaa-222222222222', 'aaaaaaaa-aaaa-4aaa-8aaa-333333333333'];
+  const at = m.clock();
+  m.state.operations[ids[0]] = { operationId: ids[0], action: 'start', target: 'yca', outcome: 'running', desired: { yca: 'running' }, deadline: at + 1000 };
+  m.state.operations[ids[1]] = { operationId: ids[1], action: 'start', target: 'windowsMcp', outcome: 'running', desired: { windowsMcp: 'running' }, deadline: at + 1000 };
+  m.state.operations[ids[2]] = { operationId: ids[2], action: 'stop', target: 'tunnel', outcome: 'running', desired: { tunnel: 'stopped' }, deadline: at - 1 };
+  m.persist();
+  const restarted = new Supervisor(f.options);
+  await restarted.reconcileStartup();
+  assert.deepEqual(ids.map(id => restarted.operation(id).outcome), ['succeeded', 'failed', 'unknown']);
+  assert.equal(restarted.operation(ids[2]).code, 'OPERATION_DEADLINE_EXCEEDED');
+  assert.equal(u.yca.starts + u.windowsMcp.starts + u.tunnel.stops, 0);
+  await restarted.reconcileStartup();
+  assert.deepEqual(ids.map(id => restarted.operation(id).outcome), ['succeeded', 'failed', 'unknown']);
+});
 
 test('candidate migration is refused before stop when no trusted rollback reader supports its schema', async t => {
   const x = switchFixture(t), { m, u } = x;

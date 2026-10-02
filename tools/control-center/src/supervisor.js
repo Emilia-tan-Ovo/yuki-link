@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { fail, saveJson, readJson, sleep } from './common.js';
-import { compatibleDeployment, selectDeployment, verifyDeployment } from './deployment.js';
+import { compatibleDeployment, deploymentTarget, selectDeployment, verifyDeployment } from './deployment.js';
 import { assertCardCompatibility, inspectCardDatabase } from './database-compatibility.js';
 
 const ids = ['yca', 'windowsMcp', 'tunnel', 'windowsTunnel'];
@@ -37,7 +37,7 @@ const recoveredTunnelStartup = (state, observation) => Boolean(state.desired ===
 
 export class Supervisor {
   constructor({ stateFile, events, createUnits, clock = Date.now, observeOnly = false, startupMs = 30_000, intervalMs = 5000,
-    deploymentOps = { inspectCardDatabase, verifyDeployment, compatibleDeployment, selectDeployment } }) {
+    deploymentOps = { inspectCardDatabase, verifyDeployment, compatibleDeployment, deploymentTarget, selectDeployment } }) {
     Object.assign(this, { stateFile, events, clock, observeOnly, startupMs, intervalMs });
     this.deploymentOps = deploymentOps;
     this.state = readJson(stateFile, defaults());
@@ -65,7 +65,20 @@ export class Supervisor {
     this.lastTick = clock(); this.busy = null; this.codex = { cli: '未检查', account: '未检查', inference: '未在此验证' };
     this.deploymentLatest = null;
   }
-  persist() { saveJson(this.stateFile, this.state); }
+  persist({ expectedLeases = null } = {}) {
+    const durable = readJson(this.stateFile, null);
+    for (const id of ids) {
+      const latest = durable?.units?.[id]?.ownership?.lease ?? null;
+      if (expectedLeases) {
+        if (JSON.stringify(latest) !== JSON.stringify(expectedLeases[id] ?? null)) throw fail('LIVE_SUPERVISOR_OWNER');
+      } else if (durable?.units?.[id]?.ownership) {
+        // Unrelated state writes must not erase a lease acquired by another
+        // supervisor after this instance loaded its state.
+        this.state.units[id].ownership.lease = latest;
+      }
+    }
+    saveJson(this.stateFile, this.state);
+  }
   operation(id) { return this.state.operations[id] ?? null; }
   recordOperation(operation, outcome, code = null) {
     if (!operation) return;
@@ -74,6 +87,7 @@ export class Supervisor {
       operationId: operation.operationId, action: operation.action, target: operation.target,
       phase: outcome === 'requested' ? 'inspect' : outcome, outcome: outcome === 'requested' ? 'running' : outcome,
       deadline: outcome === 'requested' ? this.clock() + 10 * 60_000 : existing?.deadline ?? null,
+      desired: outcome === 'requested' ? null : existing?.desired ?? null,
       code, updatedAt: this.clock(),
     };
     try { this.persist(); } catch (error) { throw unknownOperation(error); }
@@ -89,6 +103,23 @@ export class Supervisor {
   serial(fn) {
     const action = this.tail.then(fn); this.tail = action.catch(() => {}); return action;
   }
+  async assertMutationLease(id) {
+    // The state file is shared by supervisor generations. Never authorize a
+    // mutation from an earlier in-memory observation of its lease.
+    const durable = readJson(this.stateFile, defaults());
+    const lease = durable.units?.[id]?.ownership?.lease ?? this.state.units[id].ownership?.lease;
+    if (durable.units?.[id]?.ownership) this.state.units[id].ownership.lease = lease;
+    if (!lease?.supervisorInstance || lease.supervisorInstance === this.identity?.instance) return;
+    const owner = lease.supervisorProcess;
+    if (!owner?.pid || !owner?.created) throw fail('LIVE_SUPERVISOR_OWNER');
+    const host = this.units.yca.host;
+    if (!host?.inspect) throw fail('LIVE_SUPERVISOR_OWNER');
+    const found = (await host.inspect(this.units.yca.config.node, [], owner.pid))[0];
+    if (found?.matches && found.created === owner.created) throw fail('LIVE_SUPERVISOR_OWNER');
+  }
+  async assertMutationLeases(affected) {
+    for (const id of affected) await this.assertMutationLease(id);
+  }
   async observe() {
     await Promise.all(ids.map(async id => {
       try { this.observations[id] = { ...await this.units[id].observe(), at: this.clock(), source: id === 'yca' ? 'OS + YCA loopback' : id === 'windowsMcp' ? 'OS + startup MCP probe' : 'native metadata + OS + loopback' }; }
@@ -96,8 +127,11 @@ export class Supervisor {
     }));
     if (!this.observeOnly) {
       let changed = false;
+      const durable = readJson(this.stateFile, defaults());
+      const expectedLeases = Object.fromEntries(ids.map(id => [id, durable.units?.[id]?.ownership?.lease ?? null]));
       for (const id of ids) {
         const o = this.observations[id], ownership = this.state.units[id].ownership;
+        if (durable.units?.[id]?.ownership) ownership.lease = durable.units[id].ownership.lease ?? null;
         if (!o?.running || !o.owned || !o.pid || !o.created) continue;
         const lease = ownership.lease;
         if (lease?.supervisorInstance && lease.supervisorInstance !== this.identity?.instance && lease.supervisorProcess) {
@@ -117,7 +151,7 @@ export class Supervisor {
           renewedAt: this.clock(), expiresAt: this.clock() + 60_000 };
         changed = true;
       }
-      if (changed) this.persist();
+      if (changed) this.persist({ expectedLeases });
     }
     let reconciled = false;
     if (recoveredYcaStartup(this.state.units.yca, this.observations.yca)) { this.state.units.yca.blocked = null; reconciled = true; }
@@ -247,6 +281,7 @@ export class Supervisor {
     return 'restored';
   }
   updateDeployment(prepare, { restart = false, confirm = false, operation = null } = {}) { return this.serial(async () => {
+    await this.assertMutationLeases(restart ? ['yca', 'tunnel'] : ['yca']);
     this.recordOperation(operation, 'requested');
     let tx = null, initial = null, committed = false;
     try {
@@ -265,6 +300,7 @@ export class Supervisor {
       }
       this.busy = 'yca:update-prepare';
       this.operationPhase(operation, 'prepare');
+      await this.assertMutationLeases(restart ? ['yca', 'tunnel'] : ['yca']);
       const prepared = await prepare();
       this.deploymentLatest = { commit: prepared.commit, branch: prepared.branch, checkedAt: new Date(this.clock()).toISOString(), error: null, stale: false };
       this.events.add('yca', 'deployment-prepared');
@@ -298,19 +334,21 @@ export class Supervisor {
         operationId: operation?.operationId ?? randomUUID(), phase: 'prepared', candidateCommit: prepared.commit,
         candidateInstance: randomUUID(), rollbackCommit: rollback.commit,
         previousCommit, previousProcess: previous?.running ? { pid: previous.pid, created: previous.created } : null,
+        databaseVersionBefore: database.version,
+        selectedCommitBefore: this.deploymentOps.deploymentTarget?.(config.deploymentRoot)?.commit ?? null,
         tunnelDesired: this.state.units.tunnel.desired, confirm, startedAt: this.clock(),
       };
       this.state.updateTransaction = tx;
       this.state.units.yca.desired = 'running'; this.persist();
       this.operationPhase(operation, 'stop-dependents');
       await this.observe();
-      if (this.observations.tunnel?.running) await this.units.tunnel.stop(confirm);
+      if (this.observations.tunnel?.running) { await this.assertMutationLease('tunnel'); await this.units.tunnel.stop(confirm); }
       tx.phase = 'dependents-stopped'; this.persist();
       this.operationPhase(operation, 'stop-root');
       await this.guardImpact(confirm);
       const now = this.observations.yca;
       if (previous?.running && (now?.pid !== previous.pid || now?.created !== previous.created)) throw fail('DEPLOYMENT_CURRENT_CHANGED');
-      if (now?.running) await this.units.yca.stop(confirm, structuredClone(now));
+      if (now?.running) { await this.assertMutationLease('yca'); await this.units.yca.stop(confirm, structuredClone(now)); }
       tx.phase = 'root-stopped'; this.persist();
       this.operationPhase(operation, 'start-candidate');
       await this.observe();
@@ -325,6 +363,7 @@ export class Supervisor {
       assertCardCompatibility(candidate.databaseContract, this.deploymentOps.inspectCardDatabase(config.companionCardStore));
       tx.phase = 'candidate-verified'; this.persist();
       this.operationPhase(operation, 'commit-selection');
+      await this.assertMutationLease('yca');
       await this.deploymentOps.selectDeployment(config.deploymentRoot, prepared.commit, config.node);
       tx.phase = 'selected'; this.persist();
       if (tx.tunnelDesired === 'running') await this.startOne('tunnel');
@@ -341,7 +380,7 @@ export class Supervisor {
     } catch (error) {
       if (committed) throw unknownOperation(error);
       if (tx) {
-        tx.phase = 'rollback'; this.persist();
+        tx.rollbackFromPhase = tx.phase; tx.phase = 'rollback'; this.persist();
         try {
           await this.rollbackUpdate(tx);
           this.report('deployment-rolled-back');
@@ -360,11 +399,12 @@ export class Supervisor {
     }
   }); }
   async rollbackUpdate(tx) {
+    if (await this.cancelPreparedUpdate(tx)) return;
     const config = this.units.yca.config;
     const rollback = await this.deploymentOps.verifyDeployment(config.deploymentRoot, tx.rollbackCommit, config.node);
     assertCardCompatibility(rollback.databaseContract, this.deploymentOps.inspectCardDatabase(config.companionCardStore));
     await this.observe();
-    if (this.observations.tunnel?.running) await this.units.tunnel.stop(tx.confirm);
+    if (this.observations.tunnel?.running) { await this.assertMutationLease('tunnel'); await this.units.tunnel.stop(tx.confirm); }
     await this.observe();
     const running = this.observations.yca;
     if (running?.running !== true && running?.running !== false)
@@ -378,7 +418,7 @@ export class Supervisor {
       if (commit === tx.previousCommit && tx.previousProcess && !sameProcess(running, tx.previousProcess)
         && running.instance !== tx.candidateInstance) throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
       if (commit !== tx.rollbackCommit || !running.healthy) {
-        await this.units.yca.stop(tx.confirm, structuredClone(running));
+        await this.assertMutationLease('yca'); await this.units.yca.stop(tx.confirm, structuredClone(running));
       }
     }
     await this.observe();
@@ -386,6 +426,7 @@ export class Supervisor {
       && this.observations.yca.deployment?.running?.commit === tx.rollbackCommit)) {
       await this.startOne('yca', { commit: tx.rollbackCommit, exactCommit: true });
     }
+    await this.assertMutationLease('yca');
     await this.deploymentOps.selectDeployment(config.deploymentRoot, tx.rollbackCommit, config.node);
     if (tx.tunnelDesired === 'running') await this.startOne('tunnel');
     await this.observe();
@@ -393,6 +434,22 @@ export class Supervisor {
       || tx.tunnelDesired === 'running' && !(this.observations.tunnel?.healthy && this.observations.tunnel?.owned))
       throw fail('DEPLOYMENT_ROLLBACK_FAILED');
     tx.phase = 'rolled-back'; this.state.updateTransaction = null; this.persist();
+  }
+  async cancelPreparedUpdate(tx) {
+    if (!(tx.phase === 'prepared' || tx.phase === 'rollback' && tx.rollbackFromPhase === 'prepared')
+      || !tx.previousProcess || !tx.selectedCommitBefore) return false;
+    const config = this.units.yca.config;
+    await this.observe();
+    const previous = this.observations.yca;
+    if (!previous?.running || !previous.healthy || !previous.owned || previous.code
+      || !sameProcess(previous, tx.previousProcess)
+      || previous.deployment?.running?.commit !== tx.previousCommit) return false;
+    const database = this.deploymentOps.inspectCardDatabase(config.companionCardStore);
+    const selected = this.deploymentOps.deploymentTarget?.(config.deploymentRoot)?.commit ?? null;
+    if (database.version !== tx.databaseVersionBefore || selected !== tx.selectedCommitBefore) return false;
+    this.state.updateTransaction = null;
+    this.persist();
+    return true;
   }
   report(action, code = null) {
     try { this.events.add('yca', action, code); } catch { /* metadata does not change a verified switch */ }
@@ -412,6 +469,7 @@ export class Supervisor {
     try {
       const dependency = dependencies[id];
       if (dependency && !this.observations[dependency]?.healthy) throw fail(dependencyCodes[id][0]);
+      await this.assertMutationLease(id);
       await this.units[id].start(options);
       const startedInstance = id === 'yca' ? this.state.units.yca.ownership.instance : null;
       const deadline = this.clock() + this.startupMs;
@@ -438,8 +496,8 @@ export class Supervisor {
     if (![...ids, 'all'].includes(id) || !['start', 'stop', 'restart', 'retry', 'recover'].includes(action)
       || action === 'recover' && id !== 'all') return Promise.reject(fail('INVALID_ACTION'));
     return this.serial(async () => {
-      this.recordOperation(operation, 'requested');
       if (this.observeOnly) {
+        this.recordOperation(operation, 'requested');
         this.recordOperation(operation, 'failed', 'DEPLOYMENT_CONFIRMATION_REQUIRED');
         throw fail('DEPLOYMENT_CONFIRMATION_REQUIRED');
       }
@@ -451,6 +509,8 @@ export class Supervisor {
       if (action !== 'stop') for (const key of [...selected]) if (dependencies[key]) selected.add(dependencies[key]);
       const desiredBefore = Object.fromEntries(ids.map(key => [key, this.state.units[key].desired]));
       const affected = ids.filter(key => selected.has(key));
+      await this.assertMutationLeases(affected);
+      this.recordOperation(operation, 'requested');
       // Owner commands cancel cooldown before any safety/deployment preflight.
       for (const key of affected) {
         const s = this.state.units[key]; s.attempts = []; s.blocked = null; s.nextAt = this.clock(); s.inFlightDeadline = null; s.fatalRecheckAt = null;
@@ -459,15 +519,30 @@ export class Supervisor {
           ? desiredBefore[key] : 'running';
       }
       try { this.persist(); } catch (error) { throw unknownOperation(error); }
+      if (operation) {
+        this.state.operations[operation.operationId].desired = Object.fromEntries(affected.map(key => [key, this.state.units[key].desired]));
+        this.persist();
+      }
       let failure = null, restartCommit = null;
+      let ycaPlan = null;
       const failed = new Map();
       try {
+        await this.assertMutationLeases(affected);
         if (this.state.updateTransaction) await this.rollbackUpdate(this.state.updateTransaction);
         this.operationPhase(operation, 'inspect');
         await this.observe();
+        if (['stop', 'restart'].includes(action) && affected.some(key => key === 'yca' || key === 'tunnel')) await this.guardImpact(confirm);
+        if (action !== 'stop' && affected.includes('yca')) {
+          const current = this.observations.yca;
+          if (action === 'restart') restartCommit = current?.running
+            ? this.currentYcaCommit() : this.state.units.yca.ownership?.deployment?.commit ?? null;
+          if (action === 'restart' || !(current?.healthy && current.owned && !current.code)) {
+            const commit = restartCommit ?? (current?.running ? this.currentYcaCommit()
+              : this.state.units.yca.ownership?.deployment?.commit ?? null);
+            ycaPlan = await this.units.yca.preflightStart?.({ commit });
+          }
+        }
         if (['stop', 'restart'].includes(action)) {
-          if (affected.some(key => key === 'yca' || key === 'tunnel')) await this.guardImpact(confirm);
-          if (action === 'restart' && affected.includes('yca')) restartCommit = this.currentYcaCommit();
           const expectedYca = structuredClone(this.observations.yca);
           this.operationPhase(operation, 'stop-dependents');
           for (const key of stopOrder.filter(key => selected.has(key))) {
@@ -476,7 +551,7 @@ export class Supervisor {
             }
             try {
               if (this.observations[key]?.running === false) continue;
-              this.busy = `${key}:stop`; await this.units[key].stop(confirm, key === 'yca' ? expectedYca : null);
+              this.busy = `${key}:stop`; await this.assertMutationLease(key); await this.units[key].stop(confirm, key === 'yca' ? expectedYca : null);
               this.events.add(key, 'stopped');
             } catch (error) { failed.set(key, error); }
           }
@@ -494,11 +569,12 @@ export class Supervisor {
               if (o?.running && !(o.healthy && o.owned && !o.code)) {
                 if (!o.owned && !o.managedIdentity) throw fail(o.code ?? 'OBSERVED_UNOWNED');
                 this.operationPhase(operation, 'cleanup');
+                await this.assertMutationLease(key);
                 await this.units[key].stop(confirm, key === 'yca' ? structuredClone(o) : null);
                 await this.observe();
                 if (this.observations[key]?.running !== false) throw fail('STOP_OUTCOME_UNKNOWN');
               }
-              const options = key === 'yca' && restartCommit ? { commit: restartCommit } : {};
+              const options = key === 'yca' ? { ...(restartCommit ? { commit: restartCommit } : {}), ...(ycaPlan ? { plan: ycaPlan } : {}) } : {};
               this.operationPhase(operation, dependencies[key] ? 'start-dependents' : 'start-roots');
               await this.startOne(key, options); this.events.add(key, 'started');
             } catch (error) {
@@ -564,11 +640,8 @@ export class Supervisor {
   reconcileStartup() { return this.serial(async () => {
     await this.observe();
     if (this.observeOnly) return this.snapshot();
-    for (const operation of Object.values(this.state.operations)) if (operation.outcome === 'running') {
-      operation.phase = 'reconciling-after-crash'; operation.updatedAt = this.clock();
-    }
-    this.persist();
     const tx = this.state.updateTransaction;
+    const txOperationId = tx?.operationId ?? null;
     if (tx) {
       const recorded = this.state.operations[tx.operationId];
       const operation = recorded ? { operationId: tx.operationId, action: recorded.action, target: recorded.target } : null;
@@ -582,6 +655,7 @@ export class Supervisor {
               this.state.lastKnownGood = { commit: tx.candidateCommit, at: this.clock() };
               this.state.updateTransaction = null; this.persist();
               this.recordOperation(operation, 'succeeded');
+              this.reconcileOperations(txOperationId);
               return this.snapshot();
             }
           }
@@ -596,8 +670,30 @@ export class Supervisor {
         this.recordOperation(operation, 'unknown', tx.lastFailure);
       }
     }
+    this.reconcileOperations(txOperationId);
     return this.snapshot();
   }); }
+  reconcileOperations(txOperationId = null) {
+    for (const recorded of Object.values(this.state.operations)) {
+      if (recorded.outcome !== 'running' || recorded.operationId === txOperationId) continue;
+      const operation = { operationId: recorded.operationId, action: recorded.action, target: recorded.target };
+      const desired = recorded.desired;
+      const observed = desired && Object.entries(desired).map(([id, intent]) => ({ id, intent, observation: this.observations[id] }));
+      const complete = observed?.length && observed.every(({ intent, observation }) => intent === 'stopped'
+        ? observation?.running === false : observation?.healthy && observation.owned && !observation.code);
+      const fatal = observed?.some(({ id, observation }) => this.state.units[id]?.blocked && permanent.has(this.state.units[id].blocked)
+        || observation?.code && permanent.has(observation.code));
+      const expired = !Number.isFinite(recorded.deadline) || this.clock() >= recorded.deadline;
+      if (complete) this.recordOperation(operation, 'succeeded');
+      else if (fatal) {
+        const failed = observed.find(({ id, observation }) => permanent.has(observation?.code)
+          || permanent.has(this.state.units[id]?.blocked));
+        this.recordOperation(operation, 'failed', permanent.has(failed.observation?.code)
+          ? failed.observation.code : this.state.units[failed.id].blocked);
+      }
+      else this.recordOperation(operation, 'unknown', expired ? 'OPERATION_DEADLINE_EXCEEDED' : 'OPERATION_INTERRUPTED');
+    }
+  }
   tick() { return this.serial(async () => {
     const at = this.clock();
     if (at - this.lastTick > this.intervalMs * 3) {
@@ -666,8 +762,11 @@ export class Supervisor {
       s.attempts.push(at); s.attempts = s.attempts.slice(-20); s.nextAt = at + retryDelays[Math.min(s.attempts.length, retryDelays.length - 1)]; this.persist();
       this.events.add(id, 'recovery-attempt', o.code ?? 'PROCESS_EXITED');
       try {
-        if (o.running) await this.units[id].stop(false);
-        await this.startOne(id, { recovery: true, commit: id === 'yca' ? this.state.units.yca.ownership?.deployment?.commit ?? null : null });
+        await this.assertMutationLease(id);
+        const commit = id === 'yca' ? this.state.units.yca.ownership?.deployment?.commit ?? null : null;
+        const plan = id === 'yca' ? await this.units.yca.preflightStart?.({ recovery: true, commit }) : null;
+        if (o.running) { await this.assertMutationLease(id); await this.units[id].stop(false); }
+        await this.startOne(id, { recovery: true, commit, ...(plan ? { plan } : {}) });
         s.blocked = null; s.lastFailure = null; s.failures = 0; s.nextAt = null; s.degradedSince = null;
       } catch (e) {
         s.lastFailure = e.code ?? 'RECOVERY_FAILED';
