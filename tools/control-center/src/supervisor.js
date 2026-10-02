@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { fail, saveJson, readJson, sleep } from './common.js';
+import { acquireMutationLock } from './mutation-lock.js';
 import { compatibleDeployment, deploymentTarget, selectDeployment, verifyDeployment } from './deployment.js';
 import { assertCardCompatibility, inspectCardDatabase } from './database-compatibility.js';
 
@@ -17,6 +19,7 @@ const retryDelays = [2000, 5000, 10_000, 30_000, 60_000, 120_000, 300_000];
 const permanent = new Set(['VERSION_UNSUPPORTED', 'PATH_MISSING', 'PORT_CONFLICT', 'MULTIPLE_INSTANCES', 'ORPHAN_TASK_REVIEW', 'RUNTIME_LOCKED', 'TOPOLOGY_CHANGED', 'PROFILE_REVIEW_REQUIRED', 'PID_CONFLICT', 'NATIVE_RUNTIME_CONFLICT', 'STATE_UNREADABLE', 'AUTH_REQUIRED', 'OWNERSHIP_CHANGED', 'PROFILE_CHANGED', 'MCP_RESPONSE_INVALID', 'WINDOWS_MCP_PYTHON_PATH_MISSING', 'DB_STRUCTURE_INVALID', 'DB_COMPATIBLE_RELEASE_UNAVAILABLE', 'DB_CONTRACT_INVALID', 'DB_SCHEMA_UNSUPPORTED', 'ENGINEERING_CAPABILITY_UNAVAILABLE', 'LIVE_SUPERVISOR_OWNER']);
 for (const code of ['CODEX_EXECUTABLE_UNAVAILABLE', 'NODE_PATH_MISSING', 'YCA_ENTRY_PATH_MISSING', 'PWSH_PATH_MISSING']) permanent.add(code);
 const unknownOperation = error => Object.assign(error, { operationOutcome: 'unknown' });
+const mutationScope = new AsyncLocalStorage();
 const validActivity = activity => Boolean(activity && ['codex', 'computer', 'requests'].every(key => Number.isSafeInteger(activity[key]) && activity[key] >= 0));
 const sameProcess = (a, b) => Boolean(a?.pid && a?.created && b?.pid === a.pid && b?.created === a.created);
 const recoveredYcaStartup = (state, observation) => {
@@ -66,6 +69,7 @@ export class Supervisor {
     this.deploymentLatest = null;
   }
   persist({ expectedLeases = null } = {}) {
+    mutationScope.getStore()?.lock.assertHeld();
     const durable = readJson(this.stateFile, null);
     for (const id of ids) {
       const latest = durable?.units?.[id]?.ownership?.lease ?? null;
@@ -88,6 +92,7 @@ export class Supervisor {
       phase: outcome === 'requested' ? 'inspect' : outcome, outcome: outcome === 'requested' ? 'running' : outcome,
       deadline: outcome === 'requested' ? this.clock() + 10 * 60_000 : existing?.deadline ?? null,
       desired: outcome === 'requested' ? null : existing?.desired ?? null,
+      restartBefore: outcome === 'requested' ? null : existing?.restartBefore ?? null,
       code, updatedAt: this.clock(),
     };
     try { this.persist(); } catch (error) { throw unknownOperation(error); }
@@ -103,9 +108,31 @@ export class Supervisor {
   serial(fn) {
     const action = this.tail.then(fn); this.tail = action.catch(() => {}); return action;
   }
-  async assertMutationLease(id) {
-    // The state file is shared by supervisor generations. Never authorize a
-    // mutation from an earlier in-memory observation of its lease.
+  async withMutationLock(fn) {
+    const held = mutationScope.getStore();
+    if (held?.supervisor === this) { held.lock.assertHeld(); return fn(); }
+    const lock = await acquireMutationLock(this.stateFile, this.units.yca.config?.pwsh);
+    try {
+      const result = await mutationScope.run({ supervisor: this, lock }, fn);
+      lock.assertHeld();
+      return result;
+    }
+    finally { await lock.release(); }
+  }
+  async mutateUnit(id, method, ...args) {
+    const held = mutationScope.getStore();
+    if (held?.supervisor !== this) return this.withMutationLock(() => this.mutateUnit(id, method, ...args));
+    held.lock.assertHeld();
+    // This check lives at the unit call boundary. A caller's earlier snapshot
+    // or preflight cannot authorize a later generation's mutation.
+    await this.checkDurableLease(id);
+    held.lock.assertHeld();
+    const result = await this.units[id][method](...args);
+    held.lock.assertHeld();
+    return result;
+  }
+  async checkDurableLease(id) {
+    mutationScope.getStore()?.lock.assertHeld();
     const durable = readJson(this.stateFile, defaults());
     const lease = durable.units?.[id]?.ownership?.lease ?? this.state.units[id].ownership?.lease;
     if (durable.units?.[id]?.ownership) this.state.units[id].ownership.lease = lease;
@@ -117,10 +144,15 @@ export class Supervisor {
     const found = (await host.inspect(this.units.yca.config.node, [], owner.pid))[0];
     if (found?.matches && found.created === owner.created) throw fail('LIVE_SUPERVISOR_OWNER');
   }
+  async assertMutationLease(id) {
+    return this.checkDurableLease(id);
+  }
   async assertMutationLeases(affected) {
     for (const id of affected) await this.assertMutationLease(id);
   }
   async observe() {
+    if (!this.observeOnly && mutationScope.getStore()?.supervisor !== this)
+      return this.withMutationLock(() => this.observe());
     await Promise.all(ids.map(async id => {
       try { this.observations[id] = { ...await this.units[id].observe(), at: this.clock(), source: id === 'yca' ? 'OS + YCA loopback' : id === 'windowsMcp' ? 'OS + startup MCP probe' : 'native metadata + OS + loopback' }; }
       catch (e) { this.observations[id] = { running: null, healthy: false, code: e.code ?? 'OBSERVATION_FAILED', at: this.clock(), source: 'local observation failed' }; }
@@ -269,7 +301,7 @@ export class Supervisor {
         throw unknownOperation(fail('DEPLOYMENT_SWITCH_UNKNOWN'));
       }
       if (!validActivity(running.activity)) throw unknownOperation(fail('DEPLOYMENT_SWITCH_UNKNOWN'));
-      this.busy = 'yca:rollback-stop'; await this.units.yca.stop(confirm);
+      this.busy = 'yca:rollback-stop'; await this.mutateUnit('yca', 'stop', confirm);
       await this.observe(); running = this.observations.yca;
       if (running?.running !== false) throw unknownOperation(fail('DEPLOYMENT_ROLLBACK_UNKNOWN'));
     }
@@ -280,7 +312,7 @@ export class Supervisor {
         || (previous.toolsSha && running.tools?.sha256 !== previous.toolsSha)) throw fail('DEPLOYMENT_ROLLBACK_FAILED');
     return 'restored';
   }
-  updateDeployment(prepare, { restart = false, confirm = false, operation = null } = {}) { return this.serial(async () => {
+  updateDeployment(prepare, { restart = false, confirm = false, operation = null } = {}) { return this.serial(() => this.withMutationLock(async () => {
     await this.assertMutationLeases(restart ? ['yca', 'tunnel'] : ['yca']);
     this.recordOperation(operation, 'requested');
     let tx = null, initial = null, committed = false;
@@ -342,13 +374,13 @@ export class Supervisor {
       this.state.units.yca.desired = 'running'; this.persist();
       this.operationPhase(operation, 'stop-dependents');
       await this.observe();
-      if (this.observations.tunnel?.running) { await this.assertMutationLease('tunnel'); await this.units.tunnel.stop(confirm); }
+      if (this.observations.tunnel?.running) { await this.assertMutationLease('tunnel'); await this.mutateUnit('tunnel', 'stop', confirm); }
       tx.phase = 'dependents-stopped'; this.persist();
       this.operationPhase(operation, 'stop-root');
       await this.guardImpact(confirm);
       const now = this.observations.yca;
       if (previous?.running && (now?.pid !== previous.pid || now?.created !== previous.created)) throw fail('DEPLOYMENT_CURRENT_CHANGED');
-      if (now?.running) { await this.assertMutationLease('yca'); await this.units.yca.stop(confirm, structuredClone(now)); }
+      if (now?.running) { await this.assertMutationLease('yca'); await this.mutateUnit('yca', 'stop', confirm, structuredClone(now)); }
       tx.phase = 'root-stopped'; this.persist();
       this.operationPhase(operation, 'start-candidate');
       await this.observe();
@@ -397,14 +429,15 @@ export class Supervisor {
     } finally {
       this.busy = null; this.persist();
     }
-  }); }
+  })); }
   async rollbackUpdate(tx) {
+    if (mutationScope.getStore()?.supervisor !== this) return this.withMutationLock(() => this.rollbackUpdate(tx));
     if (await this.cancelPreparedUpdate(tx)) return;
     const config = this.units.yca.config;
     const rollback = await this.deploymentOps.verifyDeployment(config.deploymentRoot, tx.rollbackCommit, config.node);
     assertCardCompatibility(rollback.databaseContract, this.deploymentOps.inspectCardDatabase(config.companionCardStore));
     await this.observe();
-    if (this.observations.tunnel?.running) { await this.assertMutationLease('tunnel'); await this.units.tunnel.stop(tx.confirm); }
+    if (this.observations.tunnel?.running) { await this.assertMutationLease('tunnel'); await this.mutateUnit('tunnel', 'stop', tx.confirm); }
     await this.observe();
     const running = this.observations.yca;
     if (running?.running !== true && running?.running !== false)
@@ -418,7 +451,7 @@ export class Supervisor {
       if (commit === tx.previousCommit && tx.previousProcess && !sameProcess(running, tx.previousProcess)
         && running.instance !== tx.candidateInstance) throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
       if (commit !== tx.rollbackCommit || !running.healthy) {
-        await this.assertMutationLease('yca'); await this.units.yca.stop(tx.confirm, structuredClone(running));
+        await this.assertMutationLease('yca'); await this.mutateUnit('yca', 'stop', tx.confirm, structuredClone(running));
       }
     }
     await this.observe();
@@ -464,13 +497,14 @@ export class Supervisor {
       && running.tools?.count === prepared.tools?.count && validActivity(running.activity));
   }
   async startOne(id, options = {}) {
+    if (mutationScope.getStore()?.supervisor !== this) return this.withMutationLock(() => this.startOne(id, options));
     const s = this.state.units[id]; this.busy = `${id}:start`;
     s.inFlightDeadline = this.clock() + this.startupMs + 5000; this.persist();
     try {
       const dependency = dependencies[id];
       if (dependency && !this.observations[dependency]?.healthy) throw fail(dependencyCodes[id][0]);
       await this.assertMutationLease(id);
-      await this.units[id].start(options);
+      await this.mutateUnit(id, 'start', options);
       const startedInstance = id === 'yca' ? this.state.units.yca.ownership.instance : null;
       const deadline = this.clock() + this.startupMs;
       do {
@@ -495,7 +529,7 @@ export class Supervisor {
   action(id, action, confirm = false, operation = null) {
     if (![...ids, 'all'].includes(id) || !['start', 'stop', 'restart', 'retry', 'recover'].includes(action)
       || action === 'recover' && id !== 'all') return Promise.reject(fail('INVALID_ACTION'));
-    return this.serial(async () => {
+    return this.serial(() => this.withMutationLock(async () => {
       if (this.observeOnly) {
         this.recordOperation(operation, 'requested');
         this.recordOperation(operation, 'failed', 'DEPLOYMENT_CONFIRMATION_REQUIRED');
@@ -542,6 +576,13 @@ export class Supervisor {
             ycaPlan = await this.units.yca.preflightStart?.({ commit });
           }
         }
+        if (action === 'restart' && operation) {
+          this.state.operations[operation.operationId].restartBefore = Object.fromEntries(affected.map(key => {
+            const o = this.observations[key];
+            return [key, { running: o?.running ?? null, pid: o?.pid ?? null, created: o?.created ?? null }];
+          }));
+          this.persist();
+        }
         if (['stop', 'restart'].includes(action)) {
           const expectedYca = structuredClone(this.observations.yca);
           this.operationPhase(operation, 'stop-dependents');
@@ -551,7 +592,7 @@ export class Supervisor {
             }
             try {
               if (this.observations[key]?.running === false) continue;
-              this.busy = `${key}:stop`; await this.assertMutationLease(key); await this.units[key].stop(confirm, key === 'yca' ? expectedYca : null);
+              this.busy = `${key}:stop`; await this.assertMutationLease(key); await this.mutateUnit(key, 'stop', confirm, key === 'yca' ? expectedYca : null);
               this.events.add(key, 'stopped');
             } catch (error) { failed.set(key, error); }
           }
@@ -570,7 +611,7 @@ export class Supervisor {
                 if (!o.owned && !o.managedIdentity) throw fail(o.code ?? 'OBSERVED_UNOWNED');
                 this.operationPhase(operation, 'cleanup');
                 await this.assertMutationLease(key);
-                await this.units[key].stop(confirm, key === 'yca' ? structuredClone(o) : null);
+                await this.mutateUnit(key, 'stop', confirm, key === 'yca' ? structuredClone(o) : null);
                 await this.observe();
                 if (this.observations[key]?.running !== false) throw fail('STOP_OUTCOME_UNKNOWN');
               }
@@ -621,7 +662,7 @@ export class Supervisor {
       }
       this.recordOperation(operation, 'succeeded');
       return this.snapshot();
-    });
+    }));
   }
   setRecovery(enabled) { return this.serial(async () => {
     if (this.observeOnly) throw fail('DEPLOYMENT_CONFIRMATION_REQUIRED');
@@ -637,7 +678,7 @@ export class Supervisor {
     if (!tools) throw fail('SCHEMA_UNAVAILABLE');
     this.state.confirmedTools = { ...tools, at: new Date(this.clock()).toISOString(), source: '用户点击人工确认' }; this.persist();
   }); }
-  reconcileStartup() { return this.serial(async () => {
+  reconcileStartup() { return this.serial(() => this.withMutationLock(async () => {
     await this.observe();
     if (this.observeOnly) return this.snapshot();
     const tx = this.state.updateTransaction;
@@ -672,15 +713,27 @@ export class Supervisor {
     }
     this.reconcileOperations(txOperationId);
     return this.snapshot();
-  }); }
+  })); }
   reconcileOperations(txOperationId = null) {
     for (const recorded of Object.values(this.state.operations)) {
       if (recorded.outcome !== 'running' || recorded.operationId === txOperationId) continue;
       const operation = { operationId: recorded.operationId, action: recorded.action, target: recorded.target };
       const desired = recorded.desired;
       const observed = desired && Object.entries(desired).map(([id, intent]) => ({ id, intent, observation: this.observations[id] }));
-      const complete = observed?.length && observed.every(({ intent, observation }) => intent === 'stopped'
+      let complete = observed?.length && observed.every(({ intent, observation }) => intent === 'stopped'
         ? observation?.running === false : observation?.healthy && observation.owned && !observation.code);
+      if (complete && ['restart', 'restart-current'].includes(recorded.action)) {
+        // A healthy old process already satisfies desired=running. Clean
+        // restart needs a durable pre-stop witness and a different OS creation
+        // identity after the stop/start phase reached verification.
+        complete = recorded.phase === 'verify' && observed.every(({ id, intent, observation }) => {
+          const before = recorded.restartBefore?.[id];
+          if (!before || ![true, false].includes(before.running)) return false;
+          if (intent === 'stopped') return observation.running === false;
+          if (!observation.pid || !observation.created) return false;
+          return before.running === false || before.pid && before.created && !sameProcess(observation, before);
+        });
+      }
       const fatal = observed?.some(({ id, observation }) => this.state.units[id]?.blocked && permanent.has(this.state.units[id].blocked)
         || observation?.code && permanent.has(observation.code));
       const expired = !Number.isFinite(recorded.deadline) || this.clock() >= recorded.deadline;
@@ -694,7 +747,7 @@ export class Supervisor {
       else this.recordOperation(operation, 'unknown', expired ? 'OPERATION_DEADLINE_EXCEEDED' : 'OPERATION_INTERRUPTED');
     }
   }
-  tick() { return this.serial(async () => {
+  tick() { return this.serial(() => this.withMutationLock(async () => {
     const at = this.clock();
     if (at - this.lastTick > this.intervalMs * 3) {
       this.events.add('supervisor', 'long-check-gap');
@@ -765,7 +818,7 @@ export class Supervisor {
         await this.assertMutationLease(id);
         const commit = id === 'yca' ? this.state.units.yca.ownership?.deployment?.commit ?? null : null;
         const plan = id === 'yca' ? await this.units.yca.preflightStart?.({ recovery: true, commit }) : null;
-        if (o.running) { await this.assertMutationLease(id); await this.units[id].stop(false); }
+        if (o.running) { await this.assertMutationLease(id); await this.mutateUnit(id, 'stop', false); }
         await this.startOne(id, { recovery: true, commit, ...(plan ? { plan } : {}) });
         s.blocked = null; s.lastFailure = null; s.failures = 0; s.nextAt = null; s.degradedSince = null;
       } catch (e) {
@@ -778,5 +831,5 @@ export class Supervisor {
       }
     }
     this.persist();
-  }); }
+  })); }
 }

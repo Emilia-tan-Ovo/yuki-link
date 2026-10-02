@@ -4,11 +4,13 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { Supervisor } from '../src/supervisor.js';
 import { Events, fail, claimStateDirectory } from '../src/common.js';
 import { YcaUnit, tunnelHealth } from '../src/units.js';
 import { loadConfig } from '../src/config.js';
+import { acquireMutationLock } from '../src/mutation-lock.js';
 
 function setup(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'yuki-cc-test-'));
@@ -114,6 +116,74 @@ test('lease generation acquired during preflight blocks the later cleanup side e
   };
   await assert.rejects(m.action('yca', 'retry', true), { code: 'LIVE_SUPERVISOR_OWNER' });
   assert.equal(u.yca.stops, 0);
+});
+
+test('mutation mutex excludes a second supervisor through the full unit stop', async t => {
+  const f = setup(t), { manager: first, units: u } = f;
+  u.tunnel.running = true; u.tunnel.healthy = true;
+  let enter, release;
+  const entered = new Promise(resolve => { enter = resolve; });
+  const hold = new Promise(resolve => { release = resolve; });
+  u.tunnel.stop = async function() { this.stops++; enter(); await hold; this.running = false; this.healthy = false; };
+  const stopping = first.action('tunnel', 'stop', true);
+  await entered;
+  const second = new Supervisor(f.options);
+  await assert.rejects(second.action('tunnel', 'stop', true), { code: 'LIVE_SUPERVISOR_OWNER' });
+  assert.equal(u.tunnel.stops, 1);
+  release(); await stopping;
+  assert.equal(u.tunnel.stops, 1);
+});
+
+test('mutation mutex is released by the OS after its holder crashes', async t => {
+  const f = setup(t);
+  const source = `import { acquireMutationLock } from ${JSON.stringify(new URL('../src/mutation-lock.js', import.meta.url).href)};
+    await acquireMutationLock(${JSON.stringify(f.options.stateFile)});
+    process.stdout.write('READY\\n');
+    setInterval(() => {}, 1000);`;
+  const holder = spawn(process.execPath, ['--input-type=module', '-e', source], {
+    shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(() => { if (holder.exitCode === null) holder.kill(); });
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(fail('MUTATION_LOCK_UNAVAILABLE')), 10_000);
+    holder.stdout.once('data', chunk => { clearTimeout(timeout); chunk.toString('utf8').includes('READY') ? resolve() : reject(fail('MUTATION_LOCK_UNAVAILABLE')); });
+    holder.once('error', reject);
+    holder.once('exit', () => reject(fail('MUTATION_LOCK_UNAVAILABLE')));
+  });
+  holder.kill();
+  await new Promise(resolve => holder.once('exit', resolve));
+  let lock;
+  for (let attempt = 0; attempt < 20 && !lock; attempt++) {
+    try { lock = await acquireMutationLock(f.options.stateFile); }
+    catch (error) {
+      if (error.code !== 'LIVE_SUPERVISOR_OWNER') throw error;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+  assert.ok(lock, 'kernel mutex must become claimable without unlinking stale metadata');
+  await lock.release();
+});
+
+test('foreign lease written after the last caller check still blocks the unit boundary', async t => {
+  const { manager: m, units: u } = setup(t);
+  m.identity = { instance: 'old-owner' };
+  m.persist();
+  u.tunnel.running = true; u.tunnel.healthy = true;
+  u.yca.host = { inspect: async () => [{ pid: 900, created: 'new-owner-process', matches: true }] };
+  const check = m.assertMutationLease.bind(m);
+  let tunnelChecks = 0;
+  m.assertMutationLease = async id => {
+    await check(id);
+    if (id === 'tunnel' && ++tunnelChecks === 3) {
+      const durable = JSON.parse(readFileSync(m.stateFile, 'utf8'));
+      durable.units.tunnel.ownership.lease = { supervisorInstance: 'new-owner',
+        supervisorProcess: { pid: 900, created: 'new-owner-process' }, generation: 2 };
+      writeFileSync(m.stateFile, JSON.stringify(durable), 'utf8');
+    }
+  };
+  await assert.rejects(m.action('tunnel', 'stop', true), { code: 'LIVE_SUPERVISOR_OWNER' });
+  assert.equal(tunnelChecks, 3);
+  assert.equal(u.tunnel.stops, 0);
 });
 
 test('confirmed restart replaces a known managed orphan using its recorded release', async t => {
@@ -978,6 +1048,24 @@ test('crash reconciliation gives ordinary operations durable terminal outcomes w
   assert.equal(u.yca.starts + u.windowsMcp.starts + u.tunnel.stops, 0);
   await restarted.reconcileStartup();
   assert.deepEqual(ids.map(id => restarted.operation(id).outcome), ['succeeded', 'failed', 'unknown']);
+});
+
+test('restart crash before stop does not count the still-healthy old process as success', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  u.yca.running = true; u.yca.healthy = true;
+  u.yca.observe = async () => ({ running: true, healthy: true, owned: true,
+    pid: 400, created: 'old-process', code: null });
+  m.state.units.yca.desired = 'running';
+  const operationId = 'aaaaaaaa-aaaa-4aaa-8aaa-444444444444';
+  m.state.operations[operationId] = { operationId, action: 'restart', target: 'yca',
+    phase: 'inspect', outcome: 'running', desired: { yca: 'running' }, deadline: m.clock() + 60_000 };
+  m.persist();
+  const restarted = new Supervisor(f.options);
+  await restarted.reconcileStartup();
+  assert.equal(restarted.operation(operationId).outcome, 'unknown');
+  assert.equal(restarted.operation(operationId).code, 'OPERATION_INTERRUPTED');
+  assert.equal(u.yca.stops, 0);
+  assert.equal(u.yca.starts, 0);
 });
 
 test('candidate migration is refused before stop when no trusted rollback reader supports its schema', async t => {
