@@ -32,6 +32,11 @@ export function createServer(supervisor, { codexCheck, startup, deploymentCheck,
     if (!equal(cookie, session)) return json(403, { code: 'SESSION_REQUIRED' });
     if (req.method === 'GET' && req.url === '/api/status') return json(200, { ...supervisor.snapshot(), csrf, startup: startup?.snapshot() ?? { state: '未检查' } });
     if (req.method === 'GET' && req.url === '/api/diagnostic') return json(200, supervisor.snapshot());
+    if (req.method === 'GET' && /^\/api\/operations\/[0-9a-f-]{36}$/i.test(req.url)) {
+      const id = req.url.slice('/api/operations/'.length);
+      const operation = supervisor.operation?.(id) ?? supervisor.snapshot().operations?.find(item => item.operationId === id);
+      return operation ? json(200, operation) : json(404, { code: 'OPERATION_NOT_FOUND' });
+    }
     if (req.method !== 'POST') return json(405, { code: 'METHOD_NOT_ALLOWED' });
     if (req.headers.origin !== origin || !equal(req.headers['x-csrf-token'], csrf) || req.headers['content-type'] !== 'application/json') return json(403, { code: 'CSRF_REJECTED' });
     let body;
@@ -41,9 +46,17 @@ export function createServer(supervisor, { codexCheck, startup, deploymentCheck,
       let result;
       if (req.url === '/api/action') {
         if (!operationId(body.operation_id) || Object.keys(body).some(k => !['operation_id', 'id', 'action', 'confirm'].includes(k))
-          || !['yca', 'tunnel', 'windowsMcp', 'windowsTunnel', 'all'].includes(body.id) || !['start', 'stop', 'restart', 'retry'].includes(body.action)
+          || !['yca', 'tunnel', 'windowsMcp', 'windowsTunnel', 'all'].includes(body.id) || !['start', 'stop', 'restart', 'retry', 'recover'].includes(body.action)
+          || body.action === 'recover' && body.id !== 'all'
           || (body.confirm !== undefined && typeof body.confirm !== 'boolean')) return json(400, { code: 'INVALID_ACTION' });
         const operation = { operationId: body.operation_id, action: body.action === 'restart' ? 'restart-current' : body.action, target: body.id };
+        const prior = supervisor.operation?.(body.operation_id) ?? supervisor.snapshot().operations?.find(item => item.operationId === body.operation_id);
+        if (prior) {
+          if (prior.action !== operation.action || prior.target !== operation.target) return json(409, { code: 'OPERATION_ID_CONFLICT' });
+          return json(prior.outcome === 'running' ? 202 : prior.outcome === 'succeeded' ? 200 : 409,
+            { ok: prior.outcome === 'succeeded', operation_id: body.operation_id, outcome: prior.outcome,
+              phase: prior.phase, deadline: prior.deadline, code: prior.code });
+        }
         result = await supervisor.action(body.id, body.action, body.confirm === true, operation);
       } else if (req.url === '/api/recheck') await supervisor.serial(() => supervisor.observe());
       else if (req.url === '/api/recovery') await supervisor.setRecovery(body.enabled);
@@ -54,6 +67,13 @@ export function createServer(supervisor, { codexCheck, startup, deploymentCheck,
             || (body.confirm !== undefined && typeof body.confirm !== 'boolean')) return json(400, { code: 'INVALID_ACTION' });
         const operation = { operationId: body.operation_id,
           action: body.action === 'check' ? 'check-remote' : body.action === 'update-restart' ? 'update-and-restart' : 'prepare', target: 'yca' };
+        const prior = supervisor.operation?.(body.operation_id) ?? supervisor.snapshot().operations?.find(item => item.operationId === body.operation_id);
+        if (prior) {
+          if (prior.action !== operation.action || prior.target !== operation.target) return json(409, { code: 'OPERATION_ID_CONFLICT' });
+          return json(prior.outcome === 'running' ? 202 : prior.outcome === 'succeeded' ? 200 : 409,
+            { ok: prior.outcome === 'succeeded', operation_id: body.operation_id, outcome: prior.outcome,
+              phase: prior.phase, deadline: prior.deadline, code: prior.code });
+        }
         if (body.action === 'check') result = await deploymentCheck(operation);
         else result = await deploymentUpdate(body.action === 'update-restart', body.confirm === true, operation);
       }

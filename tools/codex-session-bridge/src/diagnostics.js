@@ -31,7 +31,14 @@ export function createDiagnostics({ manager, computer, instance, token, summary,
     const active = activity(manager, computer, requests());
     if (req.method === 'GET' && req.url === '/status') {
       const latest = Object.values(manager.store.state.runs).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+      const engineeringStores = [manager.companionDispatch, manager.companionPreparation,
+        manager.companionContinuation, manager.companionControls];
+      const engineeringCards = engineeringStores.every(service => {
+        try { return service?.store?.db?.prepare('PRAGMA user_version').get().user_version === 6; }
+        catch { return false; }
+      });
       return reply(200, { service: 'yuki-local-control', instance, pid: process.pid, at: new Date().toISOString(), active, closing: manager.closing, tools: summary, source,
+        capabilities: { engineeringCards },
         lastBridge: latest ? { status: latest.status, at: latest.finished_at ?? latest.started_at ?? latest.created_at, code: latest.error?.code ?? null, exitCode: latest.exit_code } : null });
     }
     if (req.method === 'POST' && req.url === '/stop') {

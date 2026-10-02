@@ -1,11 +1,12 @@
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, renameSync, copyFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, copyFileSync, realpathSync, statSync } from 'node:fs';
 import { fail, get, readJson, run, sleep } from './common.js';
 import { matches } from './host.js';
 import { tunnelEvents } from './tunnel-events.js';
-import { deploymentTarget, verifyDeployment } from './deployment.js';
+import { compatibleDeployment, deploymentTarget, prepareDeployment, verifyDeployment } from './deployment.js';
+import { assertCardCompatibility, inspectCardDatabase } from './database-compatibility.js';
 import { resolveCodexExecutable } from '../../codex-session-bridge/src/codex-executable.js';
 import { FileImplementationLaunchAuthoritySource } from '../../codex-session-bridge/src/orchestration/implementation-launcher.ts';
 import { FileReviewLaunchAuthoritySource } from '../../codex-session-bridge/src/orchestration/review-launcher.ts';
@@ -25,7 +26,9 @@ function crashTail(chunks) {
 
 export class YcaUnit {
   constructor(config, host, state, persist, events, { spawnProcess = spawn } = {}) { Object.assign(this, { config, host, state, persist, events, spawnProcess }); }
-  markers(instance = this.state.instance) { return [this.state.entry ?? this.config.entry, ...(instance ? ['--control-instance', instance] : ['--runtime', this.config.runtime])]; }
+  markers(instance = this.state.instance) { return [this.state.entry ?? this.config.entry, '--transport', 'http',
+    '--runtime', this.config.runtime, '--control-port', String(this.config.controlPort),
+    ...(instance ? ['--control-instance', instance] : [])]; }
   async observe() {
     const found = await this.host.inspect(this.config.node, this.markers());
     if (found.length > 1) return { running: true, owned: false, healthy: false, code: 'MULTIPLE_INSTANCES' };
@@ -42,7 +45,8 @@ export class YcaUnit {
       const oldLock = readJson(path.join(this.config.runtime, 'bridge.lock'), null);
       const deployment = { running: null, target, launched: expected ?? null,
         state: deploymentCode ? 'invalid-target' : !this.config.deploymentRoot ? 'unmanaged' : target?.commit !== expected?.commit ? 'update-pending' : 'stopped' };
-      return { running: false, owned: false, healthy: false, deployment, code: oldLock && oldLock.token !== this.state.lock?.token ? 'LEGACY_RUNTIME_LOCK' : deploymentCode, lastExit: this.state.lastExit ?? null };
+      return { running: false, owned: false, healthy: false, deployment,
+        staleLock: Boolean(oldLock), code: deploymentCode, lastExit: this.state.lastExit ?? null };
     }
     const processMatches = matches(p, this.state.process);
     const identityChanged = this.state.process && (p.pid !== this.state.process.pid || p.created !== this.state.process.created);
@@ -71,8 +75,10 @@ export class YcaUnit {
       diagnosticProbe.code = statusResult.reason?.code ?? 'LOCAL_PROBE_FAILED';
     }
     owned = processMatches && Boolean(diagnostic);
-    if (!this.state.process && this.state.instance && diagnostic) {
-      this.state.process = p; this.persist(); owned = true; // recover a spawn/persist interruption with instance authentication
+    if (this.state.instance && diagnostic && !processMatches && !this.state.process) {
+      // The authenticated instance survives a supervisor crash even when its
+      // process lease was stale. The observed OS identity wins over the lease.
+      this.state.process = p; this.persist(); owned = true;
     }
     const h = healthResult.status === 'fulfilled' ? healthResult.value : null;
     const health = h?.status === 200 && h.json?.service === 'yuki-computer-agent' && h.json.status === 'ok';
@@ -88,26 +94,51 @@ export class YcaUnit {
     const runningSource = diagnostic?.source ?? null;
     const validTools = diagnostic?.tools && Number.isSafeInteger(diagnostic.tools.count) && diagnostic.tools.count >= 0
       && /^[a-f0-9]{64}$/.test(diagnostic.tools.sha256 ?? '');
+    const engineeringReady = !this.config.companionCardStore || diagnostic?.capabilities?.engineeringCards === true;
     const verified = expected && runningSource?.commit === expected.commit && runningSource.dirty === false
       && validTools && diagnostic.tools.sha256 === expected.tools.sha256 && diagnostic.tools.count === expected.tools.count;
     const deployment = { running: runningSource, target, launched: expected ?? null,
       state: deploymentCode ? 'invalid-target' : !this.config.deploymentRoot ? 'unmanaged' : !verified ? 'unverified' : target?.commit !== expected.commit ? 'update-pending' : 'verified' };
-    return { running: true, owned, authenticated: Boolean(diagnostic), instance: diagnostic?.instance ?? null,
-      pid: p.pid, created: p.created, healthy: Boolean(health && owned && validActivity && !diagnostic.closing && (!expected || verified)), deployment,
+    const nativeLock = readJson(path.join(this.config.runtime, 'bridge.lock'), null);
+    const managedIdentity = Boolean(p.matches && nativeLock?.pid === p.pid && this.state.instance
+      && (!this.state.process || matches(p, this.state.process))
+      && (diagnostic?.instance === this.state.instance || !diagnostic));
+    return { running: true, owned, managedIdentity, authenticated: Boolean(diagnostic), instance: diagnostic?.instance ?? null,
+      pid: p.pid, created: p.created, healthy: Boolean(health && owned && validActivity && engineeringReady && !diagnostic.closing && (!expected || verified)), deployment,
       activity: validActivity ? activity : null, tools: validTools ? diagnostic.tools : null, lastBridge: diagnostic?.lastBridge ?? null,
       lastStop: this.state.lastStop?.pid === p.pid && this.state.lastStop?.created === p.created ? this.state.lastStop : null,
       diagnosticProbe, healthProbe,
-      code: identityChanged ? 'OWNERSHIP_CHANGED' : !diagnostic ? (diagnosticCode ?? 'ACTIVITY_UNKNOWN') : !owned ? 'OBSERVED_UNOWNED' : !validActivity ? 'ACTIVITY_UNKNOWN'
+      code: identityChanged && !owned ? 'OWNERSHIP_CHANGED' : !diagnostic ? (diagnosticCode ?? 'ACTIVITY_UNKNOWN') : !owned ? 'OBSERVED_UNOWNED' : !validActivity ? 'ACTIVITY_UNKNOWN'
         : expected && !runningSource ? 'DEPLOYMENT_OBSERVATION_PENDING' : expected && !verified ? 'DEPLOYMENT_UNVERIFIED'
-          : !health ? 'HEALTH_FAILED' : deploymentCode };
+          : !engineeringReady ? 'ENGINEERING_CAPABILITY_UNAVAILABLE' : !health ? 'HEALTH_FAILED' : deploymentCode };
   }
-  async start({ commit = null, recovery = false, instance = null } = {}) {
+  async start({ commit = null, recovery = false, instance = null, exactCommit = false } = {}) {
     const before = await this.observe();
     if (before.running) { if (before.owned) return; throw fail(before.code ?? 'OBSERVED_UNOWNED'); }
     const pinnedCommit = commit ?? (recovery ? this.state.deployment?.commit : null);
     if ((commit || recovery) && this.config.deploymentRoot && !pinnedCommit) throw fail('DEPLOYMENT_EXPLICIT_START_REQUIRED');
-    const deployment = this.config.deploymentRoot
-      ? await verifyDeployment(this.config.deploymentRoot, pinnedCommit ?? undefined, this.config.node) : null;
+    let deployment = null;
+    if (this.config.deploymentRoot) {
+      const database = inspectCardDatabase(this.config.companionCardStore);
+      if (exactCommit) {
+        deployment = await verifyDeployment(this.config.deploymentRoot, pinnedCommit, this.config.node);
+        assertCardCompatibility(deployment.databaseContract, database);
+      } else {
+        let selected = null;
+        try { selected = deploymentTarget(this.config.deploymentRoot)?.commit; } catch { /* Other sealed candidates remain eligible. */ }
+        try {
+          deployment = await compatibleDeployment(this.config.deploymentRoot, this.config.companionCardStore,
+            [pinnedCommit, selected], this.config.node);
+        } catch (error) {
+          if (error.code !== 'DB_COMPATIBLE_RELEASE_UNAVAILABLE') throw error;
+          if (recovery && Date.now() - (this.state.lastCompatibilityAttempt ?? 0) < 3_600_000) throw error;
+          this.state.lastCompatibilityAttempt = Date.now(); this.persist();
+          await prepareDeployment({ repo: this.config.repo, root: this.config.deploymentRoot, node: this.config.node });
+          deployment = await compatibleDeployment(this.config.deploymentRoot, this.config.companionCardStore,
+            [pinnedCommit, selected], this.config.node);
+        }
+      }
+    }
     if (this.config.implementationLaunchAuthority) {
       if (!deployment?.launcherFlags?.implementationLaunchAuthority) throw fail('DEPLOYMENT_LAUNCHER_UNSUPPORTED');
       new FileImplementationLaunchAuthoritySource(this.config.implementationLaunchAuthority, {
@@ -153,12 +184,14 @@ export class YcaUnit {
       const lock = readJson(lockFile);
       // Unknown legacy locks remain untouched. Only our exact previous lock can
       // be retired after verifying its process is gone and no active orphan run exists.
-      if (!this.state.lock || lock.token !== this.state.lock.token || lock.pid !== this.state.process?.pid) throw fail('LEGACY_RUNTIME_LOCK');
+      if (!Number.isSafeInteger(lock.pid) || lock.pid < 1) throw fail('RUNTIME_LOCKED');
       if ((await this.host.inspect(this.config.node, [], lock.pid)).length) throw fail('RUNTIME_LOCKED');
       const runs = readJson(path.join(this.config.runtime, 'sessions.json'), { runs: {} }).runs;
       for (const r of Object.values(runs)) {
         if (['queued', 'running', 'stopping'].includes(r.status) && r.pid && (await this.host.inspect(this.config.node, [], r.pid)).length) throw fail('ORPHAN_TASK_REVIEW');
       }
+      const before = statSync(lockFile);
+      if (readJson(lockFile).token !== lock.token || statSync(lockFile).mtimeMs !== before.mtimeMs) throw fail('RUNTIME_LOCKED');
       renameSync(lockFile, `${lockFile}.control-backup-${Date.now()}`);
     }
     this.state.instance = instance ?? randomUUID(); this.state.token = randomBytes(32).toString('hex'); this.state.process = null; this.state.lock = null;
@@ -211,7 +244,17 @@ export class YcaUnit {
       if (current.running === false) return;
     }
     if (current.running !== true) throw fail('ACTIVITY_UNKNOWN');
-    if (!current.owned) throw fail(current.code === 'ACTIVITY_UNKNOWN' ? 'ACTIVITY_UNKNOWN' : 'OBSERVED_UNOWNED');
+    if (current.code === 'ACTIVITY_UNKNOWN') throw fail('ACTIVITY_UNKNOWN');
+    if (!current.owned) {
+      if (!current.managedIdentity || !confirm) throw fail(current.managedIdentity ? 'ACTIVE_TASKS' : 'OBSERVED_UNOWNED');
+      // No control token is available for this known managed orphan. Only an
+      // explicit Owner interruption may terminate its verified OS process tree.
+      await this.host.terminateTree(this.config.node, this.markers(), current);
+      this.state.lastStop = { instance: this.state.instance, pid: current.pid, created: current.created,
+        at: new Date().toISOString(), state: 'interrupted', code: 'MANAGED_ORPHAN_REPLACED' };
+      this.persist();
+      return;
+    }
     if (handedOff && (current.authenticated !== true || current.instance !== this.state.instance
         || Boolean(current.deployment?.launched) !== Boolean(this.state.deployment)
         || (this.state.deployment && (current.deployment?.running?.commit !== this.state.deployment.commit
@@ -251,6 +294,11 @@ export class YcaUnit {
         if (!p) { record('stopped'); return; }
         if (!matches(p, this.state.process) || !matches(p, current)) throw fail('OWNERSHIP_CHANGED');
         await sleep(200);
+      }
+      if (confirm) {
+        await this.host.terminateTree(this.config.node, this.markers(), current);
+        record('interrupted', 'STOP_TIMEOUT');
+        return;
       }
       throw fail('STOP_TIMEOUT');
     } catch (error) {
@@ -328,7 +376,7 @@ export class TunnelUnit {
       if (status.json?.control_plane_tunnel_id !== profile.control_plane.tunnel_id) throw fail('HEALTH_IDENTITY_MISMATCH');
       result = tunnelHealth(health, ready, system.json);
     } catch { base = null; }
-    return { running: true, owned, pid: actual.pid, created: actual.created, ...result, recentEvents: recent, communication: communicationEvidence,
+    return { running: true, owned, managedIdentity: true, pid: actual.pid, created: actual.created, ...result, recentEvents: recent, communication: communicationEvidence,
       code: !owned ? 'OBSERVED_UNOWNED' : result.code, ui: base ? base + '/ui' : null };
   }
   async start() {
@@ -359,17 +407,21 @@ export class TunnelUnit {
     if (result.code !== 0) throw fail('NATIVE_CONNECT_FAILED');
     await this.observe();
   }
-  async stop() {
+  async stop(confirm = false) {
     const o = await this.observe();
     if (!o.running) return;
-    if (!o.owned) throw fail('OBSERVED_UNOWNED');
+    if (!o.owned && (!confirm || !o.managedIdentity)) throw fail('OBSERVED_UNOWNED');
     await this.verifyVersion();
     // Recheck both native metadata and OS creation identity immediately before
     // native stop (which, in 0.0.15, otherwise only trusts the saved PID).
     const { p } = this.records();
-    if (p.pid !== o.pid || !matches((await this.host.inspect(this.config.bin, [], p.pid))[0], this.state.process)) throw fail('OWNERSHIP_CHANGED');
+    const actual = (await this.host.inspect(this.config.bin, ['run', '--profile-dir', path.dirname(this.config.profile), '--profile', this.config.alias], p.pid))[0];
+    if (p.pid !== o.pid || !matches(actual, o) || o.owned && !matches(actual, this.state.process)) throw fail('OWNERSHIP_CHANGED');
     const result = await this.invoke(this.config.bin, ['runtimes', 'stop', this.config.alias, '--json'], { cwd: path.dirname(this.config.bin), env: tunnelRuntimeEnv(this.config.stateRoot), timeout: 15_000, limit: 2 * 1024 * 1024 });
     if (result.code !== 0) throw fail('NATIVE_STOP_FAILED');
-    if ((await this.host.inspect(this.config.bin, [], o.pid)).length) throw fail('STOP_TIMEOUT');
+    if ((await this.host.inspect(this.config.bin, [], o.pid)).length) {
+      if (!confirm) throw fail('STOP_TIMEOUT');
+      await this.host.terminateTree(this.config.bin, ['run', '--profile-dir', path.dirname(this.config.profile), '--profile', this.config.alias], o);
+    }
   }
 }

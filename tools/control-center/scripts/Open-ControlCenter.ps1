@@ -14,7 +14,9 @@ if (-not (Test-ControlCenter)) {
     $taskStart = [Diagnostics.ProcessStartInfo]::new($taskConfig.pwsh)
     $taskStart.UseShellExecute = $false
     $taskStart.CreateNoWindow = $true
-    foreach ($taskArg in @('-NoLogo','-NoProfile','-NonInteractive','-WindowStyle','Hidden','-File',(Join-Path $PSScriptRoot 'Run-Supervisor.ps1'),'-Config',[IO.Path]::GetFullPath($Config))) { $taskStart.ArgumentList.Add($taskArg) }
+    $taskStableRunner = Join-Path $taskConfig.stateDir 'launcher/Run-Supervisor.ps1'
+    $taskRunner = if (Test-Path -LiteralPath $taskStableRunner) { $taskStableRunner } else { Join-Path $PSScriptRoot 'Run-Supervisor.ps1' }
+    foreach ($taskArg in @('-NoLogo','-NoProfile','-NonInteractive','-WindowStyle','Hidden','-File',$taskRunner,'-Config',[IO.Path]::GetFullPath($Config))) { $taskStart.ArgumentList.Add($taskArg) }
     $taskProcess = [Diagnostics.Process]::Start($taskStart)
     $taskDeadline = [DateTime]::UtcNow.AddSeconds(20)
     while (-not (Test-ControlCenter)) {

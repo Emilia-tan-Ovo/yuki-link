@@ -3,10 +3,22 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync, lstatSync, realpathSync, readdirSync } from 'node:fs';
 import { fail, readJson, saveJson, run } from './common.js';
+import { assertCardCompatibility, inspectCardDatabase } from './database-compatibility.js';
 
 const bridgePath = 'tools/codex-session-bridge';
 const sha = value => /^[a-f0-9]{40}$/.test(value ?? '');
 const hash = file => createHash('sha256').update(readFileSync(file)).digest('hex');
+const legacyDatabaseContract = Object.freeze({ minimumReadable: 0, maximumReadable: 5, migrationTarget: 5, relativePath: 'engineering-cards.sqlite' });
+async function probeDatabaseContract(node, cwd) {
+  const file = path.join(cwd, 'src/database-contract.js');
+  if (!existsSync(file)) return legacyDatabaseContract;
+  const url = pathToFileURL(file).href;
+  const output = await command(node, ['--input-type=module', '-e', `const {companionCardDatabase}=await import(${JSON.stringify(url)}); console.log(JSON.stringify(companionCardDatabase));`], cwd, 'DB_CONTRACT_INVALID');
+  let contract;
+  try { contract = JSON.parse(output); } catch { throw fail('DB_CONTRACT_INVALID'); }
+  assertCardCompatibility(contract, { configured: false });
+  return contract;
+}
 export function uiArtifactHash(cwd) {
   const root = path.join(cwd, 'dist/harness-ui');
   try {
@@ -124,19 +136,43 @@ export async function verifyDeployment(root, commit, node = process.execPath) {
   const version = await command(node, ['--version'], manifest.cwd, 'DEPLOYMENT_NODE_UNSUPPORTED');
   if (Number(/^v(\d+)\./.exec(version)?.[1]) !== manifest.nodeMajor) throw fail('DEPLOYMENT_NODE_CHANGED');
   if (JSON.stringify(await probe(node, manifest.cwd)) !== JSON.stringify(manifest.tools)) throw fail('DEPLOYMENT_PROBE_FAILED');
+  const databaseContract = await probeDatabaseContract(node, manifest.cwd);
+  if (manifest.databaseContract && JSON.stringify(manifest.databaseContract) !== JSON.stringify(databaseContract)) throw fail('DB_CONTRACT_CHANGED');
   if (manifest.launcherFlags) {
     const observed = await probeLauncherFlags(node, manifest.cwd);
     for (const [flag, supported] of Object.entries(manifest.launcherFlags)) {
       if (observed[flag] !== supported) throw fail('DEPLOYMENT_LAUNCHER_CHANGED');
     }
   }
-  return { ...manifest, launcherFlags: {
+  return { ...manifest, databaseContract, launcherFlags: {
     implementationLaunchAuthority: manifest.launcherFlags?.implementationLaunchAuthority === true,
     reviewLaunchAuthority: manifest.launcherFlags?.reviewLaunchAuthority === true,
     workflowAgentAuthority: manifest.launcherFlags?.workflowAgentAuthority === true,
     executionAuthority: manifest.launcherFlags?.executionAuthority === true,
     companionCardStore: manifest.launcherFlags?.companionCardStore === true,
   } };
+}
+
+export async function compatibleDeployment(root, directory, preferred = [], node = process.execPath,
+  { requiredVersion = null, exclude = [] } = {}) {
+  const database = inspectCardDatabase(directory);
+  if (requiredVersion !== null && database.configured) database.version = Math.max(database.version, requiredVersion);
+  let sealed = [];
+  try { sealed = readdirSync(path.join(root, 'manifests'), { withFileTypes: true }); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const commits = [...new Set([...preferred.filter(sha), ...sealed
+    .filter(entry => entry.isFile() && /^[a-f0-9]{40}\.json$/.test(entry.name)).map(entry => entry.name.slice(0, 40))])]
+    .filter(commit => !exclude.includes(commit));
+  for (const commit of commits) {
+    try {
+      const deployment = await verifyDeployment(root, commit, node);
+      assertCardCompatibility(deployment.databaseContract, database);
+      return deployment;
+    } catch (error) {
+      if (error.code === 'DB_STRUCTURE_INVALID') throw error;
+    }
+  }
+  throw fail('DB_COMPATIBLE_RELEASE_UNAVAILABLE');
 }
 
 function claimPreparation(root) {
@@ -191,6 +227,7 @@ export async function prepareDeployment({ repo, root, expectedCommit = null, nod
       // schema did not know a new launcher flag. Explicit preparation refreshes
       // this derived metadata; normal start still requires the sealed claim.
       manifest.launcherFlags = await probeLauncherFlags(node, manifest.cwd);
+      manifest.databaseContract = await probeDatabaseContract(node, manifest.cwd);
       await cleanRelease(root, commit);
       saveJson(manifestFile, manifest);
       dependencies = 'reused';
@@ -207,14 +244,15 @@ export async function prepareDeployment({ repo, root, expectedCommit = null, nod
       const nodeMajor = Number(/^v(\d+)\./.exec(version)?.[1]);
       if (nodeMajor < 24 || !Number.isInteger(nodeMajor)) throw fail('DEPLOYMENT_NODE_UNSUPPORTED');
       manifest = { version: 1, commit, branch, cwd, entry: path.join(cwd, 'src/main.js'), lockHash: hash(path.join(cwd, 'package-lock.json')),
-        tools: await probe(node, cwd), launcherFlags: await probeLauncherFlags(node, cwd), nodeMajor, uiHash: uiArtifactHash(cwd) };
+        tools: await probe(node, cwd), launcherFlags: await probeLauncherFlags(node, cwd),
+        databaseContract: await probeDatabaseContract(node, cwd), nodeMajor, uiHash: uiArtifactHash(cwd) };
       await cleanRelease(root, commit);
       saveJson(buildFile, { commit, stage: 'published' });
       saveJson(manifestFile, manifest);
       await readDeployment(root, commit);
       dependencies = 'installed';
     }
-    saveJson(path.join(root, 'selected.json'), { commit });
+    // A prepared candidate is not selected until a health-gated switch commits.
     return { ...manifest, dependencies };
     } catch (e) {
     // A timed-out Git/npm child may have descendants. Keep the lock as evidence;

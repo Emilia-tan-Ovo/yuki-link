@@ -52,7 +52,9 @@ export class ProfileTunnelUnit {
     };
     const owned = matches(actual, this.state.process);
     if (!owned) return {
-      running: true, owned: false, healthy: false, pid: actual.pid, created: actual.created,
+      running: true, owned: false, managedIdentity: !profileCode && (() => {
+        try { return Number(readFileSync(this.runtimeFiles().pid, 'utf8').trim()) === actual.pid; } catch { return false; }
+      })(), healthy: false, pid: actual.pid, created: actual.created,
       code: 'OBSERVED_UNOWNED', controlPlane: { state: 'unknown' },
       communication: { state: 'unknown-or-expired', at: null, source: 'bounded native log tail' },
     };
@@ -142,12 +144,12 @@ export class ProfileTunnelUnit {
     throw fail('STARTUP_TIMEOUT');
   }
 
-  async stop() {
+  async stop(confirm = false) {
     const current = await this.observe();
     if (!current.running) return;
-    if (!current.owned) throw fail(current.code ?? 'OBSERVED_UNOWNED');
+    if (!current.owned && (!confirm || !current.managedIdentity)) throw fail(current.code ?? 'OBSERVED_UNOWNED');
     const actual = (await this.host.inspect(this.config.bin, this.markers(), current.pid))[0];
-    if (!actual || !matches(actual, current) || !matches(actual, this.state.process)) throw fail('OWNERSHIP_CHANGED');
+    if (!actual || !matches(actual, current) || current.owned && !matches(actual, this.state.process)) throw fail('OWNERSHIP_CHANGED');
 
     try { process.kill(current.pid, 'SIGTERM'); }
     catch (error) { if (error?.code !== 'ESRCH') throw fail('STOP_OUTCOME_UNKNOWN'); }
@@ -156,6 +158,7 @@ export class ProfileTunnelUnit {
       if (!(await this.host.inspect(this.config.bin, this.markers(), current.pid)).length) return;
       await sleep(200);
     }
+    if (confirm) { await this.host.terminateTree(this.config.bin, this.markers(), current); return; }
     throw fail('STOP_TIMEOUT');
   }
 }
