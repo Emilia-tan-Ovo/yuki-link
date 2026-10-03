@@ -1,0 +1,4 @@
+# Test-only dependencies; runtime uses the enabled Hermes host's web dependencies.
+fastapi==0.133.1
+httpx==0.28.1
+PyYAML==6.0.3

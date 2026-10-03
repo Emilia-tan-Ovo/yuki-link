@@ -34,6 +34,7 @@ export interface EvidenceGap {
 }
 
 export interface FileFact {
+  layer?: 'staged' | 'unstaged' | 'untracked';
   path: string;
   old_path: string | null;
   change_kind: 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'type-changed' | 'unmerged' | 'unknown';
@@ -104,16 +105,16 @@ export class ChangesSource {
 
   private line(cwd: string, args: string[]) { return this.run(cwd, args).toString('utf8').trim(); }
 
-  fileIdentity(ticketId: string, baseline: ComparisonBaseline, head: string, file: FileFact) {
+  fileIdentity(ticketId: string, baseline: ComparisonBaseline, head: string, file: FileFact, scope: unknown = null) {
     let metadata: unknown = null;
     // Metadata is part of the revision even when the content budget prevents a hash.
     const target = path.resolve(baseline.worktree_root, file.path);
     if (inside(baseline.worktree_root, target)) {
       try { const s = lstatSync(target); metadata = [s.dev, s.ino, s.size, s.mtimeMs, s.ctimeMs, s.mode, s.nlink]; } catch { /* absent */ }
     }
-    return { file_id: digest([ticketId, file.path, file.old_path]),
+    return { file_id: digest([ticketId, file.path, file.old_path, file.layer ?? null]),
       revision: digest([ticketId, baseline.repository_id, baseline.repository_instance_id, baseline.worktree_root,
-        baseline.commit_oid, head, file.path, file.old_path, file.change_kind, file.fact_source, file.content, metadata]) };
+        baseline.commit_oid, head, file.path, file.old_path, file.change_kind, file.fact_source, file.content, metadata, scope]) };
   }
 
   patch(baseline: ComparisonBaseline, file: FileFact): PatchContent {
@@ -129,7 +130,8 @@ export class ChangesSource {
     if (!file.content.sha256) return result('truncated');
     try {
       // Revalidate the destination before invoking Git; never follow special files.
-      const current = this.content(baseline.worktree_root, file.path).content;
+      const current = file.layer === 'staged' ? this.indexContent(baseline.worktree_root, file.path)
+        : this.content(baseline.worktree_root, file.path).content;
       if (!current.sha256 || current.sha256 !== file.content.sha256) return result('stale');
       let patch: string;
       if (file.fact_source === 'filesystem-untracked') {
@@ -144,15 +146,20 @@ export class ChangesSource {
       } else {
         // Bound both sides before diffing. Blob reads bypass filters/textconv and symlink contents.
         const oldPath = file.old_path ?? file.path;
-        const entry = this.run(baseline.worktree_root, ['ls-tree', '-z', baseline.commit_oid, '--', oldPath]).toString('utf8');
+        const entry = this.run(baseline.worktree_root, file.layer === 'unstaged'
+          ? ['ls-files', '--stage', '-z', '--', oldPath]
+          : ['ls-tree', '-z', baseline.commit_oid, '--', oldPath]).toString('utf8');
         if (entry) {
-          const match = /^(100644|100755) blob ([a-f0-9]{40,64})\t/.exec(entry);
+          const match = file.layer === 'unstaged' ? /^(100644|100755) ([a-f0-9]{40,64}) 0\t/.exec(entry)
+            : /^(100644|100755) blob ([a-f0-9]{40,64})\t/.exec(entry);
           if (!match) return result('protected', 'special-baseline-entry');
           if (Number(this.line(baseline.worktree_root, ['cat-file', '-s', match[2]])) > MAX_CONTENT) return result('too-large');
           if (this.run(baseline.worktree_root, ['cat-file', 'blob', match[2]], MAX_CONTENT + 1).includes(0)) return result('binary');
         }
         patch = this.run(baseline.worktree_root, ['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--no-relative',
-          '--src-prefix=a/', '--dst-prefix=b/', '--submodule=short', '-M', '-U3', baseline.commit_oid, '--', ...paths], MAX_PATCH + 1).toString('utf8');
+          '--src-prefix=a/', '--dst-prefix=b/', '--submodule=short', '-M', '-U3',
+          ...(file.layer === 'staged' ? ['--cached', baseline.commit_oid] : file.layer === 'unstaged' ? [] : [baseline.commit_oid]),
+          '--', ...paths], MAX_PATCH + 1).toString('utf8');
         // Git records are LF-delimited; CR and Unicode separators can occur inside hunk text.
         // Match complete unprefixed records, allowing one trailing CR for CRLF transport.
         if (patch.split('\n').some(record => {
@@ -244,8 +251,9 @@ export class ChangesSource {
         entries: start.entries, integrity: start.integrity, observed_at: observedAt }, integrity: start.integrity };
   }
 
-  private tracked(root: string, baseline: string) {
-    const tokens = splitZero(this.run(root, ['diff', '--name-status', '-z', '-M', baseline, '--']));
+  private tracked(root: string, baseline: string, layer?: 'staged' | 'unstaged') {
+    const tokens = splitZero(this.run(root, ['diff', '--no-ext-diff', '--no-textconv', '--name-status', '-z', '-M',
+      ...(layer === 'staged' ? ['--cached', baseline] : layer === 'unstaged' ? [] : [baseline]), '--']));
     const result: Array<{ status: string; path: string; old_path: string | null }> = [];
     for (let index = 0; index < tokens.length;) {
       let status = tokens[index++]!, first: string;
@@ -256,6 +264,40 @@ export class ChangesSource {
       else result.push({ status, old_path: null, path: slash(first) });
     }
     return result;
+  }
+
+  private indexContent(root: string, relative: string): FileFact['content'] {
+    const missing: FileFact['content'] = { state: 'unavailable', size: null, sha256: null, preview: null, content_type: 'unknown' };
+    if (protectedPath(relative)) return missing;
+    const entry = this.run(root, ['ls-files', '--stage', '-z', '--', relative]).toString('utf8');
+    const match = /^(100644|100755) ([a-f0-9]{40,64}) 0\t/.exec(entry);
+    if (!match) return missing;
+    const size = Number(this.line(root, ['cat-file', '-s', match[2]]));
+    if (size > MAX_CONTENT) return { ...missing, state: 'truncated', size };
+    const bytes = this.run(root, ['cat-file', 'blob', match[2]], MAX_CONTENT + 1);
+    return { state: 'observed', size, sha256: createHash('sha256').update(bytes).digest('hex'),
+      preview: null, content_type: bytes.includes(0) ? 'binary' : 'text' };
+  }
+
+  inspectCurrent(baseline: ComparisonBaseline): CurrentChangesFacts {
+    const identity = this.currentIdentity(baseline);
+    const head = identity.payload.head;
+    const current = this.inspect({ ...baseline, commit_oid: head });
+    const kinds: Record<string, FileFact['change_kind']> = { A: 'added', M: 'modified', D: 'deleted', R: 'renamed', C: 'copied', T: 'type-changed', U: 'unmerged' };
+    const files: FileFact[] = current.files.filter(file => file.fact_source === 'filesystem-untracked')
+      .map(file => ({ ...file, layer: 'untracked' }));
+    for (const layer of ['staged', 'unstaged'] as const) {
+      for (const item of this.tracked(baseline.worktree_root, head, layer)) {
+        const content: FileFact['content'] = item.old_path && protectedPath(item.old_path)
+          ? { state: 'unavailable', size: null, sha256: null, preview: null, content_type: 'unknown' }
+          : layer === 'staged' ? this.indexContent(baseline.worktree_root, item.path)
+          : this.content(baseline.worktree_root, item.path).content;
+        files.push({ path: item.path, old_path: item.old_path, layer, change_kind: kinds[item.status[0]!] ?? 'unknown',
+          fact_source: 'git-tree-to-worktree', content });
+      }
+    }
+    return { ...current, files: files.slice(0, MAX_FILES), commits: [], gaps: [...current.gaps, ...identity.gaps,
+      ...(files.length > MAX_FILES ? [{ code: 'CONTENT_TRUNCATED', source: 'git' as const, impact: 'current file limit' }] : [])] };
   }
 
   currentIdentity(baseline: ComparisonBaseline): CurrentGitIdentity {

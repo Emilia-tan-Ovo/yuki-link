@@ -38,6 +38,7 @@ export class CodexSource implements Source {
   runs(sessionId: string): SourceRun[] {
     return Object.values(this.manager.store.state.runs).filter(r => r.session_id === sessionId).map(r => ({
       id: r.id, session_id: r.session_id, created_at: r.created_at, model: r.model, reasoning: r.reasoning,
+      service_tier: r.service_tier ?? 'default', backend_kind: 'codex',
       status: r.status, config_source: r.config_source, timeout_ms: r.timeout_ms ?? null, exit_code: r.exit_code,
       started_at: r.started_at ?? null, finished_at: r.finished_at ?? null, error: (r as SourceRun).error ?? null,
     }));
