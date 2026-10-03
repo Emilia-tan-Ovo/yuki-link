@@ -26,6 +26,26 @@ export class WindowsHost {
     if (result.code !== 0) throw fail('PROCESS_OBSERVATION_FAILED');
     return JSON.parse(result.output);
   }
+  async inspectRedirectorService(executable, markers, root, childPid, port) {
+    if (!root?.pid || !root.created || !Number.isSafeInteger(childPid) || childPid <= 0) return null;
+    const result = await run(this.pwsh, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', fileURLToPath(new URL('../scripts/process.ps1', import.meta.url))], {
+      input: JSON.stringify({ action: 'inspect-venv-child', executable, markers,
+        rootPid: root.pid, rootCreated: root.created, childPid, port }), timeout: 5000,
+    });
+    if (result.code !== 0) throw fail('PROCESS_OBSERVATION_FAILED');
+    const value = JSON.parse(result.output);
+    return value?.matches === true && value.pid === childPid && typeof value.created === 'string' ? value : null;
+  }
+  async terminateRedirectorTree(executable, markers, root, service, port) {
+    if (!root?.pid || !root.created || !service?.pid || !service.created) throw fail('OWNERSHIP_CHANGED');
+    const result = await run(this.pwsh, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', fileURLToPath(new URL('../scripts/process.ps1', import.meta.url))], {
+      input: JSON.stringify({ action: 'terminate-venv-tree', executable, markers, rootPid: root.pid,
+        rootCreated: root.created, childPid: service.pid, childCreated: service.created, port }), timeout: 20_000,
+    });
+    if (result.code !== 0 || result.output.trim() === 'unknown')
+      throw Object.assign(fail('STOP_OUTCOME_UNKNOWN'), { operationOutcome: 'unknown' });
+    if (result.output.trim() !== 'true') throw fail('OWNERSHIP_CHANGED');
+  }
   async free(port) {
     return new Promise((resolve, reject) => {
       const socket = net.createServer();
