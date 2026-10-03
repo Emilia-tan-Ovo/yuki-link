@@ -56,23 +56,32 @@ export class WindowsMcpUnit {
     }
     // A matching command line and an MCP greeting are public observations.
     // Persisted spawn identity is the independent managed provenance.
-    const portOwner = await this.host.portOwner?.(this.config.port);
-    const portBound = portOwner === p.pid;
     const source = matches(p, this.state.process) || matches(p, this.state.managedProcess);
+    const portOwner = await this.host.portOwner?.(this.config.port);
+    // A venv python.exe can be a redirector: its direct base-Python child
+    // owns the socket. Resolve that child afresh from OS facts on each probe;
+    // never persist a previous port owner as authority.
+    let serviceProcess = portOwner === p.pid ? { pid: p.pid, created: p.created } : null;
+    if (!serviceProcess && source && Number.isSafeInteger(portOwner) && portOwner > 0) {
+      const child = await this.host.inspectRedirectorService?.(this.config.python, this.markers(), p, portOwner, this.config.port);
+      if (child?.matches && child.pid === portOwner && child.created) serviceProcess = { pid: child.pid, created: child.created };
+    }
+    const portBound = Boolean(serviceProcess);
     const owned = matches(p, this.state.process) && portBound;
     const identityChanged = Boolean(this.state.process && !owned);
     // Readiness is a live observation. A successful startup probe is never a
     // permanent health lease for a process that later stops serving MCP.
     const result = await this.probe(this.config.port);
-    const probe = { ...result, at: new Date().toISOString(), pid: p.pid, created: p.created };
+    const probe = { ...result, at: new Date().toISOString(), pid: serviceProcess?.pid ?? null, created: serviceProcess?.created ?? null };
     if (this.state.lastProbe?.healthy !== probe.healthy || this.state.lastProbe?.code !== probe.code
-      || this.state.lastProbe?.pid !== p.pid || Date.now() - Date.parse(this.state.lastProbe?.at ?? 0) > 30_000) {
+      || this.state.lastProbe?.pid !== probe.pid || this.state.lastProbe?.created !== probe.created
+      || Date.now() - Date.parse(this.state.lastProbe?.at ?? 0) > 30_000) {
       this.state.lastProbe = probe; this.persist();
     }
     return {
       running: true, owned, managedIdentity: Boolean(p.matches && portBound && source),
       healthy: Boolean(owned && probe?.healthy), pid: p.pid, created: p.created,
-      mcpProbe: probe, serverVersion: probe?.serverVersion ?? null,
+      serviceProcess, mcpProbe: probe, serverVersion: probe?.serverVersion ?? null,
       code: identityChanged ? 'OWNERSHIP_CHANGED' : !owned ? 'OBSERVED_UNOWNED' : !probe?.healthy ? (probe?.code ?? 'MCP_NOT_READY') : null,
     };
   }
@@ -132,26 +141,39 @@ export class WindowsMcpUnit {
     if (!current.owned && (!confirm || !current.managedIdentity)) throw fail(current.code ?? 'OBSERVED_UNOWNED');
     const found = (await this.host.inspect(this.config.python, this.markers(), current.pid))[0];
     if (!found || !matches(found, current) || current.owned && !matches(found, this.state.process)) throw fail('OWNERSHIP_CHANGED');
-    if (await this.host.portOwner?.(this.config.port) !== current.pid
+    const service = current.serviceProcess;
+    if (!service || await this.host.portOwner?.(this.config.port) !== service.pid
       || !matches(found, this.state.process) && !matches(found, this.state.managedProcess)) throw fail('OWNERSHIP_CHANGED');
-
-    try { process.kill(current.pid, 'SIGTERM'); }
-    catch (error) { if (error?.code !== 'ESRCH') throw fail('STOP_OUTCOME_UNKNOWN'); }
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      if (!(await this.host.inspect(this.config.python, this.markers(), current.pid)).length) {
-        this.state.lastStop = { at: new Date().toISOString(), pid: current.pid, created: current.created, state: 'stopped' };
-        this.persist();
-        return;
+    if (service.pid !== current.pid) {
+      // The helper rechecks root, child, parent relation, births and socket
+      // owner before Kill(true) on the opened managed root handle.
+      if (!this.host.terminateRedirectorTree) throw fail('OWNERSHIP_CHANGED');
+      await this.host.terminateRedirectorTree(this.config.python, this.markers(), current, service, this.config.port);
+    } else {
+      try { process.kill(current.pid, 'SIGTERM'); }
+      catch (error) { if (error?.code !== 'ESRCH') throw fail('STOP_OUTCOME_UNKNOWN'); }
+    }
+    const stopped = async deadline => {
+      while (Date.now() < deadline) {
+        const remaining = (await this.host.inspect(this.config.python, this.markers(), current.pid))[0];
+        if (remaining && !matches(remaining, current)) throw fail('OWNERSHIP_CHANGED');
+        if (!remaining && await this.host.portOwner?.(this.config.port) === null) {
+          try { await this.host.free(this.config.port); return true; } catch { /* still bound */ }
+        }
+        await sleep(200);
       }
-      await sleep(200);
-    }
-    if (confirm) {
+      return false;
+    };
+    const deadline = Date.now() + 15_000;
+    let complete = await stopped(deadline);
+    let state = 'stopped';
+    if (!complete && confirm && service.pid === current.pid) {
       await this.host.terminateTree(this.config.python, this.markers(), current);
-      this.state.lastStop = { at: new Date().toISOString(), pid: current.pid, created: current.created, state: 'interrupted' };
-      this.persist();
-      return;
+      complete = await stopped(Date.now() + 10_000);
+      state = 'interrupted';
     }
-    throw fail('STOP_TIMEOUT');
+    if (!complete) throw Object.assign(fail('STOP_OUTCOME_UNKNOWN'), { operationOutcome: 'unknown' });
+    this.state.lastStop = { at: new Date().toISOString(), pid: current.pid, created: current.created, state };
+    this.persist();
   }
 }
