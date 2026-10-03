@@ -637,7 +637,22 @@ export class Supervisor {
       }
       let failure = null, restartCommit = null;
       let ycaPlan = null;
-      const failed = new Map();
+      let restartBefore = null;
+      const failed = new Map(), stopFailures = new Set();
+      const verifiedLateStart = key => {
+        if (failed.get(key)?.code !== 'STARTUP_TIMEOUT' || stopFailures.has(key)) return false;
+        // The command has not marked this timeout blocked yet; use the same
+        // strict process/deployment proof as later automatic reconciliation.
+        const state = { ...this.state.units[key], blocked: 'STARTUP_TIMEOUT' }, observed = this.observations[key];
+        const ready = key === 'yca' ? recoveredYcaStartup(state, observed) : recoveredTunnelStartup(state, observed);
+        if (!ready) return false;
+        if (action === 'restart') {
+          const before = restartBefore?.[key];
+          if (!before || ![true, false].includes(before.running)
+            || before.running === true && (!before.pid || !before.created || sameProcess(observed, before))) return false;
+        }
+        return true;
+      };
       try {
         await this.assertMutationLeases(affected);
         if (this.state.updateTransaction) await this.rollbackUpdate(this.state.updateTransaction);
@@ -654,12 +669,12 @@ export class Supervisor {
             ycaPlan = await this.units.yca.preflightStart?.({ commit });
           }
         }
-        if (action === 'restart' && operation) {
-          this.state.operations[operation.operationId].restartBefore = Object.fromEntries(affected.map(key => {
+        if (action === 'restart') {
+          restartBefore = Object.fromEntries(affected.map(key => {
             const o = this.observations[key];
             return [key, { running: o?.running ?? null, pid: o?.pid ?? null, created: o?.created ?? null }];
           }));
-          this.persist();
+          if (operation) { this.state.operations[operation.operationId].restartBefore = restartBefore; this.persist(); }
         }
         if (['stop', 'restart'].includes(action)) {
           const expectedYca = structuredClone(this.observations.yca);
@@ -672,13 +687,17 @@ export class Supervisor {
               if (this.observations[key]?.running === false) continue;
               this.busy = `${key}:stop`; await this.assertMutationLease(key); await this.mutateUnit(key, 'stop', confirm, key === 'yca' ? expectedYca : null);
               this.events.add(key, 'stopped');
-            } catch (error) { failed.set(key, error); }
+            } catch (error) { failed.set(key, error); stopFailures.add(key); }
           }
         }
         if (action !== 'stop') {
           this.operationPhase(operation, 'start-roots');
           for (const key of affected) {
             if (failed.has(key)) continue;
+            if (dependencies[key] && failed.get(dependencies[key])?.code === 'STARTUP_TIMEOUT') {
+              await this.observe();
+              if (verifiedLateStart(dependencies[key])) failed.delete(dependencies[key]);
+            }
             if (dependencies[key] && failed.has(dependencies[key])) { failed.set(key, fail(dependencyCodes[key][0])); continue; }
             if (action === 'restart' && !requested.includes(key) && desiredBefore[key] !== 'running') continue;
             await this.observe();
@@ -704,6 +723,7 @@ export class Supervisor {
         this.operationPhase(operation, 'verify');
         await this.observe();
         for (const key of affected) {
+          if (verifiedLateStart(key)) failed.delete(key);
           const o = this.observations[key];
           if (!failed.has(key) && action === 'stop' && o?.running !== false) failed.set(key, fail('STOP_OUTCOME_UNKNOWN'));
           if (!failed.has(key) && action !== 'stop' && this.state.units[key].desired === 'running'
