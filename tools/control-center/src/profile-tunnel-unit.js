@@ -119,18 +119,21 @@ export class ProfileTunnelUnit {
       cwd: path.dirname(this.config.bin), shell: false, windowsHide: true, detached: true,
       stdio: ['ignore', 'ignore', 'ignore'],
     });
+    let launchedProcess = null;
     child.once('exit', code => {
       this.events.add('windowsTunnel', 'process-exit', null, code);
-      if (this.state.process?.pid === child.pid) {
+      if (launchedProcess && this.state.process?.pid === launchedProcess.pid
+        && this.state.process.created === launchedProcess.created) {
         this.state.lastExit = { at: new Date().toISOString(), exitCode: code };
-        this.persist({ unitExit: { id: 'windowsTunnel', process: this.state.process, lastExit: this.state.lastExit } });
+        this.persist({ unitExit: { id: 'windowsTunnel', process: launchedProcess, lastExit: this.state.lastExit } });
       }
     });
     await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', () => reject(fail('SPAWN_FAILED'))); });
     child.unref();
 
     const actual = (await this.host.inspect(this.config.bin, this.markers(), child.pid))[0];
-    if (!actual?.matches) throw fail('OWNERSHIP_CHANGED');
+    if (!actual?.matches || actual.pid !== child.pid || !actual.created) throw fail('OWNERSHIP_CHANGED');
+    launchedProcess = { pid: actual.pid, created: actual.created };
     this.state.process = actual;
     this.persist();
 
