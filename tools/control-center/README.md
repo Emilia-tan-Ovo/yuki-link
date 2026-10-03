@@ -2,7 +2,7 @@
 
 独立 Node Supervisor + 原生网页，固定支持本机已核实的 **HTTP YCA + tunnel-client 0.0.15 managed runtime**。不更改 MCP 传输，不管理其他插件，不增加 MCP 工具。先看 [baseline](../../docs/control-center-baseline.md)。
 
-本分支新增四组件 lifecycle/recovery 与 schema 兼容检查，源码及隔离测试仍需独立 Review；正式部署、真实 tunnel/ChatGPT 链路和重启登录验收尚未进行。下文带日期的旧现场记录是历史结果，不能当作本分支的新验收结果。
+本分支新增四组件 lifecycle/recovery 与 schema 兼容检查，已完成独立 Review 和隔离测试验证（Control Center 126/126）；正式部署、真实 tunnel/ChatGPT 链路和重启登录验收尚未进行。下文带日期的旧现场记录是历史结果，不能当作本分支的新验收结果。过程与验证边界见 [本地交付记录](../../.workflow/history/lifecycle-recovery.md)。
 
 ## 打开与本机配置
 
