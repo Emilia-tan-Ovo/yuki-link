@@ -172,3 +172,25 @@ Owner 已授权从固定点实施 #178，完成最小定向测试、本地 commi
 已实现 `tools/codex-session-bridge/src/engineering/` 的独立装配、journal 绑定授权/验证、loopback IPC 与工程事件/两种 diff 投影，以及 `tools/hermes-yer-adapter/` 的工具 facade、受信 backend、SDK pane 和短路由 Skill。保留原 store/journal/launcher/生命周期，不加载通用 ComputerTools 或 Companion；普通操作由 Hermes 原生工具承担。配置和源码能力边界见 [适配器 README](../../tools/hermes-yer-adapter/README.md)。
 
 YER fixture、implementation Notes-bound dispatch、current/cumulative diff、Python adapter、Desktop SDK SSR/cursor 和既有生命周期定向验证已有结果；旧 shutdown 用例 1 项失败在固定点同处复现。当前只声明候选实现和隔离测试：没有安装/部署、没有真实 Hermes UI 点击或真实模型/Review/Acceptance 验收，没有接管现有 runtime，也没有 push。
+
+
+## Acceptance 补充：Codex 原生审批语义与 app-server（2026-10-04）
+
+真实 Hermes→YER→Sylvia 验收首次暴露出一个实现期 fixture 未覆盖的问题：YER 冻结并展示的 Owner 权限是 `danger-full-access + on-request + user`，但旧 `codex exec --json` 执行面的真实 rollout `turn_context` 将 `approval_policy` 归一成了 `never`。直接移除 `default_permissions` 覆盖后仍可复现，因此根因不是单个 CLI 配置项，而是 native session 选错了 Codex 执行面。
+
+本票据的修复边界固定为 executor seam，不改 YER/work-item/Workflow 状态机：
+
+- 历史 legacy session 继续使用旧 `codex exec --json --ignore-user-config` 路径，维持既有只读/never 兼容语义。
+- 新 native permission session 改用 `codex app-server --stdio`，通过 `thread/start|resume` 与 `turn/start` 显式传递冻结的 `approvalPolicy`、`approvalsReviewer`、`sandbox`、model/reasoning/service tier。
+- app-server 的 thread/turn/item/token 事件在 executor 边界翻译为现有 bridge/Harness 事件格式，上层 SessionManager、YER projection 和 Hermes pane 不复制第二套事件模型。
+- Hermes 尚未提供逐命令审批 UI 时，app-server approval callback 必须显式 decline/error 并留事件，不自动批准，也不得再静默退化为 `never`；后续交互式 approve UI 属于独立增强。
+- stop 使用 `turn/interrupt` 与 owned process-tree stop，仍由现有 durable run 生命周期收口。
+
+定向回归：`permissions.test.js` 8/8、`executor-app-server.test.js` 2/2；连同 `bridge.test.js`、workflow/implementation/review launcher 的组合回归共 71/71，`npm run typecheck` exit 0。
+
+真实链路证据：
+
+- Hermes 原生工具在 YER 启动前修改隔离仓库 `baseline.txt`，YER 随后在 current/cumulative changes 中观察到该修改；
+- Hermes `yer-engineering` 插件真实派发 fresh acceptance work item/session/run；
+- 实际 Codex rollout thread `01a1034f-1d8a-7422-b211-7e11aca7ec5e` 的 `turn_context` 为 `gpt-6-astra / xhigh / approval_policy=on-request / approvals_reviewer=user / danger-full-access`，旧 `never` 漂移已消失；
+- YER 事件投影包含真实 thread/turn、command/tool 与 Git diff；验收达到所需证据后由 `stop_engineering_run` 主动停止模型，未让其扩展验收范围。

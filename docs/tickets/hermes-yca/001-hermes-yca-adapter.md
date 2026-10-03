@@ -153,3 +153,10 @@ Issue 已将旧 AC1 的“普通机械操作走 YCA direct tools”替换为 Her
 - `review_policy=delegated`，接收方 `main` / Ticket Main。session 由受管工作项绑定决定，Owner native permissions；本轮未创建/改绑 session，也未把原 implementation 的历史 runtime ID 冒充 repair ID。本轮 durable work-item/session/generation/run 与 usage 回执由上层补录；本地 handoff 表示 awaiting_verification，不宣称 runtime transition 已成功。
 - Commit 主题：`fix: 修复 YER 源身份与差异缓存的三项审查问题`；精确 SHA 写入 post-commit checkpoint。本轮终点为最小定向测试、本地 commit 与 handoff，未 push、部署或自行启动 reviewer。
 - 下一步：Ticket Main 核对修复 commit/delta、原 finding 与日志，补录本 run 终态/usage，按同根生命周期关联原 repair 与独立 focused reviewer；复核前不将 finding 标为 verified，也不推进 Acceptance。
+
+
+### Acceptance finding：native permission 必须走 Codex app-server（2026-10-04）
+
+真实 Hermes→YER→Sylvia 验收发现旧 `codex exec --json` 无法忠实重放 Owner 的 `on-request` 审批语义；YER 记录 `on-request` 时，真实 Codex rollout 曾为 `never`。本票因此将 **native permission session** 切换到 `codex app-server --stdio`，legacy 历史 session 保留旧 exec 路径。
+
+修复后真实 rollout 已观测为 `gpt-6-astra / xhigh / on-request / user / danger-full-access`；相关回归 71/71 + typecheck 通过。该 acceptance finding 在合入前仍需一次 fresh independent Review 复核本次 executor delta；通过后方可把 #178 整体验收记为完成。
