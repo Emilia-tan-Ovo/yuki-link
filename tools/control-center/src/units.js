@@ -238,7 +238,8 @@ export class YcaUnit {
       this.events.add('yca', 'process-exit', null, code);
       if (this.state.instance === launchedInstance) {
         const stderrTail = code === 0 ? null : crashTail(stderrChunks);
-        this.state.lastExit = { at: new Date().toISOString(), exitCode: code, ...(stderrTail ? { stderrTail } : {}) }; this.persist();
+        this.state.lastExit = { at: new Date().toISOString(), exitCode: code, ...(stderrTail ? { stderrTail } : {}) };
+        this.persist({ unitExit: { id: 'yca', process: this.state.process, instance: launchedInstance, lastExit: this.state.lastExit } });
       }
     });
     await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', () => reject(fail('SPAWN_FAILED'))); });

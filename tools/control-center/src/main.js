@@ -86,7 +86,7 @@ try {
   }, 5000);
   events.add('supervisor', 'ready');
   console.log(`Control Center http://127.0.0.1:${c.port}`);
-  const close = () => { clearInterval(timer); server.close(); server.closeIdleConnections(); };
+  const close = () => { supervisor.closed = true; clearInterval(timer); server.close(); server.closeIdleConnections(); };
   process.on('SIGINT', close); process.on('SIGTERM', close);
 } catch (e) {
   clearInterval(timer); server?.close();

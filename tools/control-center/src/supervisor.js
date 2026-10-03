@@ -64,12 +64,42 @@ export class Supervisor {
       this.state.autoRecovery = true;
       this.persist();
     }
-    this.units = createUnits(this.state, () => this.persist()); this.observations = {}; this.tail = Promise.resolve();
+    this.units = createUnits(this.state, change => this.persist(change)); this.observations = {};
+    this.tail = Promise.resolve(); this.lockTail = Promise.resolve();
     this.lastTick = clock(); this.busy = null; this.codex = { cli: '未检查', account: '未检查', inference: '未在此验证' };
     this.deploymentLatest = null;
   }
-  persist({ expectedLeases = null } = {}) {
-    mutationScope.getStore()?.lock.assertHeld();
+  persist({ expectedLeases = null, unitExit = null } = {}) {
+    if (unitExit) {
+      const scope = mutationScope.getStore();
+      if (!scope?.active || scope.supervisor !== this) {
+        if (this.closed) return;
+        // The unit callback updated its local object before calling persist.
+        // Restore the durable value until this event is verified and merged.
+        const local = this.state.units[unitExit.id]?.ownership;
+        try {
+          if (local) local.lastExit = readJson(this.stateFile, defaults()).units?.[unitExit.id]?.ownership?.lastExit ?? null;
+        } catch { return; }
+        void this.serial(() => this.withMutationLock(async () => {
+          if (this.closed) return;
+          const durable = readJson(this.stateFile, defaults());
+          const current = durable.units?.[unitExit.id]?.ownership;
+          if (!current || current.process?.pid !== unitExit.process?.pid || current.process?.created !== unitExit.process?.created
+            || (unitExit.instance && current.instance !== unitExit.instance)) return;
+          current.lastExit = unitExit.lastExit;
+          saveJson(this.stateFile, durable);
+          if (local?.process?.pid === unitExit.process?.pid && local?.process?.created === unitExit.process?.created) {
+            local.lastExit = unitExit.lastExit;
+          }
+        })).catch(error => { try { this.events.add('supervisor', 'check-failed', error.code ?? 'CHECK_FAILED'); } catch { /* closing */ } });
+        return;
+      }
+    }
+    const scope = mutationScope.getStore();
+    // A callback inherited from a completed action cannot publish that old
+    // snapshot. Exit callbacks pass unitExit and take the merge path above.
+    if (scope?.supervisor === this && !scope.active) return;
+    if (scope?.active) scope.lock.assertHeld();
     const durable = readJson(this.stateFile, null);
     for (const id of ids) {
       const latest = durable?.units?.[id]?.ownership?.lease ?? null;
@@ -110,14 +140,23 @@ export class Supervisor {
   }
   async withMutationLock(fn) {
     const held = mutationScope.getStore();
-    if (held?.supervisor === this) { held.lock.assertHeld(); return fn(); }
-    const lock = await acquireMutationLock(this.stateFile, this.units.yca.config?.pwsh);
+    if (held?.supervisor === this && held.active) { held.lock.assertHeld(); return fn(); }
+    // This instance can receive a late callback while a previous scope is
+    // still releasing. Queue it behind release rather than treating our own
+    // reservation as a foreign owner.
+    const previous = this.lockTail;
+    let finish;
+    this.lockTail = new Promise(resolve => { finish = resolve; });
+    await previous;
     try {
-      const result = await mutationScope.run({ supervisor: this, lock }, fn);
-      lock.assertHeld();
-      return result;
-    }
-    finally { await lock.release(); }
+      const lock = await acquireMutationLock(this.stateFile, this.units.yca.config?.pwsh, this.identity);
+      const scope = { supervisor: this, lock, active: true };
+      try {
+        const result = await mutationScope.run(scope, fn);
+        lock.assertHeld();
+        return result;
+      } finally { scope.active = false; await lock.release(); }
+    } finally { finish(); }
   }
   async mutateUnit(id, method, ...args) {
     const held = mutationScope.getStore();

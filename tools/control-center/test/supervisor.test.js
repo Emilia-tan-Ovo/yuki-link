@@ -164,6 +164,49 @@ test('mutation mutex is released by the OS after its holder crashes', async t =>
   await lock.release();
 });
 
+test('a helper crash during a pending unit callback keeps the live Node reservation', async t => {
+  const f = setup(t);
+  const lock = await acquireMutationLock(f.options.stateFile);
+  let finish;
+  const callback = new Promise(resolve => { finish = resolve; });
+  try {
+    process.kill(lock.helperPid);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    lock.assertHeld();
+    await assert.rejects(acquireMutationLock(f.options.stateFile), { code: 'LIVE_SUPERVISOR_OWNER' });
+    finish();
+    await callback;
+  } finally { await lock.release(); }
+  const next = await acquireMutationLock(f.options.stateFile);
+  await next.release();
+});
+
+test('late process exit merges under a new authority without publishing an old snapshot', async t => {
+  const f = setup(t), m = f.manager;
+  const oldProcess = { pid: 5432, created: 'old-runtime' };
+  let releaseLate, callbackDone;
+  const gate = new Promise(resolve => { releaseLate = resolve; });
+  const called = new Promise(resolve => { callbackDone = resolve; });
+  await m.withMutationLock(async () => {
+    m.state.units.windowsMcp.ownership.process = oldProcess;
+    m.persist();
+    setImmediate(async () => {
+      await gate;
+      m.persist({ unitExit: { id: 'windowsMcp', process: oldProcess, lastExit: { exitCode: 9 } } });
+      callbackDone();
+    });
+  });
+  releaseLate(); await called; await m.tail;
+  assert.equal(JSON.parse(readFileSync(m.stateFile, 'utf8')).units.windowsMcp.ownership.lastExit.exitCode, 9);
+  const replacement = JSON.parse(readFileSync(m.stateFile, 'utf8'));
+  replacement.units.windowsMcp.ownership.process = { pid: 5432, created: 'replacement-runtime' };
+  replacement.units.windowsMcp.ownership.lastExit = { exitCode: 0 };
+  writeFileSync(m.stateFile, JSON.stringify(replacement), 'utf8');
+  m.persist({ unitExit: { id: 'windowsMcp', process: oldProcess, lastExit: { exitCode: 7 } } });
+  await m.tail;
+  assert.equal(JSON.parse(readFileSync(m.stateFile, 'utf8')).units.windowsMcp.ownership.lastExit.exitCode, 0);
+});
+
 test('foreign lease written after the last caller check still blocks the unit boundary', async t => {
   const { manager: m, units: u } = setup(t);
   m.identity = { instance: 'old-owner' };

@@ -95,7 +95,7 @@ export class WindowsMcpUnit {
       this.events.add('windowsMcp', 'process-exit', null, code);
       if (this.state.process?.pid === child.pid) {
         this.state.lastExit = { at: new Date().toISOString(), exitCode: code };
-        this.persist();
+        this.persist({ unitExit: { id: 'windowsMcp', process: this.state.process, lastExit: this.state.lastExit } });
       }
     });
     await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', () => reject(fail('SPAWN_FAILED'))); });
