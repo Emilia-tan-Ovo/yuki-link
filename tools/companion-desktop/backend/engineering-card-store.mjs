@@ -1,7 +1,8 @@
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { entrySchema, EngineeringEntryStore } from './engineering-entry-store.mjs';
 
 const schema = `CREATE TABLE cards (card_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending','confirmed','revoked')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE card_revisions (card_id TEXT NOT NULL REFERENCES cards(card_id), revision INTEGER NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(card_id,revision));
@@ -50,6 +51,24 @@ CREATE TABLE IF NOT EXISTS card_work_stop_targets (
  PRIMARY KEY(card_id,revision,target_key),
  FOREIGN KEY(card_id,revision) REFERENCES card_work_stops(card_id,revision));`;
 const targetIdentity = content => content?.ticket?.url ?? (content?.resolution?.status === 'explicit_new_requirement' ? `${content.repository}/new-requirement` : null);
+const pendingDedupeIdentity = content => digest({
+  original:content?.original?.trim() ?? '',
+  projectKey:content?.projectKey ?? null,
+  repository:content?.repository ?? null,
+  resolutionStatus:content?.resolution?.status ?? null,
+  ticket:content?.ticket ? {
+    id:content.ticket.id ?? null, repository:content.ticket.repository ?? null, number:content.ticket.number ?? null,
+    marker:content.ticket.marker ?? null, url:content.ticket.url ?? null, scopeDigest:content.ticket.scope?.digest ?? null
+  }:null,
+  candidates:Array.isArray(content?.candidates) ? content.candidates.map(value=>({
+    id:value?.id ?? null, repository:value?.repository ?? null, number:value?.number ?? null,
+    marker:value?.marker ?? null, url:value?.url ?? null
+  })).sort((a,b)=>(a.url ?? '').localeCompare(b.url ?? '')):null,
+  desiredPhase:content?.desiredPhase ?? null,
+  endpoint:content?.endpoint ?? null,
+  extraAuthorization:content?.extraAuthorization ?? null,
+  preparationAuthorization:content?.preparationAuthorization ?? null
+});
 const authorizationValid = (kind, value, repository) => {
   if (value === false) return true;
   if (value?.requested !== true || value.status !== 'explicit' || typeof value.target !== 'string') return false;
@@ -72,35 +91,54 @@ export const preparationAuthorized = content => {
 };
 const confirmable = content => content && typeof content.original === 'string' && content.original.trim() && content.projectKey && content.repository && ['verified_existing','explicit_new_requirement'].includes(content.resolution?.status) && (content.resolution.status !== 'verified_existing' || content.ticket?.url) && content.desiredPhase && ['design-only','to-pr'].includes(content.endpoint) && phaseSupported(content) && authorizationValid('merge',content.extraAuthorization?.merge,content.repository) && authorizationValid('deploy',content.extraAuthorization?.deploy,content.repository);
 
-export class EngineeringCardStore {
+export class EngineeringCardStore extends EngineeringEntryStore {
   constructor(directory) {
+    super();
     mkdirSync(directory, { recursive: true });
     this.db = new DatabaseSync(join(directory, 'engineering-cards.sqlite'));
     try {
       this.db.exec('PRAGMA foreign_keys=ON');
+      this.db.exec('PRAGMA busy_timeout=5000');
       const version = this.db.prepare('PRAGMA user_version').get().user_version;
-      if (version > 5) throw Error('工程卡片数据库版本过高。');
-      if (version === 0) { this.db.exec('BEGIN IMMEDIATE'); try { this.db.exec(schema + ' PRAGMA user_version=1; COMMIT'); } catch (error) { this.db.exec('ROLLBACK'); throw error; } }
-      if (version < 2) { this.db.exec('BEGIN IMMEDIATE'); try {
-        this.db.exec(dispatchSchema);
-        this.db.prepare('INSERT INTO card_store_identity VALUES (?)').run(randomUUID());
-        this.db.exec('PRAGMA user_version=2; COMMIT');
-      } catch (error) { this.db.exec('ROLLBACK'); throw error; } }
-      if (version < 3) { this.db.exec('BEGIN IMMEDIATE'); try {
-        this.db.exec(preparationSchema + ' PRAGMA user_version=3; COMMIT');
-      } catch (error) { this.db.exec('ROLLBACK'); throw error; } }
-      if (version < 4) { this.db.exec('BEGIN IMMEDIATE'); try {
-        this.db.exec(continuationSchema + ' PRAGMA user_version=4; COMMIT');
-      } catch (error) { this.db.exec('ROLLBACK'); throw error; } }
-      if (version < 5) { this.db.exec('BEGIN IMMEDIATE'); try {
-        this.db.exec(controlSchema + ' PRAGMA user_version=5; COMMIT');
-      } catch (error) { this.db.exec('ROLLBACK'); throw error; } }
-      for (const table of ['cards','card_revisions','card_confirmations','card_observations','card_store_identity','card_dispatches','card_preparations','card_continuations','card_continuation_actions','card_work_stops','card_work_stop_targets']) if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) throw Error('工程卡片数据库结构不完整。');
+      if (version > 6) throw Error('工程卡片数据库版本过高。');
+      if (version < 6) {
+        // Reserve the only SQLite writer slot before taking the snapshot. A
+        // separate read-only connection can VACUUM INTO while this transaction
+        // blocks new writers; migration then commits without a backup/write gap.
+        this.db.exec('BEGIN IMMEDIATE');
+        try {
+          if (version > 0) {
+            const backup = join(directory, `engineering-cards.pre-v6-${Date.now()}-${randomUUID()}.sqlite`);
+            if (existsSync(backup)) throw Error('工程卡片数据库备份路径已存在。');
+            const snapshot = new DatabaseSync(join(directory, 'engineering-cards.sqlite'), { readOnly: true });
+            try { snapshot.exec(`VACUUM INTO '${backup.replaceAll("'", "''")}'`); }
+            finally { snapshot.close(); }
+          }
+          if (version === 0) this.db.exec(schema);
+          if (version < 2) {
+            this.db.exec(dispatchSchema);
+            this.db.prepare('INSERT INTO card_store_identity VALUES (?)').run(randomUUID());
+          }
+          if (version < 3) this.db.exec(preparationSchema);
+          if (version < 4) this.db.exec(continuationSchema);
+          if (version < 5) this.db.exec(controlSchema);
+          this.db.exec(entrySchema + ' PRAGMA user_version=6; COMMIT');
+        } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      }
+      for (const table of ['cards','card_revisions','card_confirmations','card_observations','card_store_identity','card_dispatches','card_preparations','card_continuations','card_continuation_actions','card_work_stops','card_work_stop_targets','card_entry_previews','card_entry_actions','card_confirmation_origins','card_result_subscriptions','card_result_events','card_result_deliveries','card_preparation_consumptions']) if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) throw Error('工程卡片数据库结构不完整。');
       this.storeId = this.db.prepare('SELECT store_id FROM card_store_identity').get()?.store_id;
       if (!this.storeId) throw Error('工程卡片数据库身份缺失。');
     } catch (error) { this.db.close(); throw error; }
   }
-  transaction(fn) { this.db.exec('BEGIN IMMEDIATE'); try { const result = fn(); this.db.exec('COMMIT'); return result; } catch (error) { this.db.exec('ROLLBACK'); throw error; } }
+  transaction(fn, guard) {
+    if (this.inTransaction) { const result=fn(); if (guard && guard() !== true) throw Error('微信授权已失效。'); return result; }
+    this.db.exec('BEGIN IMMEDIATE'); this.inTransaction=true;
+    try { const result=fn(); if (result?.then) throw Error('卡库事务不能跨 await。');
+      if (guard && guard() !== true) throw Error('微信授权已失效。');
+      this.db.exec('COMMIT'); return result;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    finally { this.inTransaction=false; }
+  }
   get(cardId) {
     const row = this.db.prepare('SELECT * FROM cards WHERE card_id=?').get(cardId);
     if (!row) return null;
@@ -109,22 +147,36 @@ export class EngineeringCardStore {
     const observation = this.db.prepare('SELECT workflow FROM card_observations WHERE card_id=?').get(cardId);
     const dispatch = this.dispatch(cardId,row.revision);
     const value = parse(content.content);
-    return { cardId, revision: row.revision, state: row.state, content: value, confirmation: confirmation ? { ...confirmation, content: parse(confirmation.content) } : null, observedWorkflow: parse(observation?.workflow), dispatchStatus: dispatch?.claimed_at ? 'engineering-received' : dispatch ? dispatch.producer_state : 'not-dispatched', dispatchId: dispatch?.dispatch_id ?? null, preparationStatus: row.state === 'confirmed' && confirmation?.revision === row.revision && preparationAuthorized(value) ? 'authorized' : 'not-authorized', preparationId:this.preparation(cardId,row.revision)?.preparationId ?? null, workStop:this.workStop(cardId,row.revision), createdAt: row.created_at, updatedAt: row.updated_at };
+    return { storeId:this.storeId, cardId, revision: row.revision, state: row.state, content: value, confirmation: confirmation ? { ...confirmation, content: parse(confirmation.content) } : null, observedWorkflow: parse(observation?.workflow), dispatchStatus: dispatch?.claimed_at ? 'engineering-received' : dispatch ? dispatch.producer_state : 'not-dispatched', dispatchId: dispatch?.dispatch_id ?? null, preparationStatus: row.state === 'confirmed' && confirmation?.revision === row.revision && preparationAuthorized(value) ? 'authorized' : 'not-authorized', preparationId:this.preparation(cardId,row.revision)?.preparationId ?? null, workStop:this.workStop(cardId,row.revision), createdAt: row.created_at, updatedAt: row.updated_at };
   }
   revision(cardId, revision) { const row = this.db.prepare('SELECT content,created_at AS createdAt FROM card_revisions WHERE card_id=? AND revision=?').get(cardId,revision); return row ? { cardId, revision, content: parse(row.content), createdAt: row.createdAt } : null; }
-  list() { return this.db.prepare('SELECT card_id FROM cards ORDER BY updated_at DESC LIMIT 30').all().map(row => this.get(row.card_id)); }
-  create(content) {
+  list({history=false,offset=0,limit=30} = {}) {
+    const rows=history ? this.db.prepare("SELECT card_id FROM cards WHERE state='revoked' ORDER BY updated_at DESC,card_id LIMIT ? OFFSET ?").all(limit,offset)
+      : this.db.prepare("SELECT card_id FROM cards WHERE state!='revoked' ORDER BY updated_at DESC,card_id").all();
+    return rows.map(row=>this.get(row.card_id));
+  }
+  create(content, {newTask=false} = {}) {
     if (!content || typeof content.original !== 'string' || !content.original.trim() || content.original.length > 20000) throw Error('工程要求无效。');
     const cardId = randomUUID(), time = now();
-    return this.transaction(() => { this.db.prepare("INSERT INTO cards VALUES (?,1,'pending',?,?)").run(cardId,time,time); this.db.prepare('INSERT INTO card_revisions VALUES (?,1,?,?)').run(cardId,JSON.stringify(content),time); return this.get(cardId); });
+    return this.transaction(() => {
+      if (!newTask) {
+        const identity=pendingDedupeIdentity(content);
+        const existing=this.list().find(card=>card.state==='pending' && pendingDedupeIdentity(card.content)===identity);
+        if (existing) return existing;
+      }
+      this.db.prepare("INSERT INTO cards VALUES (?,1,'pending',?,?)").run(cardId,time,time); this.db.prepare('INSERT INTO card_revisions VALUES (?,1,?,?)').run(cardId,JSON.stringify(content),time); return this.get(cardId); });
   }
   edit(cardId, expectedRevision, content) {
     if (!content || typeof content.original !== 'string' || !content.original.trim() || content.original.length > 20000) throw Error('工程要求无效。');
     return this.transaction(() => { const current = this.get(cardId); if (!current) throw Error('工程卡片不存在。'); if (current.revision !== expectedRevision || current.state === 'revoked' || this.dispatch(cardId,expectedRevision)?.claimed_at || this.preparation(cardId,expectedRevision) || this.workStop(cardId,expectedRevision)) return { conflict: true, card: current }; const revision = expectedRevision + 1, time = now(); this.db.prepare('INSERT INTO card_revisions VALUES (?,?,?,?)').run(cardId,revision,JSON.stringify(content),time); this.db.prepare("UPDATE cards SET revision=?,state='pending',updated_at=? WHERE card_id=?").run(revision,time,cardId); if (targetIdentity(current.content) !== targetIdentity(content)) this.db.prepare('DELETE FROM card_observations WHERE card_id=?').run(cardId); return this.get(cardId); });
   }
-  confirm(cardId, expectedRevision, actionSource, expectedDigest = null) {
-    if (actionSource !== 'desktop-user-action') throw Error('工程卡片确认来源无效。');
+  /** @param {string|null} [expectedDigest] */
+  confirm(cardId, expectedRevision, actionSource, expectedDigest = null, options = {}) {
+    if (actionSource !== 'desktop-user-action' && actionSource !== 'wechat-user-action') throw Error('工程卡片确认来源无效。');
+    if (actionSource === 'wechat-user-action' && typeof options.context?.guard !== 'function') throw Error('工程卡片确认来源无效。');
     return this.transaction(() => { const current = this.get(cardId); if (!current) throw Error('工程卡片不存在。'); if (current.revision !== expectedRevision || current.state === 'revoked') return { conflict: true, card: current }; if (expectedDigest && expectedDigest !== digest(current.content)) return { conflict: true, card: current }; if (current.state === 'confirmed') return { card: current, confirmation: current.confirmation }; if (!confirmable(current.content)) return { invalid: true, card: current }; const time = now(); this.db.prepare('INSERT INTO card_confirmations VALUES (?,?,?,?,?)').run(cardId,expectedRevision,time,actionSource,JSON.stringify(current.content)); this.db.prepare("UPDATE cards SET state='confirmed',updated_at=? WHERE card_id=?").run(time,cardId);
+      if (actionSource === 'wechat-user-action') this.saveConfirmationOrigin(current,options.context);
+      if (options.destination) this.subscribeResults(this.get(cardId),options.destination);
       // Legacy revisions without a canonical Issue scope remain confirmed but cannot be dispatched.
       if (current.content.ticket?.scope?.digest && current.content.ticket?.id && current.content.resolution?.status === 'verified_existing') {
         const envelope = { schema_version: 1, card_store_id: this.storeId, card_id: cardId, revision: expectedRevision,
@@ -132,7 +184,7 @@ export class EngineeringCardStore {
           ticket: current.content.ticket, endpoint: current.content.endpoint, desired_phase: current.content.desiredPhase };
         this.db.prepare('INSERT INTO card_dispatches VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(cardId,expectedRevision,'initial-dispatch',envelope.dispatch_id,JSON.stringify(envelope),digest(envelope),'not-dispatched',null,null,null,null,time);
       }
-      const card = this.get(cardId); return { card, confirmation: card.confirmation }; });
+      const card = this.get(cardId); return { card, confirmation: card.confirmation }; },options.context?.guard);
   }
   revoke(cardId, expectedRevision) { return this.transaction(() => { const current = this.get(cardId); if (!current) throw Error('工程卡片不存在。'); if (current.revision !== expectedRevision || current.state === 'revoked' || this.dispatch(cardId,expectedRevision)?.claimed_at || this.preparation(cardId,expectedRevision) || this.workStop(cardId,expectedRevision)) return { conflict: true, card: current }; this.db.prepare("UPDATE cards SET state='revoked',updated_at=? WHERE card_id=?").run(now(),cardId); return { card: this.get(cardId) }; }); }
   dispatch(cardId, revision) { return this.db.prepare("SELECT * FROM card_dispatches WHERE card_id=? AND revision=? AND slot='initial-dispatch'").get(cardId,revision) ?? null; }
@@ -145,7 +197,7 @@ export class EngineeringCardStore {
     const envelope = parse(row.envelope);
     if (row.envelope_digest !== digest(envelope) || envelope.content_digest !== digest(card.content)
       || card.confirmation?.revision !== revision || card.confirmation?.confirmedAt !== envelope.confirmation.confirmed_at
-      || card.confirmation?.actionSource !== 'desktop-user-action') return { conflict: true };
+      || !this.trustedConfirmation(card)) return { conflict: true };
     this.db.prepare("UPDATE card_dispatches SET claimed_at=?,claim=?,claim_digest=? WHERE card_id=? AND revision=? AND slot='initial-dispatch'")
       .run(now(),JSON.stringify(claim),digest(claim),cardId,revision);
     return { deduplicated: false, claim };
@@ -161,7 +213,7 @@ export class EngineeringCardStore {
   beginPreparation(cardId, revision, marker) { return this.transaction(() => {
     const card = this.get(cardId);
     if (!card || card.revision !== revision || card.preparationStatus !== 'authorized'
-      || card.confirmation?.revision !== revision || digest(card.confirmation.content) !== digest(card.content))
+      || card.confirmation?.revision !== revision || !this.trustedConfirmation(card))
       return { conflict: true };
     const prior = this.preparation(cardId,revision);
     if (prior) return prior.marker === marker && prior.payloadDigest === digest(card.content) ? prior : { conflict: true };
@@ -248,11 +300,13 @@ export class EngineeringCardStore {
   assertWorkAllowed(cardId,revision) {
     if (this.workStop(cardId,revision)) throw Error('COMPANION_WORK_STOPPED');
   }
-  requestWorkStop(cardId,revision,controlId,actionSource='desktop-user-action') { return this.transaction(() => {
+  requestWorkStop(cardId,revision,controlId,actionSource='desktop-user-action',context=null) { return this.transaction(() => {
     const card=this.get(cardId);
     if (!card || card.revision!==revision || card.state!=='confirmed'
-      || card.confirmation?.revision!==revision || actionSource!=='desktop-user-action'
+      || card.confirmation?.revision!==revision || !this.trustedConfirmation(card)
+      || !['desktop-user-action','wechat-user-action'].includes(actionSource)
       || typeof controlId!=='string' || !/^[0-9a-f-]{36}$/iu.test(controlId)) return {conflict:true};
+    if (actionSource==='wechat-user-action') this.validateEntryPreview(card,context);
     const existing=this.workStop(cardId,revision);
     if (existing) return {stop:existing,deduplicated:true};
     if (this.db.prepare('SELECT 1 FROM card_work_stops WHERE control_id=?').get(controlId)) return {conflict:true};
@@ -264,7 +318,7 @@ export class EngineeringCardStore {
     this.db.prepare('INSERT INTO card_work_stops VALUES (?,?,?,?,?,?,?,1)').run(
       cardId,revision,controlId,digest(card.confirmation.content),actionSource,now(),JSON.stringify(refs));
     return {stop:this.workStop(cardId,revision),deduplicated:false};
-  }); }
+  },context?.guard); }
   workStopTargets(cardId,revision) { return this.db.prepare('SELECT * FROM card_work_stop_targets WHERE card_id=? AND revision=?').all(cardId,revision)
     .map(row=>({...row,target:parse(row.target),attempt:parse(row.attempt)})); }
   claimWorkStopTarget(cardId,revision,key,target) { return this.transaction(() => {

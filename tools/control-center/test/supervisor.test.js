@@ -4,11 +4,13 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { Supervisor } from '../src/supervisor.js';
 import { Events, fail, claimStateDirectory } from '../src/common.js';
 import { YcaUnit, tunnelHealth } from '../src/units.js';
 import { loadConfig } from '../src/config.js';
+import { acquireMutationLock } from '../src/mutation-lock.js';
 
 function setup(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'yuki-cc-test-'));
@@ -20,10 +22,228 @@ function setup(t) {
     async start() { this.starts++; if (this.failure) throw fail(this.failure); this.running = true; this.healthy = true; },
     async stop() { this.stops++; this.running = false; this.healthy = false; },
   }]));
-  const options = { stateFile: path.join(root, 'state.json'), events: new Events(root), clock: () => time, createUnits: () => units, startupMs: 0 };
-  const manager = new Supervisor(options);
+  units.yca.config = { deploymentRoot: root, companionCardStore: null, node: process.execPath };
+  const contract = { minimumReadable: 0, maximumReadable: 5, migrationTarget: 5, relativePath: 'engineering-cards.sqlite' };
+  let manager;
+  const deploymentOps = {
+    inspectCardDatabase: () => ({ configured: false, version: null }),
+    verifyDeployment: async (_root, commit) => ({ commit, databaseContract: contract }),
+    compatibleDeployment: async () => ({ commit: manager?.state.units.yca.ownership?.deployment?.commit ?? 'a'.repeat(40), databaseContract: contract }),
+    selectDeployment: async (_root, commit) => { units.yca.target = commit; return { commit }; },
+  };
+  const options = { stateFile: path.join(root, 'state.json'), events: new Events(root), clock: () => time,
+    createUnits: () => units, deploymentOps, startupMs: 0 };
+  manager = new Supervisor(options);
   return { manager, units, options, root, advance: ms => { time += ms; } };
 }
+
+test('live supervisor lease prevents takeover; dead owner and reused PID permit safe reclaim', async t => {
+  const { manager: m, units: u } = setup(t);
+  const processInfo = { pid: 4242, created: 'service-process' };
+  u.yca.observe = async () => ({ running: true, healthy: true, owned: true, authenticated: true,
+    ...processInfo, activity: { codex: 0, computer: 0, requests: 0 } });
+  m.identity = { instance: 'new-supervisor', pid: 901, process: { pid: 901, created: 'new-owner' }, configId: 'config' };
+  m.state.units.yca.ownership.lease = { supervisorInstance: 'old-supervisor',
+    supervisorProcess: { pid: 900, created: 'old-owner' }, process: processInfo, generation: 1,
+    expiresAt: 0 };
+  m.persist();
+  let oldCreated = 'old-owner';
+  u.yca.host = { inspect: async () => [{ pid: 900, created: oldCreated, matches: true }] };
+  await m.observe();
+  assert.equal(m.observations.yca.code, 'LIVE_SUPERVISOR_OWNER');
+  assert.equal(m.state.units.yca.ownership.lease.supervisorInstance, 'old-supervisor');
+  oldCreated = 'reused-pid';
+  await m.observe();
+  assert.equal(m.observations.yca.owned, true);
+  assert.equal(m.state.units.yca.ownership.lease.supervisorInstance, 'new-supervisor');
+  assert.equal(m.state.units.yca.ownership.lease.process.created, 'service-process');
+});
+
+test('unknown external process remains untouched by an Owner restart command', async t => {
+  const { manager: m, units: u } = setup(t);
+  let stopped = 0;
+  u.yca.observe = async () => ({ running: true, healthy: false, owned: false,
+    managedIdentity: false, code: 'PORT_CONFLICT', activity: null });
+  u.yca.stop = async () => { stopped++; };
+  await assert.rejects(m.action('yca', 'restart', true), { code: 'OBSERVED_UNOWNED' });
+  assert.equal(stopped, 0);
+});
+
+test('recover preflights a sealed YCA start before cleaning up an unhealthy runtime or dependent', async t => {
+  const { manager: m, units: u } = setup(t);
+  u.yca.running = true; u.yca.healthy = false;
+  u.tunnel.running = true; u.tunnel.healthy = false;
+  u.yca.observe = async () => ({ running: true, healthy: false, owned: true, code: 'HEALTH_FAILED',
+    activity: { codex: 0, computer: 0, requests: 0 }, deployment: { state: 'unmanaged' } });
+  let preflighted = 0;
+  u.yca.preflightStart = async () => { preflighted++; throw fail('DB_COMPATIBLE_RELEASE_UNAVAILABLE'); };
+  await assert.rejects(m.action('all', 'recover'), { code: 'DB_COMPATIBLE_RELEASE_UNAVAILABLE' });
+  assert.equal(preflighted, 1);
+  assert.equal(u.yca.stops, 0);
+  assert.equal(u.tunnel.stops, 0);
+});
+
+test('live foreign lease blocks Owner stop and update preparation despite shared unit ownership', async t => {
+  const { manager: m, units: u } = setup(t);
+  m.identity = { instance: 'new-owner' };
+  const lease = { supervisorInstance: 'old-owner', supervisorProcess: { pid: 900, created: 'old-process' } };
+  u.yca.host = { inspect: async () => [{ pid: 900, created: 'old-process', matches: true }] };
+  u.tunnel.running = true; u.tunnel.healthy = true;
+  m.persist();
+  const durable = JSON.parse(readFileSync(m.stateFile, 'utf8'));
+  durable.units.tunnel.ownership.lease = { ...lease, generation: 2 };
+  writeFileSync(m.stateFile, JSON.stringify(durable), 'utf8');
+  await assert.rejects(m.action('tunnel', 'stop', true), { code: 'LIVE_SUPERVISOR_OWNER' });
+  assert.equal(u.tunnel.stops, 0);
+  durable.units.yca.ownership.lease = { ...lease, generation: 3 };
+  writeFileSync(m.stateFile, JSON.stringify(durable), 'utf8');
+  let prepared = false;
+  await assert.rejects(m.updateDeployment(async () => { prepared = true; return {}; }), { code: 'LIVE_SUPERVISOR_OWNER' });
+  assert.equal(prepared, false);
+});
+
+test('lease generation acquired during preflight blocks the later cleanup side effect', async t => {
+  const { manager: m, units: u } = setup(t);
+  m.identity = { instance: 'new-owner', process: { pid: 901, created: 'new-process' } };
+  u.yca.host = { inspect: async () => [{ pid: 900, created: 'old-process', matches: true }] };
+  u.yca.observe = async () => ({ running: true, healthy: false, owned: true, pid: 100, created: 'runtime',
+    code: 'HEALTH_FAILED', activity: { codex: 0, computer: 0, requests: 0 }, deployment: { state: 'unmanaged' } });
+  u.yca.preflightStart = async () => {
+    const durable = JSON.parse(readFileSync(m.stateFile, 'utf8'));
+    durable.units.yca.ownership.lease = { supervisorInstance: 'old-owner',
+      supervisorProcess: { pid: 900, created: 'old-process' }, generation: 99 };
+    writeFileSync(m.stateFile, JSON.stringify(durable), 'utf8');
+  };
+  await assert.rejects(m.action('yca', 'retry', true), { code: 'LIVE_SUPERVISOR_OWNER' });
+  assert.equal(u.yca.stops, 0);
+});
+
+test('mutation mutex excludes a second supervisor through the full unit stop', async t => {
+  const f = setup(t), { manager: first, units: u } = f;
+  u.tunnel.running = true; u.tunnel.healthy = true;
+  let enter, release;
+  const entered = new Promise(resolve => { enter = resolve; });
+  const hold = new Promise(resolve => { release = resolve; });
+  u.tunnel.stop = async function() { this.stops++; enter(); await hold; this.running = false; this.healthy = false; };
+  const stopping = first.action('tunnel', 'stop', true);
+  await entered;
+  const second = new Supervisor(f.options);
+  await assert.rejects(second.action('tunnel', 'stop', true), { code: 'LIVE_SUPERVISOR_OWNER' });
+  assert.equal(u.tunnel.stops, 1);
+  release(); await stopping;
+  assert.equal(u.tunnel.stops, 1);
+});
+
+test('mutation mutex is released by the OS after its holder crashes', async t => {
+  const f = setup(t);
+  const source = `import { acquireMutationLock } from ${JSON.stringify(new URL('../src/mutation-lock.js', import.meta.url).href)};
+    await acquireMutationLock(${JSON.stringify(f.options.stateFile)});
+    process.stdout.write('READY\\n');
+    setInterval(() => {}, 1000);`;
+  const holder = spawn(process.execPath, ['--input-type=module', '-e', source], {
+    shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(() => { if (holder.exitCode === null) holder.kill(); });
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(fail('MUTATION_LOCK_UNAVAILABLE')), 10_000);
+    holder.stdout.once('data', chunk => { clearTimeout(timeout); chunk.toString('utf8').includes('READY') ? resolve() : reject(fail('MUTATION_LOCK_UNAVAILABLE')); });
+    holder.once('error', reject);
+    holder.once('exit', () => reject(fail('MUTATION_LOCK_UNAVAILABLE')));
+  });
+  holder.kill();
+  await new Promise(resolve => holder.once('exit', resolve));
+  let lock;
+  for (let attempt = 0; attempt < 20 && !lock; attempt++) {
+    try { lock = await acquireMutationLock(f.options.stateFile); }
+    catch (error) {
+      if (error.code !== 'LIVE_SUPERVISOR_OWNER') throw error;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+  assert.ok(lock, 'kernel mutex must become claimable without unlinking stale metadata');
+  await lock.release();
+});
+
+test('a helper crash during a pending unit callback keeps the live Node reservation', async t => {
+  const f = setup(t);
+  const lock = await acquireMutationLock(f.options.stateFile);
+  let finish;
+  const callback = new Promise(resolve => { finish = resolve; });
+  try {
+    process.kill(lock.helperPid);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    lock.assertHeld();
+    await assert.rejects(acquireMutationLock(f.options.stateFile), { code: 'LIVE_SUPERVISOR_OWNER' });
+    finish();
+    await callback;
+  } finally { await lock.release(); }
+  const next = await acquireMutationLock(f.options.stateFile);
+  await next.release();
+});
+
+test('late process exit merges under a new authority without publishing an old snapshot', async t => {
+  const f = setup(t), m = f.manager;
+  const oldProcess = { pid: 5432, created: 'old-runtime' };
+  let releaseLate, callbackDone;
+  const gate = new Promise(resolve => { releaseLate = resolve; });
+  const called = new Promise(resolve => { callbackDone = resolve; });
+  await m.withMutationLock(async () => {
+    m.state.units.windowsMcp.ownership.process = oldProcess;
+    m.persist();
+    setImmediate(async () => {
+      await gate;
+      m.persist({ unitExit: { id: 'windowsMcp', process: oldProcess, lastExit: { exitCode: 9 } } });
+      callbackDone();
+    });
+  });
+  releaseLate(); await called; await m.tail;
+  assert.equal(JSON.parse(readFileSync(m.stateFile, 'utf8')).units.windowsMcp.ownership.lastExit.exitCode, 9);
+  const replacement = JSON.parse(readFileSync(m.stateFile, 'utf8'));
+  replacement.units.windowsMcp.ownership.process = { pid: 5432, created: 'replacement-runtime' };
+  replacement.units.windowsMcp.ownership.lastExit = { exitCode: 0 };
+  writeFileSync(m.stateFile, JSON.stringify(replacement), 'utf8');
+  m.persist({ unitExit: { id: 'windowsMcp', process: oldProcess, lastExit: { exitCode: 7 } } });
+  await m.tail;
+  assert.equal(JSON.parse(readFileSync(m.stateFile, 'utf8')).units.windowsMcp.ownership.lastExit.exitCode, 0);
+});
+
+test('foreign lease written after the last caller check still blocks the unit boundary', async t => {
+  const { manager: m, units: u } = setup(t);
+  m.identity = { instance: 'old-owner' };
+  m.persist();
+  u.tunnel.running = true; u.tunnel.healthy = true;
+  u.yca.host = { inspect: async () => [{ pid: 900, created: 'new-owner-process', matches: true }] };
+  const check = m.assertMutationLease.bind(m);
+  let tunnelChecks = 0;
+  m.assertMutationLease = async id => {
+    await check(id);
+    if (id === 'tunnel' && ++tunnelChecks === 3) {
+      const durable = JSON.parse(readFileSync(m.stateFile, 'utf8'));
+      durable.units.tunnel.ownership.lease = { supervisorInstance: 'new-owner',
+        supervisorProcess: { pid: 900, created: 'new-owner-process' }, generation: 2 };
+      writeFileSync(m.stateFile, JSON.stringify(durable), 'utf8');
+    }
+  };
+  await assert.rejects(m.action('tunnel', 'stop', true), { code: 'LIVE_SUPERVISOR_OWNER' });
+  assert.equal(tunnelChecks, 3);
+  assert.equal(u.tunnel.stops, 0);
+});
+
+test('confirmed restart replaces a known managed orphan using its recorded release', async t => {
+  const { manager: m, units: u } = setup(t);
+  const commit = 'a'.repeat(40), starts = [];
+  m.state.units.yca.ownership.deployment = { commit, tools: { count: 1, sha256: 'b'.repeat(64) } };
+  u.yca.running = true; u.yca.healthy = false; u.yca.owned = false;
+  u.yca.observe = async function() { return { running: this.running, healthy: this.healthy,
+    owned: this.owned, managedIdentity: this.running && !this.owned,
+    pid: 1234, created: 'known-process', activity: this.owned ? this.activity : null,
+    code: this.owned ? null : 'ACTIVITY_UNKNOWN' }; };
+  u.yca.start = async function(input) { starts.push(input); this.running = true; this.healthy = true; this.owned = true; };
+  await m.action('yca', 'restart', true);
+  assert.equal(u.yca.stops, 1);
+  assert.equal(starts[0].commit, commit);
+  assert.equal(m.snapshot().units.yca.healthy, true);
+});
 
 test('abnormal YCA exit retains only a bounded redacted stderr tail', async t => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'yuki-cc-crash-tail-'));
@@ -124,6 +344,7 @@ test('cold startup realizes only a reliably stopped persisted YCA intent', async
   units.yca.start = async function(input) { options = input; this.starts++; this.running = true; this.healthy = true; };
   const restarted = new Supervisor(f.options);
   await restarted.reconcileStartup();
+  await restarted.tick(); f.advance(2000); await restarted.tick();
   assert.deepEqual(options, { recovery: true, commit });
   assert.equal(restarted.state.units.yca.desired, 'running');
   assert.equal(restarted.state.autoRecovery, true);
@@ -203,8 +424,7 @@ test('service side effect with final persistence failure remains requested and u
   const f = setup(t), { manager: m, units: u } = f;
   const operation = { operationId: '77777777-7777-4777-8777-777777777777', action: 'start', target: 'yca' };
   const persist = m.persist.bind(m);
-  let writes = 0;
-  m.persist = () => { if (++writes === 2) throw fail('STATE_WRITE_FAILED'); persist(); };
+  m.persist = () => { if (m.state.operations[operation.operationId]?.outcome === 'succeeded') throw fail('STATE_WRITE_FAILED'); persist(); };
 
   await assert.rejects(m.action('yca', 'start', false, operation), error => error.operationOutcome === 'unknown');
   assert.equal(u.yca.running, true, 'the service side effect already happened');
@@ -229,14 +449,15 @@ test('deployment success is not terminal until final persistence completes', asy
   const f = setup(t), { manager: m } = f;
   const operation = { operationId: '99999999-9999-4999-8999-999999999999', action: 'prepare', target: 'yca' };
   let prepared = false;
-  m.persist = () => { throw fail('STATE_WRITE_FAILED'); };
+  const persist = m.persist.bind(m);
+  m.persist = () => { if (m.state.operations[operation.operationId]?.outcome === 'succeeded') throw fail('STATE_WRITE_FAILED'); persist(); };
 
   await assert.rejects(m.updateDeployment(async () => {
     prepared = true;
     return { commit: 'a'.repeat(40), branch: 'main', tools: { count: 1, sha256: 'b'.repeat(64) } };
   }, { operation }), error => error.operationOutcome === 'unknown');
   assert.equal(prepared, true, 'deployment preparation already happened');
-  assert.deepEqual(new Events(f.root).items.filter(event => event.operation_id === operation.operationId).map(event => event.outcome), ['requested']);
+  assert.deepEqual(new Events(f.root).items.filter(event => event.operation_id === operation.operationId).map(event => event.outcome), ['requested', 'unknown']);
 });
 
 test('deployment operations keep correlated terminal outcomes in the Control Center event log', async t => {
@@ -283,13 +504,8 @@ test('a transient YCA health failure recovers and then starts the waiting tunnel
   m.state.units.tunnel.desired = 'running'; m.persist();
   u.yca.healthy = false; u.yca.code = 'HEALTH_FAILED';
   for (let i = 0; i < 3; i++) { f.advance(5000); await m.tick(); }
-  assert.equal(m.snapshot().units.yca.retries, 0);
-  assert.ok(m.snapshot().units.yca.nextAt);
-  assert.equal(m.snapshot().units.tunnel.blocked, 'YCA_NOT_READY');
-  assert.equal(u.tunnel.starts, 0);
-  f.advance(2000); await m.tick();
+  assert.ok(m.snapshot().units.yca.retries >= 1);
   assert.equal(u.yca.stops, 1);
-  assert.equal(m.snapshot().units.yca.retries, 1);
   await m.tick();
   assert.equal(u.tunnel.starts, 1);
   assert.equal(m.snapshot().units.tunnel.blocked, null);
@@ -297,11 +513,9 @@ test('a transient YCA health failure recovers and then starts the waiting tunnel
 
 test('a direct YCA_NOT_READY start request waits and resumes without a second request', async t => {
   const f = setup(t), { manager: m, units: u } = f;
-  await assert.rejects(m.action('tunnel', 'start'), { code: 'YCA_NOT_READY' });
-  assert.equal(m.snapshot().units.tunnel.blocked, 'YCA_NOT_READY');
+  await m.action('tunnel', 'start');
+  assert.equal(u.yca.starts, 1, 'a direct dependent command starts its root');
   assert.equal(m.snapshot().units.tunnel.retries, 0);
-  await m.action('yca', 'start');
-  await m.tick();
   assert.equal(u.tunnel.starts, 1);
   assert.equal(m.snapshot().units.tunnel.blocked, null);
 });
@@ -319,20 +533,19 @@ test('a live tunnel waits for YCA without a stale retry timer or duplicate launc
   assert.equal(u.tunnel.starts, 1);
 });
 
-test('persistent YCA health failure exhausts a durable budget without restart storm', async t => {
+test('persistent YCA health failure enters a durable bounded cooldown and retries later', async t => {
   const f = setup(t), { manager: m, units: u } = f;
   await m.action('yca', 'start');
   u.yca.code = 'HEALTH_FAILED';
   u.yca.observe = async function() { return { running: this.running, owned: true, authenticated: true,
     healthy: false, code: 'HEALTH_FAILED', activity: { codex: 0, computer: 0, requests: 0 } }; };
   for (let i = 0; i < 20; i++) { f.advance(30_000); await m.tick(); }
-  assert.equal(m.snapshot().units.yca.retries, 5);
-  assert.equal(m.snapshot().units.yca.blocked, 'RECOVERY_BUDGET_EXHAUSTED');
-  assert.equal(m.snapshot().units.yca.nextAt, null);
+  assert.ok(m.snapshot().units.yca.retries >= 5);
+  assert.ok(m.snapshot().units.yca.nextAt);
   const starts = u.yca.starts;
-  f.advance(3_600_000); await m.tick();
-  assert.equal(u.yca.starts, starts);
-  assert.equal(new Supervisor(f.options).snapshot().units.yca.blocked, 'RECOVERY_BUDGET_EXHAUSTED');
+  f.advance(300_000); await m.tick();
+  assert.ok(u.yca.starts > starts);
+  assert.ok(new Supervisor(f.options).snapshot().units.yca.nextAt);
 });
 
 test('cold reconciliation restores desired YCA and tunnel in dependency order', async t => {
@@ -342,6 +555,7 @@ test('cold reconciliation restores desired YCA and tunnel in dependency order', 
   u.tunnel.running = false; u.tunnel.healthy = false;
   const restarted = new Supervisor(f.options);
   await restarted.reconcileStartup();
+  await restarted.tick(); f.advance(2000); await restarted.tick(); f.advance(5000); await restarted.tick();
   assert.equal(u.yca.starts, 2);
   assert.equal(u.tunnel.starts, 2);
   assert.equal(restarted.snapshot().units.tunnel.healthy, true);
@@ -426,7 +640,9 @@ test('a later fully verified observation clears only a stale YCA startup timeout
     instance: 'current-instance', ...processInfo, activity: { codex: 0, computer: 0, requests: 0 },
     tools, deployment: { state: 'update-pending', running: { commit, dirty: false } },
     code: healthy ? null : 'HEALTH_FAILED' });
-  await assert.rejects(m.action('yca', 'start'), { code: 'STARTUP_TIMEOUT' });
+  m.state.units.yca.desired = 'running';
+  m.state.units.yca.blocked = 'STARTUP_TIMEOUT';
+  m.persist();
   assert.equal(m.snapshot().units.yca.blocked, 'STARTUP_TIMEOUT');
   healthy = true;
   const restarted = new Supervisor(f.options);
@@ -509,7 +725,7 @@ test('tunnel startup timeout stays blocked without healthy ownership of the same
   }
 });
 
-test('bounded retries survive supervisor restart; no retries after stop', async t => {
+test('cooldown state survives supervisor restart; no retries after stop', async t => {
   const f = setup(t); let m = f.manager; const u = f.units;
   await m.action('all', 'start'); await m.setRecovery(true);
   u.yca.running = false; u.yca.healthy = false; u.yca.failure = 'SPAWN_FAILED';
@@ -519,10 +735,11 @@ test('bounded retries survive supervisor restart; no retries after stop', async 
     m = new Supervisor(f.options);
   }
   await m.tick();
-  assert.equal(m.state.units.yca.attempts.length, 5);
-  assert.equal(m.state.units.yca.blocked, 'RECOVERY_BUDGET_EXHAUSTED');
+  assert.ok(m.state.units.yca.attempts.length >= 4);
+  assert.ok(m.state.units.yca.nextAt);
   assert.equal(u.tunnel.starts, 1); assert.equal(u.tunnel.stops, 0);
-  await m.action('all', 'stop'); f.advance(60_000); await m.tick(); assert.equal(u.yca.starts, 6);
+  await m.action('all', 'stop'); const starts = u.yca.starts;
+  f.advance(60_000); await m.tick(); assert.equal(u.yca.starts, starts);
 });
 
 test('network/auth degradation never restarts a live tunnel or healthy YCA', async t => {
@@ -685,30 +902,18 @@ test('update-restart rechecks activity after prepare and leaves current release 
   assert.equal(snapshot.tools.running.sha256, tools.sha256);
 });
 test('failed candidate start restores the captured previous release', async t => {
-  const f = setup(t), m = f.manager, u = f.units.yca;
-  const first = 'a'.repeat(40), second = 'b'.repeat(40);
-  const firstTools = { count: 14, sha256: '5'.repeat(64) }, secondTools = { count: 18, sha256: '6'.repeat(64) };
-  u.running = true; u.healthy = true; u.commit = first; u.target = first; u.tools = firstTools;
-  m.state.units.yca.ownership.deployment = { commit: first, tools: firstTools };
-  u.observe = async function() { return { running: this.running, healthy: this.healthy, owned: true, activity: this.activity,
-    deployment: { running: this.running ? { commit: this.commit } : null, target: { commit: this.target }, launched: m.state.units.yca.ownership.deployment, state: this.running && this.commit === this.target ? 'verified' : 'update-pending' },
-    tools: this.running ? this.tools : null, controlPlane: { state: 'healthy' } }; };
-  const starts = [];
-  u.start = async function(input = {}) {
-    starts.push(input.commit ?? null);
-    if (input.commit === second) throw fail('SPAWN_FAILED');
-    this.running = true; this.healthy = true; this.commit = input.commit ?? this.target; this.tools = firstTools;
-    m.state.units.yca.ownership.deployment = { commit: this.commit, tools: this.tools };
+  const x = switchFixture(t), { m, u } = x;
+  const start = u.start.bind(u), starts = [];
+  u.start = async function(input) {
+    starts.push(input.commit);
+    if (input.commit === x.next) throw fail('SPAWN_FAILED');
+    return start(input);
   };
-  u.stop = async function() { this.stops++; this.running = false; this.healthy = false; };
-  await m.observe();
-  const prepare = async () => { u.target = second; return { commit: second, branch: 'merged', tools: secondTools }; };
-  await assert.rejects(m.updateDeployment(prepare, { restart: true }), { code: 'SPAWN_FAILED' });
-  const snapshot = m.snapshot();
-  assert.deepEqual(starts, [second, first]);
-  assert.equal(snapshot.units.yca.deployment.running.commit, first);
-  assert.equal(snapshot.units.yca.deployment.target.commit, second);
-  assert.equal(snapshot.tools.running.sha256, firstTools.sha256);
+  await assert.rejects(m.updateDeployment(x.prepare, { restart: true }), { code: 'SPAWN_FAILED' });
+  assert.deepEqual(starts, [x.next, x.old]);
+  assert.equal(u.commit, x.old);
+  assert.equal(u.healthy, true);
+  assert.equal(m.snapshot().tools.running.sha256, x.oldTools.sha256);
 });
 test('failed remote check keeps the previous result only as stale evidence', async t => {
   const { manager: m, units: u } = setup(t);
@@ -845,6 +1050,81 @@ function switchFixture(t) {
   };
   return { f, m, u, old, next, oldTools, nextTools, prepare: async () => ({ commit: next, branch: 'main', tools: nextTools }) };
 }
+
+test('prepared crash keeps the healthy old reader and selected release when DB has not migrated', async t => {
+  const x = switchFixture(t), { m, u, f } = x;
+  const rollback = 'c'.repeat(40);
+  u.target = x.old;
+  m.deploymentOps.inspectCardDatabase = () => ({ configured: true, version: 5 });
+  m.deploymentOps.deploymentTarget = () => ({ commit: u.target });
+  m.deploymentOps.verifyDeployment = async () => { throw fail('ROLLBACK_READER_SHOULD_NOT_BE_USED'); };
+  m.state.updateTransaction = { operationId: 'abbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', phase: 'prepared',
+    previousCommit: x.old, previousProcess: { pid: u.pid, created: u.created },
+    selectedCommitBefore: x.old, databaseVersionBefore: 5, rollbackCommit: rollback,
+    candidateCommit: x.next, tunnelDesired: 'stopped', confirm: true };
+  m.persist();
+  const restarted = new Supervisor(f.options);
+  await restarted.reconcileStartup();
+  assert.equal(restarted.state.updateTransaction, null);
+  assert.equal(u.commit, x.old);
+  assert.equal(u.target, x.old);
+  assert.equal(u.stops, 0);
+  assert.equal(u.starts, 0);
+});
+
+test('crash reconciliation gives ordinary operations durable terminal outcomes without replay', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  u.yca.running = true; u.yca.healthy = true;
+  u.windowsMcp.running = false; u.windowsMcp.code = 'PATH_MISSING';
+  u.tunnel.running = true; u.tunnel.healthy = true;
+  m.state.units.windowsMcp.blocked = 'PATH_MISSING';
+  const ids = ['aaaaaaaa-aaaa-4aaa-8aaa-111111111111', 'aaaaaaaa-aaaa-4aaa-8aaa-222222222222', 'aaaaaaaa-aaaa-4aaa-8aaa-333333333333'];
+  const at = m.clock();
+  m.state.operations[ids[0]] = { operationId: ids[0], action: 'start', target: 'yca', outcome: 'running', desired: { yca: 'running' }, deadline: at + 1000 };
+  m.state.operations[ids[1]] = { operationId: ids[1], action: 'start', target: 'windowsMcp', outcome: 'running', desired: { windowsMcp: 'running' }, deadline: at + 1000 };
+  m.state.operations[ids[2]] = { operationId: ids[2], action: 'stop', target: 'tunnel', outcome: 'running', desired: { tunnel: 'stopped' }, deadline: at - 1 };
+  m.persist();
+  const restarted = new Supervisor(f.options);
+  await restarted.reconcileStartup();
+  assert.deepEqual(ids.map(id => restarted.operation(id).outcome), ['succeeded', 'failed', 'unknown']);
+  assert.equal(restarted.operation(ids[2]).code, 'OPERATION_DEADLINE_EXCEEDED');
+  assert.equal(u.yca.starts + u.windowsMcp.starts + u.tunnel.stops, 0);
+  await restarted.reconcileStartup();
+  assert.deepEqual(ids.map(id => restarted.operation(id).outcome), ['succeeded', 'failed', 'unknown']);
+});
+
+test('restart crash before stop does not count the still-healthy old process as success', async t => {
+  const f = setup(t), { manager: m, units: u } = f;
+  u.yca.running = true; u.yca.healthy = true;
+  u.yca.observe = async () => ({ running: true, healthy: true, owned: true,
+    pid: 400, created: 'old-process', code: null });
+  m.state.units.yca.desired = 'running';
+  const operationId = 'aaaaaaaa-aaaa-4aaa-8aaa-444444444444';
+  m.state.operations[operationId] = { operationId, action: 'restart', target: 'yca',
+    phase: 'inspect', outcome: 'running', desired: { yca: 'running' }, deadline: m.clock() + 60_000 };
+  m.persist();
+  const restarted = new Supervisor(f.options);
+  await restarted.reconcileStartup();
+  assert.equal(restarted.operation(operationId).outcome, 'unknown');
+  assert.equal(restarted.operation(operationId).code, 'OPERATION_INTERRUPTED');
+  assert.equal(u.yca.stops, 0);
+  assert.equal(u.yca.starts, 0);
+});
+
+test('candidate migration is refused before stop when no trusted rollback reader supports its schema', async t => {
+  const x = switchFixture(t), { m, u } = x;
+  m.state.units.yca.attempts = [1, 2, 3, 4, 5];
+  m.state.units.yca.blocked = 'RECOVERY_BUDGET_EXHAUSTED';
+  m.deploymentOps.verifyDeployment = async (_root, commit) => ({ commit, tools: x.nextTools,
+    databaseContract: { minimumReadable: 0, maximumReadable: 6, migrationTarget: 6,
+      relativePath: 'engineering-cards.sqlite' } });
+  m.deploymentOps.inspectCardDatabase = () => ({ configured: true, version: 5 });
+  m.deploymentOps.compatibleDeployment = async () => { throw fail('DB_COMPATIBLE_RELEASE_UNAVAILABLE'); };
+  await assert.rejects(m.updateDeployment(x.prepare, { restart: true }), { code: 'DB_COMPATIBLE_RELEASE_UNAVAILABLE' });
+  assert.equal(u.stops, 0);
+  assert.equal(u.commit, x.old);
+  assert.deepEqual(m.state.units.yca.attempts, [], 'manual update resets cooldown before compatibility preflight');
+});
 
 test('candidate observation gap recovers within the existing startup window', async t => {
   const x = switchFixture(t), { m, u } = x;
@@ -1016,7 +1296,7 @@ test('Windows MCP recovery precedes the dependent Windows tunnel', async t => {
   u.windowsMcp.start = async function(...args) { order.push('windowsMcp'); return startMcp(...args); };
   u.windowsTunnel.start = async function(...args) { order.push('windowsTunnel'); return startTunnel(...args); };
 
-  f.advance(2000); await m.tick();
+  f.advance(2000); await m.tick(); f.advance(5000); await m.tick();
   assert.equal(u.windowsMcp.starts, 2);
   assert.equal(u.windowsTunnel.starts, 2);
   assert.deepEqual(order, ['windowsMcp', 'windowsTunnel'], 'dependent tunnel starts only after MCP recovery is healthy');

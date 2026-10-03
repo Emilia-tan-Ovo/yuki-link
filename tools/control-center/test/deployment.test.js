@@ -57,6 +57,8 @@ test('prepare follows remote HEAD beside a dirty developer branch and reuses one
   const second = await prepareDeployment(f.options);
   assert.equal(second.entry, first.entry); assert.equal(second.dependencies, 'reused');
   await assert.rejects(prepareDeployment({ ...f.options, expectedCommit: 'f'.repeat(40) }), { code: 'DEPLOYMENT_SOURCE_CHANGED' });
+  await assert.rejects(readDeployment(f.root), { code: 'STATE_UNREADABLE' }, 'prepare does not select a release');
+  await selectDeployment(f.root, commit);
   assert.equal((await readDeployment(f.root)).commit, commit);
   assert.equal(git(f.repo, 'branch', '--show-current'), 'unfinished');
   assert.equal(git(f.repo, 'status', '--porcelain'), before);
@@ -66,6 +68,7 @@ test('prepare follows remote HEAD beside a dirty developer branch and reuses one
 test('selected release records launcher flag support and rejects a changed claim', async t => {
   const f = fixture(t);
   const unsupported = await prepareDeployment(f.options);
+  await selectDeployment(f.root, unsupported.commit);
   assert.equal(unsupported.launcherFlags.implementationLaunchAuthority, false);
   assert.equal(unsupported.launcherFlags.reviewLaunchAuthority, false);
   assert.equal(unsupported.launcherFlags.executionAuthority, false);
@@ -86,6 +89,7 @@ test('selected release records launcher flag support and rejects a changed claim
   writeFileSync(path.join(f.bridge, 'src/main.js'), "if (process.argv.includes('--help')) console.log('--implementation-launch-authority ABSOLUTE_JSON_PATH\\n--review-launch-authority ABSOLUTE_JSON_PATH\\n--execution-authority ABSOLUTE_JSON_PATH');\n");
   git(f.repo, 'add', '.'); git(f.repo, 'commit', '-m', 'launcher support'); git(f.repo, 'push', 'origin', 'merged');
   const supported = await prepareDeployment(f.options);
+  await selectDeployment(f.root, supported.commit);
   assert.equal(supported.launcherFlags.implementationLaunchAuthority, true);
   assert.equal(supported.launcherFlags.reviewLaunchAuthority, true);
   assert.equal(supported.launcherFlags.executionAuthority, true);
@@ -151,6 +155,7 @@ test('remote default branch changes create a new release and preserve the previo
 
 test('UI production artifacts are built after dependencies and sealed against missing, changed or added bytes', async t => {
   const f = fixture(t), prepared = await prepareDeployment(f.options);
+  await selectDeployment(f.root, prepared.commit);
   assert.match(prepared.uiHash, /^[a-f0-9]{64}$/);
   const artifact = path.join(prepared.cwd, 'dist/harness-ui/assets/index-12345678.js');
   const original = readFileSync(artifact, 'utf8');
@@ -165,6 +170,7 @@ test('UI production artifacts are built after dependencies and sealed against mi
 
 test('failed UI build cannot publish a release or change selection', async t => {
   const f = fixture(t), first = await prepareDeployment(f.options);
+  await selectDeployment(f.root, first.commit);
   writeFileSync(path.join(f.bridge, 'src/main.js'), '// next release\n');
   git(f.repo, 'add', '.'); git(f.repo, 'commit', '-m', 'next'); git(f.repo, 'push', 'origin', 'merged');
   writeFileSync(f.npmCli, "if (process.argv[2] === 'run') process.exit(1);");
@@ -174,6 +180,7 @@ test('failed UI build cannot publish a release or change selection', async t => 
 
 test('dependency failure preserves selection and can retry only the owned unpublished checkout', async t => {
   const f = fixture(t), first = await prepareDeployment(f.options);
+  await selectDeployment(f.root, first.commit);
   writeFileSync(path.join(f.bridge, 'src/main.js'), '// second release\n');
   git(f.repo, 'add', '.'); git(f.repo, 'commit', '-m', 'second'); git(f.repo, 'push', 'origin', 'merged');
   writeFileSync(f.npmCli, 'process.exit(1);');
@@ -229,6 +236,7 @@ test('real deployed YCA reports the target commit and YCA-002 contract; preparat
   git(f.repo, 'add', '.'); git(f.repo, 'commit', '-m', 'real YCA'); git(f.repo, 'push', 'origin', 'merged');
   const options = { ...f.options, npmCli: path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js') };
   const first = await prepareDeployment(options);
+  await selectDeployment(f.root, first.commit);
   const workspace = path.join(f.directory, 'workspace'); mkdirSync(workspace);
   const controlRoot = path.join(f.directory, 'private-control'); mkdirSync(controlRoot);
   writeFileSync(path.join(controlRoot, 'config.json'), '{"local":"private"}');
@@ -305,14 +313,14 @@ test('real deployed YCA reports the target commit and YCA-002 contract; preparat
     assert.equal(second.tools.count, first.tools.count + 1); assert.notEqual(second.tools.sha256, first.tools.sha256);
     unit = new YcaUnit(config, host, state, () => {}, events); // manager reconstruction retains the old entry
     const pending = await unit.observe();
-    assert.equal(pending.pid, running.pid); assert.equal(pending.owned, true); assert.equal(pending.deployment.state, 'update-pending');
-    assert.equal(pending.deployment.running.commit, first.commit); assert.equal(pending.deployment.target.commit, second.commit);
+    assert.equal(pending.pid, running.pid); assert.equal(pending.owned, true); assert.equal(pending.deployment.state, 'verified');
+    assert.equal(pending.deployment.running.commit, first.commit); assert.equal(pending.deployment.target.commit, first.commit);
     assert.equal(pending.tools.sha256, first.tools.sha256, 'prepared candidate must not replace running tool evidence');
     await client.close(); await unit.stop();
     await unit.start({ recovery: true });
     const recovered = await until(async () => { const o = await unit.observe(); return o.healthy && o; });
     assert.equal(recovered.deployment.running.commit, first.commit);
-    await unit.stop(); await unit.start();
+    await unit.stop(); await selectDeployment(f.root, second.commit); await unit.start();
     const switched = await until(async () => { const o = await unit.observe(); return o.healthy && o; });
     assert.equal(switched.deployment.running.commit, second.commit);
     assert.equal(switched.tools.sha256, second.tools.sha256);

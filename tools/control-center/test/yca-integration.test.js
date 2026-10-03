@@ -5,7 +5,7 @@ import os from 'node:os';
 import net from 'node:net';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, mkdirSync, existsSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import { YcaUnit } from '../src/units.js';
 import { WindowsHost } from '../src/host.js';
 import { Events, get, sleep, readJson, saveJson, run } from '../src/common.js';
@@ -56,14 +56,18 @@ test('real isolated YCA: duplicate start, authenticated ownership, manager recov
   t.diagnostic(`Real Node ${process.version}; isolated HTTP/control ports; no model or production tunnel invoked.`);
 });
 
-test('legacy runtime lock and occupied port never trigger deletion or process termination', async t => {
+test('dead legacy runtime lock is archived while occupied unknown port remains protected', async t => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'yuki-cc-lock-'));
   t.after(() => { assert.ok(root.startsWith(path.join(os.tmpdir(), 'yuki-cc-lock-'))); rmSync(root, { recursive: true, force: true }); });
   writeFileSync(path.join(root, 'bridge.lock'), JSON.stringify({ pid: 9999999, token: 'legacy' }));
   const host = { inspect: async () => [], free: async () => {} };
   const config = { runtime: root, node: process.execPath, entry: process.execPath, pwsh: process.execPath, codex: process.execPath };
-  const unit = new YcaUnit(config, host, {}, () => {}, new Events(root));
-  await assert.rejects(unit.start(), { code: 'LEGACY_RUNTIME_LOCK' }); assert.equal(readJson(path.join(root, 'bridge.lock')).token, 'legacy');
+  const unit = new YcaUnit(config, host, {}, () => {}, new Events(root), {
+    spawnProcess: () => { throw Object.assign(new Error('stop before spawn'), { code: 'SPAWN_SENTINEL' }); },
+  });
+  await assert.rejects(unit.start(), { code: 'SPAWN_SENTINEL' });
+  assert.equal(existsSync(path.join(root, 'bridge.lock')), false);
+  assert.equal(readdirSync(root).filter(name => name.startsWith('bridge.lock.control-backup-')).length, 1);
   const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); t.after(() => s.close());
   await assert.rejects(new WindowsHost('unused').free(s.address().port), { code: 'PORT_CONFLICT' });
 });
@@ -78,6 +82,7 @@ test('diagnostic stop refuses activity until explicit confirmation and schema st
   const url = `http://127.0.0.1:${s.address().port}`;
   const busy = await get(url + '/stop', { token, method: 'POST' }); assert.equal(busy.status, 409); assert.equal(shutdown, 0);
   const status = await get(url + '/status', { token }); assert.equal(status.json.active.codex, 1); assert.ok(!JSON.stringify(status.json).includes(token));
+  assert.equal(status.json.capabilities.engineeringCards, false);
   assert.equal((await get(url + '/stop', { token, method: 'POST', confirm: true })).status, 202);
   await sleep(30); assert.equal(shutdown, 1); assert.equal(drained, true);
 });
@@ -133,6 +138,12 @@ test('YCA observation binds OS identity to the current authenticated instance an
   denied = false;
   state.process = { ...actual };
   assert.equal((await unit.observe()).healthy, true, 'manual recheck recovers after diagnostics do');
+  config.companionCardStore = root;
+  observation = await unit.observe();
+  assert.equal(observation.healthy, false, 'required engineering capability cannot be inferred from HTTP health');
+  assert.equal(observation.code, 'ENGINEERING_CAPABILITY_UNAVAILABLE');
+  diagnostic = { ...diagnostic, capabilities: { engineeringCards: true } };
+  assert.equal((await unit.observe()).healthy, true);
 });
 
 test('YCA health probe accepts a healthy response after the generic 2s deadline', async t => {

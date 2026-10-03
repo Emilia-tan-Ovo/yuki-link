@@ -4,7 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { loadConfig } from './config.js';
-import { Events, run, claimStateDirectory, readJson, fail } from './common.js';
+import { Events, run, claimStateDirectory, readJson, saveJson, fail } from './common.js';
 import { WindowsHost } from './host.js';
 import { YcaUnit, TunnelUnit } from './units.js';
 import { WindowsMcpUnit } from './windows-mcp-unit.js';
@@ -25,7 +25,8 @@ try {
   // loads/mutates shared state or starts services before acquiring this socket.
   let supervisor;
   server = createServer({ snapshot: () => supervisor ? supervisor.snapshot() : { initializing: true },
-    action: (...args) => supervisor.action(...args), serial: fn => supervisor.serial(fn), observe: () => supervisor.observe(),
+    action: (...args) => supervisor.action(...args), operation: id => supervisor.operation(id),
+    serial: fn => supervisor.serial(fn), observe: () => supervisor.observe(),
     setRecovery: v => supervisor.setRecovery(v), confirmTools: () => supervisor.confirmTools(),
   }, { startup, codexCheck: async () => {
     await supervisor.serial(async () => {
@@ -57,18 +58,35 @@ try {
     }),
   });
   supervisor.identity = { name: 'yuki-control-center', pid: process.pid, startedAt: new Date().toISOString(), instance: randomUUID(), configId: createHash('sha256').update(configFile.toLowerCase()).digest('hex') };
+  try {
+    const self = (await host.inspect(c.node, [fileURLToPath(import.meta.url), '--config', configFile], process.pid))[0];
+    if (self?.matches) supervisor.identity.process = { pid: self.pid, created: self.created };
+  } catch { /* Loopback bind remains the single-instance arbiter. */ }
   supervisor.versions = { controlCenter: '0.1.0', node: process.version, yca: readJson(fileURLToPath(new URL('../../codex-session-bridge/package.json', import.meta.url))).version, tunnel: '未检查' };
   try { const version = await run(c.tunnel.bin, ['--version']); if (version.code === 0 && /^[\w.+() :\r\n-]{1,200}$/.test(version.output)) supervisor.versions.tunnel = version.output.trim(); } catch { /* Report unavailable, never infer installed version. */ }
   await startup.refresh(); await supervisor.reconcileStartup(); await supervisor.tick();
+  const ccEntry = fileURLToPath(import.meta.url);
+  const selected = c.yca.deploymentRoot ? readJson(path.join(c.yca.deploymentRoot, 'selected.json'), null)?.commit : null;
+  const trustedEntry = !c.yca.deploymentRoot || selected && ccEntry.toLowerCase() === path.join(c.yca.deploymentRoot,
+    'releases', selected, 'tools/control-center/src/main.js').toLowerCase();
+  let launcherRecorded = false;
+  const recordHealthyLauncher = () => {
+    if (!launcherRecorded && trustedEntry && Object.values(supervisor.snapshot().units)
+      .every(unit => unit.desired !== 'running' || unit.healthy && unit.owned)) {
+      saveJson(path.join(c.stateDir, 'launcher', 'last-good.json'), { config: configFile, entry: ccEntry, at: new Date().toISOString() });
+      launcherRecorded = true;
+    }
+  };
+  recordHealthyLauncher();
   let checking = false;
   timer = setInterval(async () => {
     if (checking) return; checking = true;
-    try { await supervisor.tick(); } catch (e) { events.add('supervisor', 'check-failed', e.code ?? 'CHECK_FAILED'); }
+    try { await supervisor.tick(); recordHealthyLauncher(); } catch (e) { events.add('supervisor', 'check-failed', e.code ?? 'CHECK_FAILED'); }
     finally { checking = false; }
   }, 5000);
   events.add('supervisor', 'ready');
   console.log(`Control Center http://127.0.0.1:${c.port}`);
-  const close = () => { clearInterval(timer); server.close(); server.closeIdleConnections(); };
+  const close = () => { supervisor.closed = true; clearInterval(timer); server.close(); server.closeIdleConnections(); };
   process.on('SIGINT', close); process.on('SIGTERM', close);
 } catch (e) {
   clearInterval(timer); server?.close();

@@ -54,14 +54,10 @@ test('confirmed stop uses a verified same-instance preflight despite the next di
 test('unknown handoff fails closed and records a failed stop receipt', async t => {
   const f = await fixture(t);
   const m = new Supervisor({ stateFile: path.join(f.root, 'state.json'), events: new Events(f.root),
-    createUnits: () => ({ yca: f.unit, tunnel: { observe: async () => ({ running: false }) } }), startupMs: 0 });
+    createUnits: () => ({ yca: f.unit, tunnel: { observe: async () => ({ running: false }) },
+      windowsMcp: { observe: async () => ({ running: false }) }, windowsTunnel: { observe: async () => ({ running: false }) } }), startupMs: 0 });
   m.state.units.yca.ownership = f.state;
-  const observe = f.unit.observe.bind(f.unit);
-  let first = true;
-  f.unit.observe = async () => {
-    if (first) { first = false; return { running: null, code: 'ACTIVITY_UNKNOWN' }; }
-    return observe();
-  };
+  f.unit.observe = async () => ({ running: null, code: 'ACTIVITY_UNKNOWN' });
   const operation = { operationId: '22222222-2222-4222-8222-222222222222', action: 'stop', target: 'yca' };
   await assert.rejects(m.action('yca', 'stop', true, operation), { code: 'ACTIVITY_UNKNOWN' });
   assert.equal(f.stops, 0);
@@ -127,7 +123,8 @@ test('unconfirmed stop still needs current activity; a handoff never bypasses it
 test('unknown stop outcome survives Control Center restart as a correlated receipt', async t => {
   const f = await fixture(t); f.loseStop();
   const m = new Supervisor({ stateFile: path.join(f.root, 'state.json'), events: new Events(f.root),
-    createUnits: () => ({ yca: f.unit, tunnel: { observe: async () => ({ running: false }) } }), startupMs: 0 });
+    createUnits: () => ({ yca: f.unit, tunnel: { observe: async () => ({ running: false }) },
+      windowsMcp: { observe: async () => ({ running: false }) }, windowsTunnel: { observe: async () => ({ running: false }) } }), startupMs: 0 });
   m.state.units.yca.ownership = f.state;
   const operation = { operationId: '11111111-1111-4111-8111-111111111111', action: 'stop', target: 'yca' };
   await assert.rejects(m.action('yca', 'stop', true, operation), { operationOutcome: 'unknown' });
@@ -138,16 +135,22 @@ test('unknown stop outcome survives Control Center restart as a correlated recei
 test('update passes its immediately verified preflight into the real stop adapter', async t => {
   const f = await fixture(t);
   const tunnel = { observe: async () => ({ running: false, healthy: false }) };
+  const contract = { minimumReadable: 0, maximumReadable: 5, migrationTarget: 5, relativePath: 'engineering-cards.sqlite' };
   const m = new Supervisor({ stateFile: path.join(f.root, 'state.json'), events: new Events(f.root),
-    createUnits: () => ({ yca: f.unit, tunnel }), startupMs: 0 });
+    createUnits: () => ({ yca: f.unit, tunnel, windowsMcp: tunnel, windowsTunnel: tunnel }), startupMs: 0,
+    deploymentOps: { inspectCardDatabase: () => ({ configured: false, version: null }),
+      verifyDeployment: async (_root, commit) => ({ commit, tools: f.tools, databaseContract: contract }),
+      compatibleDeployment: async () => ({ commit: f.commit, databaseContract: contract }),
+      selectDeployment: async () => {} } });
   m.state.units.yca.ownership = f.state;
   const observe = f.unit.observe.bind(f.unit);
-  f.unit.observe = async () => { const o = await observe(); if (f.probes === 3) f.failProbe(); return o; };
+  f.unit.observe = async () => { const o = await observe(); if (f.probes === 5) f.failProbe(); return o; };
   let starts = 0;
   // Candidate startup is independent of this regression; assert the real stop completes before it.
-  m.startOne = async () => { starts++; assert.equal(f.stops, 1); };
-  m.candidateVerified = () => starts === 1;
-  await m.updateDeployment(async () => ({ commit: 'c'.repeat(40), tools: f.tools }), { restart: true, confirm: true });
+  m.startOne = async () => { starts++; assert.equal(f.stops, 1); throw Object.assign(new Error('AFTER_STOP'), { code: 'AFTER_STOP' }); };
+  m.rollbackUpdate = async () => {};
+  await assert.rejects(m.updateDeployment(async () => ({ commit: 'c'.repeat(40), tools: f.tools }),
+    { restart: true, confirm: true }), { code: 'AFTER_STOP' });
   assert.equal(starts, 1);
-  assert.equal(f.probes, 3, 'there is no fourth, redundant diagnostic before /stop');
+  assert.equal(f.probes, 5, 'there is no redundant diagnostic after the final authenticated preflight');
 });

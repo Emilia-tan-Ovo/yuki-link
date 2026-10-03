@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readdirSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -126,10 +127,19 @@ test('v1 and v2 card databases migrate without upgrading old confirmation author
       extraAuthorization:{merge:false,deploy:false} });
     store.confirm(card.cardId,1,'desktop-user-action'); store.close();
     const database = new DatabaseSync(join(dir,'engineering-cards.sqlite'));
-    database.exec('DROP TABLE card_preparations');
-    if (version === 1) database.exec('DROP TABLE card_dispatches; DROP TABLE card_store_identity');
+    database.exec('PRAGMA foreign_keys=OFF');
+    const oldTables = new Set(['cards','card_revisions','card_confirmations','card_observations']);
+    if (version === 2) { oldTables.add('card_dispatches'); oldTables.add('card_store_identity'); }
+    for (const { name } of database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all()) {
+      if (!oldTables.has(name)) database.exec(`DROP TABLE "${name}"`);
+    }
     database.exec(`PRAGMA user_version=${version}`); database.close();
     store = new EngineeringCardStore(dir);
+    const backups = readdirSync(dir).filter(name => name.startsWith('engineering-cards.pre-v6-'));
+    assert.equal(backups.length, 1, 'forward migration preserves one consistent pre-v6 snapshot');
+    const backup = new DatabaseSync(join(dir, backups[0]), { readOnly: true });
+    assert.equal(backup.prepare('PRAGMA user_version').get().user_version, version);
+    backup.close();
     assert.equal(store.get(card.cardId).state,'confirmed');
     assert.equal(store.get(card.cardId).preparationStatus,'not-authorized');
     assert.equal(store.preparation(card.cardId,1),null);

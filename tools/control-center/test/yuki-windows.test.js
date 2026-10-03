@@ -40,6 +40,7 @@ test('WindowsMcpUnit records exact ownership and one successful startup MCP prob
   const host = {
     inspect: async (_exe, _markers, pid) => spawned && (!pid || pid === actual.pid) ? [actual] : [],
     free: async () => { if (spawned) throw fail('PORT_CONFLICT'); },
+    portOwner: async () => spawned ? actual.pid : null,
   };
   const unit = new WindowsMcpUnit({ python: process.execPath, port: 8123 }, host, state, () => {}, { add() {} }, {
     spawnProcess: (_exe, args) => {
@@ -55,6 +56,30 @@ test('WindowsMcpUnit records exact ownership and one successful startup MCP prob
   const observation = await unit.observe();
   assert.equal(observation.healthy, true);
   assert.equal(observation.owned, true);
+});
+
+test('same-command external MCP reply does not prove a managed orphan', async () => {
+  const actual = { pid: 5111, created: 'external-process', matches: true };
+  const host = { inspect: async () => [actual], portOwner: async () => actual.pid };
+  const probe = async () => ({ healthy: true, serverName: 'windows-mcp', serverVersion: '4.0.3' });
+  const unit = new WindowsMcpUnit({ python: process.execPath, port: 8123 }, host, {}, () => {}, { add() {} }, { probe });
+  assert.equal((await unit.observe()).managedIdentity, false);
+  await assert.rejects(unit.stop(true), { code: 'OBSERVED_UNOWNED' });
+});
+
+test('recorded managed orphan requires matching port owner and process creation', async () => {
+  const actual = { pid: 5222, created: 'managed-process', matches: true };
+  let owner = actual.pid;
+  const host = { inspect: async () => [actual], portOwner: async () => owner };
+  const state = { managedProcess: { pid: actual.pid, created: actual.created } };
+  const unit = new WindowsMcpUnit({ python: process.execPath, port: 8123 }, host, state, () => {}, { add() {} }, {
+    probe: async () => ({ healthy: true, serverName: 'windows-mcp', serverVersion: '4.0.3' }),
+  });
+  assert.equal((await unit.observe()).managedIdentity, true);
+  owner = 9999;
+  assert.equal((await unit.observe()).managedIdentity, false);
+  owner = actual.pid; actual.created = 'reused-pid';
+  assert.equal((await unit.observe()).managedIdentity, false);
 });
 
 test('ProfileTunnelUnit keeps ownership across profile drift and projects real communication evidence', async t => {

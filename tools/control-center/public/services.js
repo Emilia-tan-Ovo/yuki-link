@@ -9,6 +9,8 @@ const messages = {
   DEPLOYMENT_CURRENT_UNKNOWN: '无法确认当前 release，拒绝重启或切换。', DEPLOYMENT_CURRENT_CHANGED: '准备期间运行 release 或进程身份已变化。',
   DEPLOYMENT_SWITCH_UNVERIFIED: '候选 release 未通过运行 commit / 工具摘要核验。', DEPLOYMENT_ROLLBACK_FAILED: '切换失败且旧 release 未恢复。',
   DEPLOYMENT_ROLLBACK_CONFLICT: '回退发现其他实例，已停止自动处理并保留现场。',
+  ENGINEERING_CAPABILITY_UNAVAILABLE: '工程卡能力未就绪，请核对同库版本与 YCA 启动日志。',
+  DB_COMPATIBLE_RELEASE_UNAVAILABLE: '找不到能读取当前工程卡数据库的受信 release。',
 };
 function freshness(observation) {
   if (!observation?.at) return 'freshness unknown';

@@ -13,12 +13,15 @@ $taskExisting = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyConti
 if ($taskExisting -and $taskExisting.Description -ne $taskMarker) { throw 'Task name belongs to a different configuration.' }
 if ($Action -notin @('Status','Preview') -and -not $taskConfig.allowStartupChanges) { throw 'Startup configuration changes require user approval.' }
 $taskUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$taskRunner = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'Run-Supervisor.ps1'))
+$taskLauncherDir = Join-Path $taskConfig.stateDir 'launcher'
+$taskRunner = [IO.Path]::GetFullPath((Join-Path $taskLauncherDir 'Run-Supervisor.ps1'))
 if ($taskRunner.Contains('"') -or $taskConfigPath.Contains('"')) { throw 'Invalid path.' }
 $taskArgs = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File "' + $taskRunner + '" -Config "' + $taskConfigPath + '"'
-if ($Action -in @('Preview','Install')) {
+if ($Action -in @('Preview','Install','Enable')) {
+    $taskTriggers = @((New-ScheduledTaskTrigger -AtLogOn -User $taskUser),
+      (New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1)) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)))
     $taskDefinition = New-ScheduledTask -Action (New-ScheduledTaskAction -Execute $taskConfig.pwsh -Argument $taskArgs -WorkingDirectory $PSScriptRoot) `
-      -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $taskUser) `
+      -Trigger $taskTriggers `
       -Principal (New-ScheduledTaskPrincipal -UserId $taskUser -LogonType Interactive -RunLevel Limited) `
       -Settings (New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
         -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable) `
@@ -32,10 +35,13 @@ if ($Action -in @('Preview','Install')) {
           multipleInstances=[string]$taskDefinition.Settings.MultipleInstances } | ConvertTo-Json
         exit 0
     }
-    if ($taskExisting) { throw 'Task already exists; use Enable. Existing configuration was not overwritten.' }
-    Register-ScheduledTask -TaskName $taskName -InputObject $taskDefinition | Out-Null
-} elseif ($Action -eq 'Enable') {
-    Enable-ScheduledTask -TaskName $taskName | Out-Null
+    if ($Action -eq 'Install' -and $taskExisting) { throw 'Task already exists; use Enable. Existing configuration was not overwritten.' }
+    if ($Action -eq 'Enable' -and -not $taskExisting) { throw 'Task is not installed.' }
+    New-Item -ItemType Directory -Path $taskLauncherDir -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Run-Supervisor.ps1') -Destination $taskRunner -Force
+    @{ config=$taskConfigPath; entry=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../src/main.js')) } |
+      ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $taskLauncherDir 'launcher.json') -Encoding utf8
+    Register-ScheduledTask -TaskName $taskName -InputObject $taskDefinition -Force | Out-Null
 } elseif ($Action -eq 'Disable') {
     Disable-ScheduledTask -TaskName $taskName | Out-Null
 } elseif ($Action -eq 'Uninstall' -and $taskExisting) {

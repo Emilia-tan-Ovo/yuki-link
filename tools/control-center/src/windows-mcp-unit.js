@@ -6,7 +6,7 @@ import { matches } from './host.js';
 const MCP_STARTUP_TIMEOUT_MS = 10_000;
 const MCP_PROBE_TIMEOUT_MS = 5_000;
 
-const markers = port => ['windows_mcp', 'serve', '--transport', 'streamable-http', '--host', '127.0.0.1', '--port', String(port)];
+const markers = port => ['-m', 'windows_mcp', 'serve', '--transport', 'streamable-http', '--host', '127.0.0.1', '--port', String(port)];
 
 function parseSseJson(text) {
   for (const line of text.split(/\r?\n/)) {
@@ -54,11 +54,24 @@ export class WindowsMcpUnit {
       catch { return { running: true, owned: false, healthy: false, code: 'PORT_CONFLICT' }; }
       return { running: false, owned: false, healthy: false, lastExit: this.state.lastExit ?? null, mcpProbe: this.state.lastProbe ?? null };
     }
-    const owned = matches(p, this.state.process);
+    // A matching command line and an MCP greeting are public observations.
+    // Persisted spawn identity is the independent managed provenance.
+    const portOwner = await this.host.portOwner?.(this.config.port);
+    const portBound = portOwner === p.pid;
+    const source = matches(p, this.state.process) || matches(p, this.state.managedProcess);
+    const owned = matches(p, this.state.process) && portBound;
     const identityChanged = Boolean(this.state.process && !owned);
-    const probe = this.state.lastProbe?.pid === p.pid && this.state.lastProbe?.created === p.created ? this.state.lastProbe : null;
+    // Readiness is a live observation. A successful startup probe is never a
+    // permanent health lease for a process that later stops serving MCP.
+    const result = await this.probe(this.config.port);
+    const probe = { ...result, at: new Date().toISOString(), pid: p.pid, created: p.created };
+    if (this.state.lastProbe?.healthy !== probe.healthy || this.state.lastProbe?.code !== probe.code
+      || this.state.lastProbe?.pid !== p.pid || Date.now() - Date.parse(this.state.lastProbe?.at ?? 0) > 30_000) {
+      this.state.lastProbe = probe; this.persist();
+    }
     return {
-      running: true, owned, healthy: Boolean(owned && probe?.healthy), pid: p.pid, created: p.created,
+      running: true, owned, managedIdentity: Boolean(p.matches && portBound && source),
+      healthy: Boolean(owned && probe?.healthy), pid: p.pid, created: p.created,
       mcpProbe: probe, serverVersion: probe?.serverVersion ?? null,
       code: identityChanged ? 'OWNERSHIP_CHANGED' : !owned ? 'OBSERVED_UNOWNED' : !probe?.healthy ? (probe?.code ?? 'MCP_NOT_READY') : null,
     };
@@ -71,25 +84,30 @@ export class WindowsMcpUnit {
     await this.host.free(this.config.port);
 
     this.state.process = null;
+    this.state.managedProcess = null;
     this.state.lastProbe = null;
     this.persist();
     const args = ['-m', 'windows_mcp', 'serve', '--transport', 'streamable-http', '--host', '127.0.0.1', '--port', String(this.config.port)];
     const child = this.spawnProcess(this.config.python, args, {
       cwd: this.config.cwd ?? undefined, shell: false, windowsHide: true, detached: true, stdio: ['ignore', 'ignore', 'ignore'],
     });
+    let launchedProcess = null;
     child.once('exit', code => {
       this.events.add('windowsMcp', 'process-exit', null, code);
-      if (this.state.process?.pid === child.pid) {
+      if (launchedProcess && this.state.process?.pid === launchedProcess.pid
+        && this.state.process.created === launchedProcess.created) {
         this.state.lastExit = { at: new Date().toISOString(), exitCode: code };
-        this.persist();
+        this.persist({ unitExit: { id: 'windowsMcp', process: launchedProcess, lastExit: this.state.lastExit } });
       }
     });
     await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', () => reject(fail('SPAWN_FAILED'))); });
     child.unref();
 
     const actual = (await this.host.inspect(this.config.python, this.markers(), child.pid))[0];
-    if (!actual?.matches) throw fail('OWNERSHIP_CHANGED');
+    if (!actual?.matches || actual.pid !== child.pid || !actual.created) throw fail('OWNERSHIP_CHANGED');
+    launchedProcess = { pid: actual.pid, created: actual.created };
     this.state.process = actual;
+    this.state.managedProcess = actual;
     this.persist();
 
     const deadline = Date.now() + MCP_STARTUP_TIMEOUT_MS;
@@ -108,12 +126,14 @@ export class WindowsMcpUnit {
     throw fail('MCP_NOT_READY');
   }
 
-  async stop() {
+  async stop(confirm = false) {
     const current = await this.observe();
     if (!current.running) return;
-    if (!current.owned) throw fail(current.code ?? 'OBSERVED_UNOWNED');
+    if (!current.owned && (!confirm || !current.managedIdentity)) throw fail(current.code ?? 'OBSERVED_UNOWNED');
     const found = (await this.host.inspect(this.config.python, this.markers(), current.pid))[0];
-    if (!found || !matches(found, current) || !matches(found, this.state.process)) throw fail('OWNERSHIP_CHANGED');
+    if (!found || !matches(found, current) || current.owned && !matches(found, this.state.process)) throw fail('OWNERSHIP_CHANGED');
+    if (await this.host.portOwner?.(this.config.port) !== current.pid
+      || !matches(found, this.state.process) && !matches(found, this.state.managedProcess)) throw fail('OWNERSHIP_CHANGED');
 
     try { process.kill(current.pid, 'SIGTERM'); }
     catch (error) { if (error?.code !== 'ESRCH') throw fail('STOP_OUTCOME_UNKNOWN'); }
@@ -125,6 +145,12 @@ export class WindowsMcpUnit {
         return;
       }
       await sleep(200);
+    }
+    if (confirm) {
+      await this.host.terminateTree(this.config.python, this.markers(), current);
+      this.state.lastStop = { at: new Date().toISOString(), pid: current.pid, created: current.created, state: 'interrupted' };
+      this.persist();
+      return;
     }
     throw fail('STOP_TIMEOUT');
   }
