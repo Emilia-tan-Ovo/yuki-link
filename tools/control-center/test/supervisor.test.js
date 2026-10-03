@@ -613,6 +613,69 @@ test('startup gets one final readiness observation before reporting timeout', as
   assert.equal(observations, 2);
 });
 
+function restartReadinessFixture(t) {
+  const f = setup(t), { manager: m, units: u } = f;
+  const commit = 'a'.repeat(40), tools = { count: 14, sha256: 'b'.repeat(64) };
+  Object.assign(u.yca, { running: true, healthy: true, pid: 101, created: 'old-yca', instance: 'old-instance' });
+  Object.assign(m.state.units.yca.ownership, { instance: u.yca.instance,
+    process: { pid: u.yca.pid, created: u.yca.created }, deployment: { commit, tools } });
+  u.yca.observe = async function() { return { running: this.running, healthy: this.healthy, owned: this.owned,
+    authenticated: true, instance: this.instance, pid: this.pid, created: this.created,
+    activity: this.activity, tools, deployment: { state: 'verified', running: { commit, dirty: false } }, code: null }; };
+  Object.assign(u.tunnel, { running: true, healthy: true, pid: 201, created: 'old-tunnel' });
+  m.state.units.tunnel.desired = 'running';
+  m.state.units.tunnel.ownership.process = { pid: u.tunnel.pid, created: u.tunnel.created };
+  u.tunnel.observe = async function() { return { running: this.running, healthy: this.healthy, owned: this.owned,
+    pid: this.pid, created: this.created, code: null }; };
+  u.tunnel.start = async function() { this.starts++; this.running = true; this.healthy = true;
+    this.pid = 202; this.created = 'new-tunnel';
+    m.state.units.tunnel.ownership.process = { pid: this.pid, created: this.created }; };
+  return { f, m, u };
+}
+
+test('manual restart finishes when its timed-out root becomes verified before dependent start', async t => {
+  const { m, u } = restartReadinessFixture(t);
+  const startOne = m.startOne.bind(m);
+  m.startOne = async (id, options) => {
+    if (id !== 'yca') return startOne(id, options);
+    u.yca.starts++; u.yca.running = true; u.yca.healthy = true;
+    u.yca.pid = 102; u.yca.created = 'new-yca'; u.yca.instance = 'new-instance';
+    Object.assign(m.state.units.yca.ownership, { instance: u.yca.instance,
+      process: { pid: u.yca.pid, created: u.yca.created } });
+    throw fail('STARTUP_TIMEOUT');
+  };
+  const operation = { operationId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', action: 'restart-current', target: 'yca' };
+  await m.action('yca', 'restart', true, operation);
+  assert.equal(u.yca.starts, 1);
+  assert.equal(u.tunnel.starts, 1);
+  assert.equal(m.operation(operation.operationId).outcome, 'succeeded');
+  assert.equal(m.snapshot().units.yca.blocked, null);
+});
+
+test('manual restart does not clear a timed-out root without matching ownership proof', async t => {
+  const { m, u } = restartReadinessFixture(t);
+  m.startOne = async id => {
+    if (id !== 'yca') throw fail('DEPENDENT_STARTED_WITH_UNVERIFIED_ROOT');
+    u.yca.starts++; u.yca.running = true; u.yca.healthy = true;
+    u.yca.pid = 102; u.yca.created = 'new-yca'; u.yca.instance = 'foreign-instance';
+    throw fail('STARTUP_TIMEOUT');
+  };
+  await assert.rejects(m.action('yca', 'restart', true), { code: 'STARTUP_TIMEOUT' });
+  assert.equal(u.tunnel.starts, 0);
+  assert.equal(m.state.units.yca.blocked, 'STARTUP_TIMEOUT');
+});
+
+test('manual restart never clears a failed stop from a later healthy observation', async t => {
+  const { m, u } = restartReadinessFixture(t);
+  u.yca.stop = async function() { this.stops++; this.pid = 102; this.created = 'other-process';
+    m.state.units.yca.ownership.process = { pid: this.pid, created: this.created };
+    throw fail('OWNERSHIP_CHANGED'); };
+  await assert.rejects(m.action('yca', 'restart', true), { code: 'OWNERSHIP_CHANGED' });
+  assert.equal(u.yca.starts, 0);
+  assert.equal(u.tunnel.starts, 0);
+  assert.equal(m.state.units.yca.blocked, 'OWNERSHIP_CHANGED');
+});
+
 test('startup waits for a transient health failure on the same managed instance', async t => {
   const { manager: m, units: u } = setup(t);
   m.startupMs = 1000;
