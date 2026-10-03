@@ -51,6 +51,30 @@ test('confirmed stop uses a verified same-instance preflight despite the next di
   assert.equal(f.stops, 1);
 });
 
+test('accepted stop waits past a transient identity mismatch until the old process disappears', async t => {
+  const f = await fixture(t), expected = await f.unit.observe();
+  const inspect = f.unit.host.inspect.bind(f.unit.host);
+  let teardownSamples = 0;
+  f.unit.host.inspect = async (...args) => {
+    if (f.stops && teardownSamples++ === 0) return [{ ...f.processInfo, matches: false }];
+    return inspect(...args);
+  };
+  await f.unit.stop(true, expected);
+  assert.equal(teardownSamples, 2);
+  assert.equal(f.state.lastStop.state, 'stopped');
+  assert.equal(f.state.lastStop.code, null);
+});
+
+test('accepted stop treats a reused PID as old-process exit without touching its replacement', async t => {
+  const f = await fixture(t), expected = await f.unit.observe();
+  const inspect = f.unit.host.inspect.bind(f.unit.host);
+  f.unit.host.inspect = async (...args) => f.stops
+    ? [{ ...f.processInfo, created: 'replacement-birth', matches: true }] : inspect(...args);
+  await f.unit.stop(true, expected);
+  assert.equal(f.state.lastStop.state, 'stopped');
+  assert.equal(f.stops, 1);
+});
+
 test('unknown handoff fails closed and records a failed stop receipt', async t => {
   const f = await fixture(t);
   const m = new Supervisor({ stateFile: path.join(f.root, 'state.json'), events: new Events(f.root),

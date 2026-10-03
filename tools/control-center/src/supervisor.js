@@ -456,9 +456,9 @@ export class Supervisor {
           await this.rollbackUpdate(tx);
           this.report('deployment-rolled-back');
         } catch (rollbackError) {
-          this.state.units.yca.blocked = rollbackError.code ?? 'DEPLOYMENT_ROLLBACK_FAILED';
-          this.report('deployment-rollback-failed', rollbackError.code ?? 'DEPLOYMENT_ROLLBACK_FAILED');
-          this.recordOperation(operation, 'unknown', rollbackError.code ?? 'DEPLOYMENT_ROLLBACK_FAILED');
+          const code = this.scheduleRollbackRetry(tx, rollbackError);
+          this.report('deployment-rollback-failed', code);
+          this.recordOperation(operation, 'unknown', code);
           throw unknownOperation(rollbackError);
         }
       }
@@ -469,6 +469,16 @@ export class Supervisor {
       this.busy = null; this.persist();
     }
   })); }
+  scheduleRollbackRetry(tx, error) {
+    tx.phase = 'recovery-needed';
+    tx.lastFailure = error.code ?? 'DEPLOYMENT_ROLLBACK_FAILED';
+    tx.recoveryAttempts = (tx.recoveryAttempts ?? 0) + 1;
+    tx.recoveryNextAt = this.clock() + retryDelays[Math.min(tx.recoveryAttempts - 1, retryDelays.length - 1)];
+    this.state.units.yca.blocked = tx.lastFailure;
+    this.state.units.tunnel.blocked = tx.lastFailure;
+    this.persist();
+    return tx.lastFailure;
+  }
   async rollbackUpdate(tx) {
     if (mutationScope.getStore()?.supervisor !== this) return this.withMutationLock(() => this.rollbackUpdate(tx));
     if (await this.cancelPreparedUpdate(tx)) return;
@@ -476,19 +486,13 @@ export class Supervisor {
     const rollback = await this.deploymentOps.verifyDeployment(config.deploymentRoot, tx.rollbackCommit, config.node);
     assertCardCompatibility(rollback.databaseContract, this.deploymentOps.inspectCardDatabase(config.companionCardStore));
     await this.observe();
+    this.validateRollbackProcess(this.observations.yca, tx);
     if (this.observations.tunnel?.running) { await this.assertMutationLease('tunnel'); await this.mutateUnit('tunnel', 'stop', tx.confirm); }
     await this.observe();
     const running = this.observations.yca;
-    if (running?.running !== true && running?.running !== false)
-      throw unknownOperation(fail('DEPLOYMENT_ROLLBACK_UNKNOWN'));
+    this.validateRollbackProcess(running, tx);
     if (running?.running) {
       const commit = running.deployment?.running?.commit;
-      if (!(running.owned || running.managedIdentity)
-        || ![tx.previousCommit, tx.candidateCommit, tx.rollbackCommit].includes(commit)) throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
-      if (commit === tx.candidateCommit && (running.instance !== tx.candidateInstance
-        || !sameProcess(running, this.state.units.yca.ownership.process))) throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
-      if (commit === tx.previousCommit && tx.previousProcess && !sameProcess(running, tx.previousProcess)
-        && running.instance !== tx.candidateInstance) throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
       if (commit !== tx.rollbackCommit || !running.healthy) {
         await this.assertMutationLease('yca'); await this.mutateUnit('yca', 'stop', tx.confirm, structuredClone(running));
       }
@@ -496,7 +500,23 @@ export class Supervisor {
     await this.observe();
     if (!(this.observations.yca?.healthy && this.observations.yca?.owned
       && this.observations.yca.deployment?.running?.commit === tx.rollbackCommit)) {
-      await this.startOne('yca', { commit: tx.rollbackCommit, exactCommit: true });
+      tx.rollbackInstance ??= randomUUID(); this.persist();
+      try {
+        await this.startOne('yca', { commit: tx.rollbackCommit, instance: tx.rollbackInstance, exactCommit: true });
+      } finally {
+        // YcaUnit.start persists the PID/birth only after inspecting its own
+        // spawned child. Keep that witness even if health readiness times out.
+        const launched = this.state.units.yca.ownership;
+        if (launched.instance === tx.rollbackInstance && launched.deployment?.commit === tx.rollbackCommit
+          && launched.process?.pid && launched.process?.created) {
+          tx.rollbackProcess = { pid: launched.process.pid, created: launched.process.created }; this.persist();
+        }
+      }
+      const restored = this.observations.yca, owned = this.state.units.yca.ownership;
+      if (!(restored?.owned && restored.authenticated === true && restored.instance === tx.rollbackInstance
+        && restored.deployment?.running?.commit === tx.rollbackCommit
+        && owned.instance === tx.rollbackInstance && owned.deployment?.commit === tx.rollbackCommit
+        && sameProcess(restored, tx.rollbackProcess))) throw fail('DEPLOYMENT_ROLLBACK_UNKNOWN');
     }
     await this.assertMutationLease('yca');
     await this.deploymentOps.selectDeployment(config.deploymentRoot, tx.rollbackCommit, config.node);
@@ -506,6 +526,25 @@ export class Supervisor {
       || tx.tunnelDesired === 'running' && !(this.observations.tunnel?.healthy && this.observations.tunnel?.owned))
       throw fail('DEPLOYMENT_ROLLBACK_FAILED');
     tx.phase = 'rolled-back'; this.state.updateTransaction = null; this.persist();
+  }
+  validateRollbackProcess(running, tx) {
+    if (running?.running !== true && running?.running !== false)
+      throw unknownOperation(fail('DEPLOYMENT_ROLLBACK_UNKNOWN'));
+    if (!running.running) return;
+    const commit = running.deployment?.running?.commit;
+    if (!(running.owned || running.managedIdentity)
+      || ![tx.previousCommit, tx.candidateCommit, tx.rollbackCommit].includes(commit)) throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
+    const owned = this.state.units.yca.ownership;
+    const restoredByThisTransaction = Boolean(commit === tx.rollbackCommit && tx.rollbackInstance && tx.rollbackProcess
+      && running.owned && running.authenticated === true && running.instance === tx.rollbackInstance
+      && owned.instance === tx.rollbackInstance && owned.deployment?.commit === tx.rollbackCommit
+      && sameProcess(running, tx.rollbackProcess) && sameProcess(running, owned.process));
+    if (commit === tx.candidateCommit && (running.instance !== tx.candidateInstance
+      || !sameProcess(running, owned.process))) throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
+    if (commit === tx.previousCommit && !sameProcess(running, tx.previousProcess)
+      && running.instance !== tx.candidateInstance && !restoredByThisTransaction) throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
+    if (commit === tx.rollbackCommit && commit !== tx.previousCommit && !restoredByThisTransaction)
+      throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
   }
   async cancelPreparedUpdate(tx) {
     if (!(tx.phase === 'prepared' || tx.phase === 'rollback' && tx.rollbackFromPhase === 'prepared')
@@ -743,11 +782,8 @@ export class Supervisor {
         await this.rollbackUpdate(tx);
         this.recordOperation(operation, 'failed', 'DEPLOYMENT_INTERRUPTED');
       } catch (error) {
-        tx.phase = 'recovery-needed'; tx.lastFailure = error.code ?? 'DEPLOYMENT_SWITCH_UNKNOWN'; this.persist();
-        this.state.units.yca.blocked = tx.lastFailure;
-        this.state.units.tunnel.blocked = tx.lastFailure;
-        this.persist();
-        this.recordOperation(operation, 'unknown', tx.lastFailure);
+        const code = this.scheduleRollbackRetry(tx, error);
+        this.recordOperation(operation, 'unknown', code);
       }
     }
     this.reconcileOperations(txOperationId);
@@ -792,7 +828,26 @@ export class Supervisor {
       this.events.add('supervisor', 'long-check-gap');
     }
     this.lastTick = at; await this.observe();
-    if (this.observeOnly || !this.state.autoRecovery || this.state.updateTransaction) return;
+    if (this.observeOnly || !this.state.autoRecovery) return;
+    const tx = this.state.updateTransaction;
+    if (tx) {
+      if (!['rollback', 'recovery-needed'].includes(tx.phase) || at < (tx.recoveryNextAt ?? 0)) return;
+      try {
+        await this.rollbackUpdate(tx);
+      } catch (error) {
+        this.scheduleRollbackRetry(tx, error);
+        return;
+      }
+      for (const id of ['yca', 'tunnel']) {
+        const s = this.state.units[id];
+        if (s.blocked === tx.lastFailure) s.blocked = null;
+      }
+      this.persist();
+      const recorded = this.state.operations[tx.operationId];
+      if (recorded) this.recordOperation({ operationId: tx.operationId, action: recorded.action, target: recorded.target }, 'failed', 'DEPLOYMENT_INTERRUPTED');
+      this.report('deployment-rolled-back');
+      return;
+    }
     for (const id of ids) {
       const s = this.state.units[id], o = this.observations[id];
       if (s.desired !== 'running') continue;

@@ -306,8 +306,10 @@ export class YcaUnit {
       const deadline = Date.now() + 15_000;
       while (Date.now() < deadline) {
         const p = (await this.host.inspect(this.config.node, this.markers(), current.pid))[0];
-        if (!p) { record('stopped'); return; }
-        if (!matches(p, this.state.process) || !matches(p, current)) throw fail('OWNERSHIP_CHANGED');
+        // An accepted stop is complete once the original PID/birth is gone.
+        // A same-birth sample with missing markers is inconclusive during exit;
+        // never act on it, and keep the existing deadline for a fresh sample.
+        if (!p || (p.created && p.created !== current.created)) { record('stopped'); return; }
         await sleep(200);
       }
       if (confirm) {
