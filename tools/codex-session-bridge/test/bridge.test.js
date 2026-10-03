@@ -16,6 +16,7 @@ import { createHttpServer } from '../src/http.js';
 import { createHarnessRuntime } from '../src/harness/runtime.ts';
 import { FileExecutionAuthority } from '../src/orchestration/execution-authority.ts';
 import { workDigest } from '../src/orchestration/work-items.ts';
+import { BridgeError } from '../src/errors.js';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const until = async (predicate, timeoutMs = 1000) => {
@@ -112,6 +113,32 @@ function diagnosticAccess(f) {
     return { ...payload, authorization_ref };
   };
 }
+
+test('app-server stop failure keeps the durable run stopping and session locked until onDone', async t => {
+  const { manager, executor, store, input } = setup(t);
+  const accepted = await manager.start(input());
+  await tick();
+  const { callbacks } = executor.calls[0];
+  callbacks.onSpawn(123456789);
+  callbacks.onEvent({ type: 'thread.started', thread_id: randomUUID() });
+  callbacks.onEvent({ type: 'turn.completed', usage: { input_tokens: 300, output_tokens: 30 } });
+  callbacks.onStopping();
+  const error = new BridgeError('STOP_FAILED', 'fixture denied');
+  callbacks.onStopFailed(error);
+  const current = manager.status({ run_id: accepted.run_id });
+  assert.equal(current.run.status, 'stopping');
+  assert.equal(current.run.error.code, 'STOP_FAILED');
+  assert.equal(current.run.pid, 123456789);
+  assert.equal(current.session.active_run_id, accepted.run_id);
+  assert.equal(manager.running.has(accepted.run_id), true);
+  assert.equal(store.output(manager.run(accepted.run_id), 0, 100).events.filter(event => event.type === 'stop.failed').length, 1);
+  callbacks.onDone({ code: 1, signal: null, error });
+  const finished = manager.status({ run_id: accepted.run_id });
+  assert.equal(finished.run.status, 'failed');
+  assert.equal(finished.run.error.code, 'STOP_FAILED');
+  assert.equal(finished.run.pid, null);
+  assert.equal(finished.session.active_run_id, null);
+});
 
 test('fresh session resolves model catalog before permission discovery', async t => {
   const { manager, executor, input } = setup(t);

@@ -58,10 +58,13 @@ test('native executor uses app-server, preserves approval semantics and declines
         send({method:'item/completed',params:{item:{
           type:'agentMessage',id:'msg-1',text:'APP_OK',phase:'final_answer'
         }}});
-        send({method:'thread/tokenUsage/updated',params:{tokenUsage:{last:{
+        send({method:'thread/tokenUsage/updated',params:{
+          threadId:'11111111-1111-4111-8111-111111111111',
+          turnId:'22222222-2222-4222-8222-222222222222',tokenUsage:{total:{
           inputTokens:11,cachedInputTokens:7,cacheWriteInputTokens:0,
           outputTokens:3,reasoningOutputTokens:1
-        }}}});
+        },last:{inputTokens:11,cachedInputTokens:7,cacheWriteInputTokens:0,
+          outputTokens:3,reasoningOutputTokens:1}}}});
         send({method:'turn/completed',params:{turn:{
           id:'22222222-2222-4222-8222-222222222222',status:'completed',error:null
         }}});

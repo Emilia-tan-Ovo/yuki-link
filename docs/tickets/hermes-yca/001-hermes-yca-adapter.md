@@ -1,6 +1,6 @@
 # HERMES-YCA-001 — Hermes 内嵌工程协作与 YER 抽取设计
 
-状态：独立完整 Review 的 SP-1/SP-2/SP-3 已完成候选修复与定向验证，均为 fixed-unverified；finding-fix handoff 交 Ticket Main。精确修复 commit 见 checkpoint，独立 focused review 与真实 Hermes 链路 Acceptance pending。
+状态：`hermes-yca-001-appserver-review-1/SP-1/SP-2/SP-3` 已完成候选修复与定向验证，均为 fixed-unverified；本次 app-server finding-fix handoff 交 main。精确修复 commit 见 checkpoint，等待独立 focused review；本轮未重新执行真实 Hermes 链路 Acceptance。
 
 2026-10-04 Owner 后续授权：实施 GitHub #178，普通操作用 Hermes 原生工具，仅抽取受管工程 runtime；Sylvia 使用 `gpt-6-astra/xhigh/fast`，不改全局默认。终点为最小定向测试、本地 commit 与 Implementation Handoff，不执行 Review、push 或部署。下方保留原设计约束及其历史时态，当前交付状态以文末 handoff 为准。
 
@@ -160,3 +160,30 @@ Issue 已将旧 AC1 的“普通机械操作走 YCA direct tools”替换为 Her
 真实 Hermes→YER→Sylvia 验收发现旧 `codex exec --json` 无法忠实重放 Owner 的 `on-request` 审批语义；YER 记录 `on-request` 时，真实 Codex rollout 曾为 `never`。本票因此将 **native permission session** 切换到 `codex app-server --stdio`，legacy 历史 session 保留旧 exec 路径。
 
 修复后真实 rollout 已观测为 `gpt-6-astra / xhigh / on-request / user / danger-full-access`；相关回归 71/71 + typecheck 通过。该 acceptance finding 在合入前仍需一次 fresh independent Review 复核本次 executor delta；通过后方可把 #178 整体验收记为完成。
+
+## Implementation Handoff — app-server finding-fix（2026-10-04）
+
+- 来源：`local:HERMES-YCA-001`、本 Ticket、canonical Notes 第 3/8 节及 app-server 补充，原 Review 为 `.local/workflow-state/hermes-yca-001-appserver-review-1/{spec.md,report.md,probes.test.mjs,probes.log}`。本轮不查询或写入 GitHub。
+- 身份：worktree `.local/worktrees/hermes-yca-001`，branch `codex/hermes-yca-001`；修复基线/开始 HEAD 为 `5e35ebbb07d93b58360a1c20510faabe2800d59e`，初始工作区干净。保留全票 fixed point `1b70d076e921915488e5b117a8acc56f5a85e74d` 与原审查 delta `7279e8f8f5fd3045509e47fe7450446cebcbcff8..5e35ebbb07d93b58360a1c20510faabe2800d59e`。
+- 原 Standards 0 / Spec 3 结论保持引用；本轮不进行独立审查，以下状态均为 **fixed-unverified**，没有将同名历史 Review finding 混入本轮。
+
+| 原 finding（前缀 `hermes-yca-001-appserver-review-1/`） | 修复与直接回归 |
+| --- | --- |
+| SP-1 | executor 将停止意图与最终完成分开，等待进程树停止操作收口和 child `close`/stdio drain 后只调用一次 `onDone`；停止失败传播错误并保留归属。manager 仅增加停止中/停止失败回调的持久化，沿用现有状态、锁与 journal。覆盖显式 stop/成功 turn 的停止失败、两种 close 与 stop 完成顺序、末尾无换行输出及 durable session 锁。 |
+| SP-2 | 线程事件校验/记录异常直接中断调用链，所有启动 RPC 和 await 续点检查停止状态；拒绝线程不派发 turn/start。覆盖 THREAD_MISMATCH、INVALID_THREAD_ID、RECORD_FAILED，以及 initialize 在途时停止。 |
+| SP-3 | 使用线程累计 total 扣除本 run 历史基数；fresh 基数为零，resume 优先使用旧 turn 的 replay total，无 replay 时从首次当前 turn 的 total−last 推导基数；按 thread/turn 筛选，累计高水位消除重复通知。覆盖多请求、cached/cache-write/reasoning 用量、恢复历史与重复通知。 |
+
+原始日志位于 `.local/workflow-state/hermes-yca-001-appserver-finding-fix-1/`，下表命令 cwd 均为仓库根。
+
+| 命令 | 结果 / 证据 |
+| --- | --- |
+| `node --test tools/codex-session-bridge/test/executor-app-server-lifecycle.test.js`（仅加入可注入 stop seam，行为修复前） | exit 1，初版 10 项中 9 项失败、1 项通过，复现三个 finding；`red.log`。后续增加 stop 先完成而输出未 drain 的一项回归。 |
+| `node --test tools/codex-session-bridge/test/executor-app-server.test.js tools/codex-session-bridge/test/executor-app-server-lifecycle.test.js tools/codex-session-bridge/test/permissions.test.js` | exit 0，21/21；`executor-permissions-final.log`。 |
+| `node --test --test-name-pattern='app-server stop failure\|manager close\|output wait separates\|legacy sessions\|stop, CLI failure\|executor parses' tools/codex-session-bridge/test/bridge.test.js` | exit 0，6/6；`bridge-final.log`。 |
+| `npm.cmd --prefix tools/codex-session-bridge run typecheck` | exit 0；`typecheck.log`。 |
+| `git diff --check` / `git diff --cached --check` | 通过；最终空白与内容身份检查见本机 handoff/manifest。 |
+
+- 直接代码范围为 executor、manager 停止回调和相应测试。未重跑全仓 suite、旧 Review probes（它们断言缺陷存在）或真实模型/Hermes Acceptance；现有真实链路记录仅保留原范围，不扩大为本次修复验收。字段兼容性沿用原 Review 保存的本机 0.160.0 schema，并核对 [OpenAI App Server 文档](https://learn.chatgpt.com/docs/app-server) 的事件语义。
+- `review_policy=delegated`，接收方 `main`。contract：session 由受管工作项绑定决定，Owner native permissions；本轮未创建、改绑或替换 session。当前 repair 的 durable ID/revision/run usage 未在输入提供，由上层读真实回执补录；不借用历史 implementation/reviewer ID。
+- Commit 主题：`fix: 修复 app-server 停止归属线程派发与用量累计`；精确 SHA、tree 与受测内容摘要见 `.local/workflow-state/hermes-yca-001-appserver-finding-fix-1/handoff.md` / `content-manifest.json`，主 checkpoint 指向此交接。
+- 下一步：main 核对修复 delta 与日志，补录 durable run 终态/usage、repair awaiting_verification 和 generation suspension，再关联独立 focused reviewer 复核原三项 finding。本轮到本地 commit/handoff 停止，不 push、部署或自行启动 reviewer。
