@@ -26,10 +26,10 @@ const publicPreparationConflicts = new Set([
   'PREPARATION_CHECKPOINT_CONFLICT',
 ]);
 
-export function createMcpServer(manager, computer) {
-  const server = new McpServer({ name: 'yuki-computer-agent', version: '0.2.0' });
+export function createMcpServer(manager, computer, { engineeringOnly = false } = {}) {
+  const server = new McpServer({ name: engineeringOnly ? 'yuki-engineering-runtime' : 'yuki-computer-agent', version: '0.2.0' });
   // HTTP creates one MCP server per request; the runtime owner must share one projection/writer.
-  const memory = manager.store?.directory
+  const memory = !engineeringOnly && manager.store?.directory
     ? (manager.engineeringMemory ??= new EngineeringMemoryStore(manager.store.directory)) : null;
   const withGateEvidence = (result, gate) => {
     if (!gate.evidence_gap) return result;
@@ -51,6 +51,9 @@ export function createMcpServer(manager, computer) {
     approvals_reviewer: z.enum(APPROVAL_REVIEWER_VALUES).optional().describe('Approval reviewer. Omit to inherit and freeze the effective local default.'),
   }).strict().optional();
   const register = (category, name, description, inputSchema, action, readOnly = false, idempotent = true, destructive = false, synchronous = false) => {
+    if (engineeringOnly && !new Set(['harness_register_ticket', 'harness_record_workflow', 'codex_list_models',
+      'assemble_ticket_context', 'prepare_ticket_resume', 'start_workflow_agent', 'get_work_item',
+      'transition_work_item', 'reconcile_work_item']).has(name)) return;
     server.registerTool(name, {
       description, inputSchema,
       annotations: { readOnlyHint: readOnly, destructiveHint: destructive, idempotentHint: idempotent, openWorldHint: !readOnly },
@@ -169,7 +172,7 @@ export function createMcpServer(manager, computer) {
       workflowAuthority: manager.workflowAgentAuthority });
   };
   register('manage-existing', 'start_workflow_agent', 'Managed Workflow execution. Derives fresh, continue or generation replacement from durable work item facts; preserves Owner native permissions.',
-    startWorkflowAgentInputSchema, input => workflowAgent().start(input));
+    startWorkflowAgentInputSchema, input => engineeringOnly ? manager.engineering.start(input) : workflowAgent().start(input));
   register('observe', 'get_work_item', 'Read a durable work item and its session generations; run completion does not close the item.',
     z.object({ work_item_id: z.string().uuid() }).strict(), input => {
       if (!manager.harness) throw new HarnessError('HARNESS_UNAVAILABLE');

@@ -1,5 +1,7 @@
 # Yuki Computer Agent
 
+新增工程专用入口 `npm run start:yer -- ...`：YER 复用现有受管 workflow/store/journal，独立装配且不加载通用 ComputerTools 或 Companion。Hermes 插件、配置契约与当前验证边界见 [Hermes · YER 适配器](../hermes-yer-adapter/README.md)。现有默认入口与 runtime 不迁移；真实 Hermes 工程链路仍待验收。
+
 ## Harness 首条持久 Conversation（HARNESS-001 / #40）
 
 Harness 后端使用 TypeScript，由 Node 24 原生类型擦除直接运行，不加 loader；React 前端单独生成生产构建产物。开发依赖由本包 lockfile 锁定；`npm run typecheck` 检查后端及产品测试，`npm run typecheck:ui` 检查前端，`npm test` 先构建 UI 再运行既有 JS 和 TS 测试。旧 JS 继续受支持。

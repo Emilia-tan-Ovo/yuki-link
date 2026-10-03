@@ -1,0 +1,6 @@
+{
+  "name": "yer-engineering",
+  "title": "YER 工程",
+  "description": "受管工程过程、修改与验收",
+  "api": "plugin_api.py"
+}

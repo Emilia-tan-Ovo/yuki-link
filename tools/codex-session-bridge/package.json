@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "node src/main.js",
+    "start:yer": "node src/engineering/main.js",
     "pretest": "npm run build:ui",
     "test": "node --test test/*.test.js test/*.test.ts",
     "typecheck": "tsc --noEmit",
