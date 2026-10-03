@@ -1051,6 +1051,54 @@ function switchFixture(t) {
   return { f, m, u, old, next, oldTools, nextTools, prepare: async () => ({ commit: next, branch: 'main', tools: nextTools }) };
 }
 
+test('pending update rollback retries when candidate identity becomes observable', async t => {
+  const x = switchFixture(t), { m, u, f } = x;
+  const operation = { operationId: 'd1111111-1111-4111-8111-111111111111', action: 'update-and-restart', target: 'yca' };
+  Object.assign(u, { commit: x.next, tools: x.nextTools, pid: 707, created: 'candidate-process',
+    instance: 'candidate-instance', authenticated: false, target: x.next });
+  Object.assign(m.state.units.yca.ownership, { instance: u.instance,
+    process: { pid: u.pid, created: u.created }, deployment: { commit: x.next, tools: x.nextTools } });
+  m.state.units.yca.desired = 'running';
+  m.state.units.tunnel.desired = 'running';
+  m.state.updateTransaction = { operationId: operation.operationId, phase: 'recovery-needed',
+    previousCommit: x.old, previousProcess: { pid: 101, created: 'old-process' },
+    candidateCommit: x.next, candidateInstance: u.instance, rollbackCommit: x.old,
+    tunnelDesired: 'running', confirm: true };
+  m.recordOperation(operation, 'unknown', 'DEPLOYMENT_ROLLBACK_CONFLICT');
+
+  await m.tick();
+  assert.equal(u.stops, 0, 'ambiguous candidate must remain untouched');
+  assert.ok(m.state.updateTransaction);
+  assert.equal(m.operation(operation.operationId).outcome, 'unknown');
+
+  u.authenticated = true;
+  f.advance(2000);
+  await m.tick();
+  assert.equal(u.stops, 1);
+  assert.equal(u.commit, x.old);
+  assert.equal(u.healthy, true);
+  assert.equal(f.units.tunnel.healthy, true);
+  assert.equal(m.state.updateTransaction, null);
+  assert.equal(m.operation(operation.operationId).outcome, 'failed');
+});
+
+test('pending update rollback does not stop an authenticated foreign candidate', async t => {
+  const x = switchFixture(t), { m, u, f } = x;
+  Object.assign(u, { commit: x.next, tools: x.nextTools, pid: 707, created: 'foreign-process',
+    instance: 'foreign-instance', authenticated: true });
+  f.units.tunnel.running = true; f.units.tunnel.healthy = true;
+  m.state.updateTransaction = { operationId: 'd2222222-2222-4222-8222-222222222222', phase: 'recovery-needed',
+    previousCommit: x.old, candidateCommit: x.next, candidateInstance: 'candidate-instance', rollbackCommit: x.old,
+    tunnelDesired: 'stopped', confirm: true };
+  m.persist();
+  await m.tick();
+  assert.equal(u.stops, 0);
+  assert.equal(f.units.tunnel.stops, 0);
+  assert.equal(u.running, true);
+  assert.ok(m.state.updateTransaction);
+  assert.equal(m.state.updateTransaction.lastFailure, 'DEPLOYMENT_ROLLBACK_CONFLICT');
+});
+
 test('prepared crash keeps the healthy old reader and selected release when DB has not migrated', async t => {
   const x = switchFixture(t), { m, u, f } = x;
   const rollback = 'c'.repeat(40);
