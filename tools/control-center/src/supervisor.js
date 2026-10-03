@@ -500,7 +500,23 @@ export class Supervisor {
     await this.observe();
     if (!(this.observations.yca?.healthy && this.observations.yca?.owned
       && this.observations.yca.deployment?.running?.commit === tx.rollbackCommit)) {
-      await this.startOne('yca', { commit: tx.rollbackCommit, exactCommit: true });
+      tx.rollbackInstance ??= randomUUID(); this.persist();
+      try {
+        await this.startOne('yca', { commit: tx.rollbackCommit, instance: tx.rollbackInstance, exactCommit: true });
+      } finally {
+        // YcaUnit.start persists the PID/birth only after inspecting its own
+        // spawned child. Keep that witness even if health readiness times out.
+        const launched = this.state.units.yca.ownership;
+        if (launched.instance === tx.rollbackInstance && launched.deployment?.commit === tx.rollbackCommit
+          && launched.process?.pid && launched.process?.created) {
+          tx.rollbackProcess = { pid: launched.process.pid, created: launched.process.created }; this.persist();
+        }
+      }
+      const restored = this.observations.yca, owned = this.state.units.yca.ownership;
+      if (!(restored?.owned && restored.authenticated === true && restored.instance === tx.rollbackInstance
+        && restored.deployment?.running?.commit === tx.rollbackCommit
+        && owned.instance === tx.rollbackInstance && owned.deployment?.commit === tx.rollbackCommit
+        && sameProcess(restored, tx.rollbackProcess))) throw fail('DEPLOYMENT_ROLLBACK_UNKNOWN');
     }
     await this.assertMutationLease('yca');
     await this.deploymentOps.selectDeployment(config.deploymentRoot, tx.rollbackCommit, config.node);
@@ -518,10 +534,17 @@ export class Supervisor {
     const commit = running.deployment?.running?.commit;
     if (!(running.owned || running.managedIdentity)
       || ![tx.previousCommit, tx.candidateCommit, tx.rollbackCommit].includes(commit)) throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
+    const owned = this.state.units.yca.ownership;
+    const restoredByThisTransaction = Boolean(commit === tx.rollbackCommit && tx.rollbackInstance && tx.rollbackProcess
+      && running.owned && running.authenticated === true && running.instance === tx.rollbackInstance
+      && owned.instance === tx.rollbackInstance && owned.deployment?.commit === tx.rollbackCommit
+      && sameProcess(running, tx.rollbackProcess) && sameProcess(running, owned.process));
     if (commit === tx.candidateCommit && (running.instance !== tx.candidateInstance
-      || !sameProcess(running, this.state.units.yca.ownership.process))) throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
-    if (commit === tx.previousCommit && tx.previousProcess && !sameProcess(running, tx.previousProcess)
-      && running.instance !== tx.candidateInstance) throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
+      || !sameProcess(running, owned.process))) throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
+    if (commit === tx.previousCommit && !sameProcess(running, tx.previousProcess)
+      && running.instance !== tx.candidateInstance && !restoredByThisTransaction) throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
+    if (commit === tx.rollbackCommit && commit !== tx.previousCommit && !restoredByThisTransaction)
+      throw fail('DEPLOYMENT_ROLLBACK_CONFLICT');
   }
   async cancelPreparedUpdate(tx) {
     if (!(tx.phase === 'prepared' || tx.phase === 'rollback' && tx.rollbackFromPhase === 'prepared')

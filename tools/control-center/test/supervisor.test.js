@@ -1051,6 +1051,65 @@ function switchFixture(t) {
   return { f, m, u, old, next, oldTools, nextTools, prepare: async () => ({ commit: next, branch: 'main', tools: nextTools }) };
 }
 
+function pendingCandidateRollback(x) {
+  const { m, u } = x;
+  Object.assign(u, { commit: x.next, tools: x.nextTools, pid: 707, created: 'candidate-process',
+    instance: 'candidate-instance', authenticated: true, target: x.next });
+  Object.assign(m.state.units.yca.ownership, { instance: u.instance,
+    process: { pid: u.pid, created: u.created }, deployment: { commit: x.next, tools: x.nextTools } });
+  m.state.units.yca.desired = 'running';
+  m.state.units.tunnel.desired = 'running';
+  m.state.updateTransaction = { operationId: 'd3333333-3333-4333-8333-333333333333', phase: 'recovery-needed',
+    previousCommit: x.old, previousProcess: { pid: 101, created: 'old-process' },
+    candidateCommit: x.next, candidateInstance: u.instance, rollbackCommit: x.old,
+    tunnelDesired: 'running', confirm: true };
+  m.persist();
+}
+
+test('pending rollback resumes after its own restored root starts but selection briefly fails', async t => {
+  const x = switchFixture(t), { m, u, f } = x;
+  pendingCandidateRollback(x);
+  let selections = 0;
+  m.deploymentOps.selectDeployment = async (_root, commit) => {
+    if (++selections === 1) throw fail('SELECT_TEMPORARY');
+    u.target = commit;
+  };
+  await m.tick();
+  const tx = m.state.updateTransaction;
+  assert.equal(tx.phase, 'recovery-needed');
+  assert.equal(u.commit, x.old);
+  assert.equal(u.starts, 1);
+  assert.equal(tx.rollbackInstance, u.instance);
+  assert.deepEqual(tx.rollbackProcess, { pid: u.pid, created: u.created });
+  const durable = JSON.parse(readFileSync(m.stateFile, 'utf8')).updateTransaction;
+  assert.equal(durable.rollbackInstance, u.instance);
+  assert.deepEqual(durable.rollbackProcess, { pid: u.pid, created: u.created });
+
+  f.advance(2000);
+  await m.tick();
+  assert.equal(m.state.updateTransaction, null);
+  assert.equal(u.stops, 1);
+  assert.equal(u.starts, 1);
+  assert.equal(f.units.tunnel.healthy, true);
+  assert.equal(selections, 2);
+});
+
+test('pending rollback rejects a different birth on its restored commit', async t => {
+  const x = switchFixture(t), { m, u, f } = x;
+  pendingCandidateRollback(x);
+  m.deploymentOps.selectDeployment = async () => { throw fail('SELECT_TEMPORARY'); };
+  await m.tick();
+  assert.equal(u.commit, x.old);
+  assert.deepEqual(m.state.updateTransaction.rollbackProcess, { pid: u.pid, created: u.created });
+  const priorStops = u.stops;
+  u.created = 'reused-pid-birth';
+  f.advance(2000);
+  await m.tick();
+  assert.equal(u.stops, priorStops);
+  assert.equal(u.running, true);
+  assert.equal(m.state.updateTransaction.lastFailure, 'DEPLOYMENT_ROLLBACK_CONFLICT');
+});
+
 test('pending update rollback retries when candidate identity becomes observable', async t => {
   const x = switchFixture(t), { m, u, f } = x;
   const operation = { operationId: 'd1111111-1111-4111-8111-111111111111', action: 'update-and-restart', target: 'yca' };
