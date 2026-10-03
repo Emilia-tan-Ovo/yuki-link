@@ -97,10 +97,14 @@ function Pane({ ctx }) {
     refetchInterval: query => query.state.data?.has_more ? 200
       : data?.runs?.some(run => !terminal.has(run.status)) ? 1500 : 10000,
     retry: false });
-  const patch = useQuery({ queryKey: [...key, 'patch', mode, file?.file_id, file?.revision],
-    enabled: Boolean(connected && file), retry: false,
+  const changes = data?.changes[mode];
+  const currentFile = changes?.state === 'available' && !snapshot.isError
+    ? changes.files.find(value => value.file_id === file?.file_id) : null;
+  const patch = useQuery({ queryKey: [...key, 'patch', mode, currentFile?.file_id, currentFile?.revision],
+    enabled: Boolean(connected && currentFile), retry: false,
     queryFn: ({ signal }) => rest(ctx, '/tickets/' + ticketId + '/patch?' + new URLSearchParams({
-      file_id: file.file_id, revision: file.revision, mode }), {}, signal) });
+      file_id: currentFile.file_id, revision: currentFile.revision, mode }), {}, signal) });
+  const patchCurrent = currentFile && patch.data?.file_id === currentFile.file_id && patch.data?.revision === currentFile.revision;
   useEffect(() => {
     if (patch.data?.state === 'stale') queryClient.invalidateQueries({ queryKey: [...key, 'snapshot'] });
   }, [patch.data]);
@@ -125,7 +129,6 @@ function Pane({ ctx }) {
     const next = event.target.value ? { source_id: backend.source_id, ticket_id: event.target.value } : null;
     ctx.storage.set(selectionKey, next); setSelection({ key: selectionKey, value: next }); setFile(null); setPreview(null); setConversation('');
   };
-  const changes = data?.changes[mode];
   const workflow = data?.workflow.current;
   const stale = snapshot.isError || events.isError || connectionQuery.isError;
   return h('div', { className: 'h-full overflow-auto space-y-4 p-3 text-sm' },
@@ -192,7 +195,9 @@ function Pane({ ctx }) {
         h('span', { className: 'ml-2 text-xs' }, value.start_relation === 'pre-existing-at-start' ? '开始前已有'
           : value.start_relation === 'pre-existing-overlap' ? '与已有修改重叠' : '修改归属未证明'))),
       mode === 'cumulative' && h('details', null, h('summary', null, '提交记录'), log(changes?.commits ?? [])),
-      file && h('div', null, h('p', null, file.path), patch.isLoading ? '读取中…' : patch.error ? log(patch.error.message)
+      file && h('div', null, h('p', null, file.path), !currentFile ? '旧 Patch 已过期；文件已不在当前列表或修改事实暂不可用。'
+        : patch.error ? log(patch.error.message)
+          : !patchCurrent ? (currentFile.revision !== file.revision || patch.data ? '旧 Patch 已过期，正在读取最新内容…' : '读取中…')
         : patch.data?.state === 'available' ? log(patch.data.patch)
           : h('p', null, 'Patch：' + (patch.data?.state ?? 'unknown') + ' · ' + (patch.data?.integrity?.reason ?? ''))),
       h('details', null, h('summary', null, '完整性与来源'), log(changes?.evidence_gaps ?? [])))),

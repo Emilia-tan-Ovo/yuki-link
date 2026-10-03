@@ -80,6 +80,14 @@ export function createEngineeringHttpServer(manager, { adapterToken = null, obse
   const projection = manager.engineeringProjection, authority = manager.engineering;
   return createHttpServer(manager, null, observation, {
     identity: () => projection.identity(), mcpFactory: () => createEngineeringMcpServer(manager),
+    mcpGuard: (request, response) => {
+      // Bind each dispatch to this runtime, including after a port handover.
+      if (request.headers['x-yer-source-id'] === projection.identity().source_id) return true;
+      response.writeHead(409, { 'content-type': 'application/json; charset=utf-8',
+        'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+        .end(JSON.stringify(errorResult(new HarnessError('SOURCE_CHANGED'))));
+      return false;
+    },
     handle: async (request, response) => {
       const send = (status, value) => response.writeHead(status, { 'content-type': 'application/json; charset=utf-8',
         'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }).end(JSON.stringify(value));

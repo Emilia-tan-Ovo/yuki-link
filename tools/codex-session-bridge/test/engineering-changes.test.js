@@ -13,6 +13,7 @@ test('current layers survive net cancellation; commit/editor/index changes inval
   git(root, 'init', '-q'); git(root, 'config', 'user.name', 'Fixture'); git(root, 'config', 'user.email', 'fixture@example.invalid');
   const write = (file, value) => writeFileSync(path.join(root, file), value, 'utf8');
   write('code.txt', 'base\n'); write('deleted.txt', 'delete\n'); write('.env.private', 'private fixture text\n');
+  write('retained.txt', 'still on disk\n');
   git(root, 'add', '.'); git(root, 'commit', '-qm', 'baseline');
   const head = git(root, 'rev-parse', 'HEAD');
   const runtime = mkdtempSync(path.join(os.tmpdir(), 'yer-diff-runtime-'));
@@ -61,4 +62,19 @@ test('current layers survive net cancellation; commit/editor/index changes inval
   const renamed = current.files.find(file => file.path === 'renamed.txt');
   assert.equal(patch(renamed).state, 'protected'); assert.equal(renamed.content.sha256, null);
   assert.doesNotMatch(JSON.stringify(current), /private fixture text/);
+
+  // SP-2: the same path has independent staged-deletion and untracked layers.
+  git(root, 'rm', '--cached', 'retained.txt');
+  current = view('current');
+  const retained = current.files.filter(file => file.path === 'retained.txt');
+  assert.equal(retained.length, 2);
+  const removed = retained.find(file => file.layer === 'staged');
+  const kept = retained.find(file => file.layer === 'untracked');
+  assert.equal(removed.change_kind, 'deleted');
+  assert.equal(patch(removed).state, 'deleted');
+  assert.equal(kept.change_kind, 'added');
+  assert.notEqual(kept.file_id, removed.file_id);
+  assert.match(patch(kept).patch, /\+still on disk/);
+  write('retained.txt', 'edited on disk\n');
+  assert.equal(patch(kept).state, 'stale');
 });

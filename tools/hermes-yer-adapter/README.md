@@ -56,7 +56,7 @@ YER 和受信 Hermes backend 使用部署阶段单独提供的 `YER_ADAPTER_TOKE
 }
 ```
 
-`source_id` 必须替换为目标 runtime `/engineering/identity` 的实际 journal source，端口与 profile 也须实际核对。每次调用重读配置并检查 service、protocol 和 source；端口被其他进程占用、source 改变、配置过期均报错，不能自动改连另一个服务。HTTP 客户端直接连数值 `127.0.0.1`，不读取代理设置、不跟随 redirect；MCP 与 HTTP 共用同一个 owner。
+`source_id` 必须替换为目标 runtime `/engineering/identity` 的实际 journal source，端口与 profile 也须实际核对。每次调用重读配置并检查 service、protocol 和 source；端口被其他进程占用、source 改变、配置过期均报错，不能自动改连另一个服务。YER 的每个 `/mcp` 请求必须携带 `X-YER-Source-Id`，缺失或不匹配时在派发前返回 `409 SOURCE_CHANGED`；单独 GET identity 不能替代此检查。此要求仅用于 YER 接入，默认 YCA 接入保持兼容。HTTP 客户端直接连数值 `127.0.0.1`，不读取代理设置、不跟随 redirect；MCP 与 HTTP 共用同一个 owner。
 
 ## 正常调用与恢复
 

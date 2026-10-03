@@ -216,15 +216,15 @@ test('loopback HTTP/MCP exposes only engineering tools and separates trusted con
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.close(); server.closeAllConnections(); });
   const base = 'http://127.0.0.1:' + server.address().port;
+  const identity = await (await fetch(base + '/engineering/identity')).json();
+  const headers = { 'content-type': 'application/json', 'x-yer-source-id': identity.source_id };
   const client = new Client({ name: 'fixture', version: '1' });
-  await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp')));
+  await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp'), { requestInit: { headers } }));
   t.after(() => client.close());
   const names = (await client.listTools()).tools.map(tool => tool.name);
   assert.ok(names.includes('start_workflow_agent') && names.includes('get_engineering_events'));
   assert.ok(!names.some(name => /^(filesystem|powershell|git_|task_|codex_start|codex_send|dispatch_confirmed)/.test(name)));
   assert.ok(!names.some(name => /confirm|preview/.test(name)));
-  const identity = await (await fetch(base + '/engineering/identity')).json();
-  const headers = { 'content-type': 'application/json', 'x-yer-source-id': identity.source_id };
   const plan = f.manager.engineering.propose({ kind: 'workflow', input: f.input });
   const route = base + '/engineering/tickets/' + f.ticket.id + '/preview';
   assert.equal((await fetch(route, { method: 'POST', headers, body: JSON.stringify({ plan_id: plan.plan_id, scope }) })).status, 403);
@@ -241,7 +241,7 @@ test('loopback HTTP/MCP exposes only engineering tools and separates trusted con
   await until(() => f.executor.calls.length === 1);
   await client.close();
   const reconnected = new Client({ name: 'fixture-again', version: '1' });
-  await reconnected.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp')));
+  await reconnected.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp'), { requestInit: { headers } }));
   t.after(() => reconnected.close());
   const found = await reconnected.callTool({ name: 'get_engineering_operation', arguments: { ticket_id: f.ticket.id, request_id: f.input.request_id } });
   assert.equal(found.structuredContent.operation_id, result.receipt.operation_id);
@@ -252,6 +252,42 @@ test('loopback HTTP/MCP exposes only engineering tools and separates trusted con
   const direct = JSON.parse(python.stdout);
   assert.equal(direct.operation_id, result.receipt.operation_id);
   assert.equal(direct.proxy_bypassed, true);
+});
+
+test('SP-1: MCP rejects stale or missing source before dispatch after a port handover', async t => {
+  const first = setup(t), second = setup(t);
+  const firstServer = createEngineeringHttpServer(first.manager);
+  await new Promise(resolve => firstServer.listen(0, '127.0.0.1', resolve));
+  t.after(() => { firstServer.close(); firstServer.closeAllConnections(); });
+  const port = firstServer.address().port, base = 'http://127.0.0.1:' + port;
+  const observed = await (await fetch(base + '/engineering/identity')).json();
+  await new Promise(resolve => { firstServer.close(resolve); firstServer.closeAllConnections(); });
+  const secondServer = createEngineeringHttpServer(second.manager);
+  await new Promise(resolve => secondServer.listen(port, '127.0.0.1', resolve));
+  t.after(() => { secondServer.close(); secondServer.closeAllConnections(); });
+  const current = await (await fetch(base + '/engineering/identity')).json();
+  assert.notEqual(observed.source_id, current.source_id);
+  const before = second.manager.harness.tickets.size;
+  const call = sourceId => fetch(base + '/mcp', { method: 'POST', headers: {
+    'content-type': 'application/json', accept: 'application/json, text/event-stream',
+    ...(sourceId ? { 'x-yer-source-id': sourceId } : {}),
+  }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {
+    name: 'harness_register_ticket', arguments: { project_key: 'fixture', project_name: 'Fixture',
+      ticket_key: 'SOURCE-GUARD', title: 'source guard', reference: 'local:SOURCE-GUARD',
+      expected_worktree: second.repo, fixed_point: second.ticket.comparison_baseline.commit_oid },
+  } }) });
+  for (const sourceId of [observed.source_id, null]) {
+    const response = await call(sourceId);
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, 'SOURCE_CHANGED');
+    assert.equal(second.manager.harness.tickets.size, before);
+  }
+  const valid = await call(current.source_id);
+  assert.equal(valid.status, 200);
+  const result = await valid.json();
+  assert.notEqual(result.result.isError, true, JSON.stringify(result));
+  assert.equal(second.manager.harness.tickets.size, before + 1);
+  assert.equal(first.executor.calls.length + second.executor.calls.length, 0);
 });
 
 test('backend-neutral event DTO preserves source labels, bounds payload, and excludes internal reasoning', () => {

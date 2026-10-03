@@ -1,6 +1,6 @@
 # HERMES-YCA-001 — Hermes 内嵌工程协作与 YER 抽取设计
 
-状态：YER 候选实现与定向验证完成，Implementation Handoff 交 Ticket Main；本地 commit 状态与精确 SHA 见 checkpoint。Review delegated / pending，真实 Hermes 链路 Acceptance pending。
+状态：独立完整 Review 的 SP-1/SP-2/SP-3 已完成候选修复与定向验证，均为 fixed-unverified；finding-fix handoff 交 Ticket Main。精确修复 commit 见 checkpoint，独立 focused review 与真实 Hermes 链路 Acceptance pending。
 
 2026-10-04 Owner 后续授权：实施 GitHub #178，普通操作用 Hermes 原生工具，仅抽取受管工程 runtime；Sylvia 使用 `gpt-6-astra/xhigh/fast`，不改全局默认。终点为最小定向测试、本地 commit 与 Implementation Handoff，不执行 Review、push 或部署。下方保留原设计约束及其历史时态，当前交付状态以文末 handoff 为准。
 
@@ -125,3 +125,31 @@ Issue 已将旧 AC1 的“普通机械操作走 YCA direct tools”替换为 Her
 - 真实 Hermes plugin 装载/按钮交互、实际 Sylvia 模型和 native permission、完整 Review→finding→Acceptance、已有 runtime 接管均 **未验收**。fixture host auth/SDK、现有生命周期定向测试和非 Codex DTO 不证明生产链路可用；DSH 执行明确 unsupported。
 - SDK 当前没有底层 AbortSignal 请求参数：取消丢弃有界在途结果并阻止续页，socket 依靠超时结束。窗口保留最近 1000 事件，完整历史仍可从 YER 分页读；受信 backend 的 secret 注入与 profile/source 绑定需部署阶段核对。
 - 上层先核对 commit/日志和 durable run 终态/usage，再选择独立 reviewer。后续真实验收按 Notes 第 8 节执行；不在本 implementation session 做 Review、push、PR、安装、部署、迁移或停止现有服务。到本地 commit 与此交接即停止。
+
+## Implementation Handoff — finding-fix（2026-10-04）
+
+- 来源：`local:HERMES-YCA-001`、本 Ticket、canonical Notes 第 4/6/8 节，以及 `.local/workflow-state/HERMES-YCA-001-review.md`、`.local/workflow-state/hermes-yca-001-full-review-1/spec.md` 和同目录三个 `probe-*.log`。本轮按本地引用工作，未查询 GitHub。
+- 内容身份：当前分支 `codex/hermes-yca-001`；修复基线/开始 HEAD 为 `371f4447bb47bf0403f7a5fd42fbbcc16c4c17c2`，初始工作区干净。最终 SHA、tree、文件/日志摘要见 `.local/workflow-state/HERMES-YCA-001-finding-fix.md` 及其 `content-manifest.json` 引用。
+- 原审查结论保留：`hermes-yca-001-full-review-1` 的 Standards 0、Spec 3 项 P2；本修复上下文不替代独立复核。以下状态均为 **fixed-unverified**。
+
+| 原 finding | 最小修复与定向证据 |
+| --- | --- |
+| `hermes-yca-001-full-review-1/SP-1` | YER 在每个 MCP 请求解析/派发前核对预期 source；错误或缺失返回 409，默认 YCA 没有新增 source 门禁。隔离 loopback 端口换属后，旧/缺失 header 不登记 Ticket，正确 header 可登记；已有 YER SDK 重连及默认 YCA 接入测试通过。 |
+| `hermes-yca-001-full-review-1/SP-2` | current 独立枚举 untracked，保留 staged deletion 的同路径条目、独立 file_id 与内容保护/上限。真实 Git fixture 验证两层并存、untracked patch 可读，随后原生编辑使旧 revision stale；原 staged/unstaged、累计视图和保护状态断言继续通过。 |
+| `hermes-yca-001-full-review-1/SP-3` | pane 从最新 snapshot 按 file_id 派生 revision；变化时切换查询键，仅显示身份匹配的 patch，读取期间或文件消失时标明旧内容过期。生产 pane + hook/SDK fixture 验证新 revision 请求、旧缓存隐藏、新 patch 显示及文件消失后停止查询。 |
+
+日志均在 `.local/workflow-state/hermes-yca-001-finding-fix-1/`；Node/npm 命令 cwd 为 `tools/codex-session-bridge`，Desktop 命令 cwd 为仓库根。
+
+| 命令 | 结果 / 原始证据 |
+| --- | --- |
+| `node --test --test-name-pattern='SP-1\|current layers\|SP-3' tools/codex-session-bridge/test/engineering-runtime.test.js tools/codex-session-bridge/test/engineering-changes.test.js tools/hermes-yer-adapter/test/desktop-patch.test.mjs`（cwd=仓库根，修复前） | exit 1，3 个回归断言均复现原 finding；`red.log`。 |
+| `node --test --test-name-pattern='SP-1\|loopback HTTP/MCP\|real MCP HTTP' test/engineering-runtime.test.js test/bridge.test.js` | 旧 YCA 与已有 YER 接入 2 项通过；新 SP-1 用例曾因 fixture 项目名大小写不一致失败，exit 1，`http-green.log`。随后仅修正该 fixture，未改生产逻辑，按下一行复验。`YER_TEST_PYTHON` 使用本 worktree 既有 `.local/adapter-test-venv/Scripts/python.exe`。 |
+| `node --test --test-name-pattern='SP-1' test/engineering-runtime.test.js` | exit 0，1/1；`source-green.log`。 |
+| `node --test test/engineering-changes.test.js` | exit 0，1/1；`changes-green.log`。 |
+| `node --test tools/hermes-yer-adapter/test/desktop.test.mjs tools/hermes-yer-adapter/test/desktop-patch.test.mjs`（cwd=仓库根） | exit 0，4/4；`desktop-green.log`。 |
+| `npm.cmd --prefix tools/codex-session-bridge run typecheck`（cwd=仓库根）；`git diff --check` / `git diff --cached --check` | 类型检查、空白检查通过；`typecheck.log`、`whitespace.log`。 |
+
+- 本轮只修上述 finding，共 8 项适用定向用例通过；未重跑 full suite，不扩展处理既有基线失败。验证级别为隔离 loopback/Git 与 pane 状态 fixture，真实 Hermes 装载/交互/模型链路仍未验收。
+- `review_policy=delegated`，接收方 `main` / Ticket Main。session 由受管工作项绑定决定，Owner native permissions；本轮未创建/改绑 session，也未把原 implementation 的历史 runtime ID 冒充 repair ID。本轮 durable work-item/session/generation/run 与 usage 回执由上层补录；本地 handoff 表示 awaiting_verification，不宣称 runtime transition 已成功。
+- Commit 主题：`fix: 修复 YER 源身份与差异缓存的三项审查问题`；精确 SHA 写入 post-commit checkpoint。本轮终点为最小定向测试、本地 commit 与 handoff，未 push、部署或自行启动 reviewer。
+- 下一步：Ticket Main 核对修复 commit/delta、原 finding 与日志，补录本 run 终态/usage，按同根生命周期关联原 repair 与独立 focused reviewer；复核前不将 finding 标为 verified，也不推进 Acceptance。

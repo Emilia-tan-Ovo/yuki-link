@@ -25,6 +25,7 @@ export function createHttpServer(manager, computer, observation = {}, options = 
     }
     if (!(options.mcpFactory ? ['/mcp'] : ['/mcp','/companion-mcp']).includes(request.url)) { response.writeHead(404).end(); return; }
     if (observation.draining) { response.writeHead(503).end('Stopping'); return; }
+    if (options.mcpGuard && !options.mcpGuard(request, response)) return;
     if (request.method !== 'POST') { response.writeHead(405, { Allow: 'POST' }).end(); return; }
     if (!request.headers['content-type']?.startsWith('application/json')) { response.writeHead(415).end(); return; }
     let bytes = 0;

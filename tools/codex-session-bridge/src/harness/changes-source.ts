@@ -284,8 +284,16 @@ export class ChangesSource {
     const head = identity.payload.head;
     const current = this.inspect({ ...baseline, commit_oid: head });
     const kinds: Record<string, FileFact['change_kind']> = { A: 'added', M: 'modified', D: 'deleted', R: 'renamed', C: 'copied', T: 'type-changed', U: 'unmerged' };
-    const files: FileFact[] = current.files.filter(file => file.fact_source === 'filesystem-untracked')
-      .map(file => ({ ...file, layer: 'untracked' }));
+    // Current layers cannot reuse cumulative facts deduplicated by path: a
+    // staged deletion may leave the same path on disk as an untracked file.
+    const untracked = splitZero(this.run(baseline.worktree_root, ['ls-files', '--others', '--exclude-standard', '-z', '--'])).map(slash);
+    const untrackedGaps: EvidenceGap[] = [];
+    const files: FileFact[] = untracked.slice(0, MAX_FILES).map(file => {
+      const content = this.content(baseline.worktree_root, file);
+      untrackedGaps.push(...content.gaps);
+      return { path: file, old_path: null, change_kind: 'added', fact_source: 'filesystem-untracked',
+        layer: 'untracked', content: content.content };
+    });
     for (const layer of ['staged', 'unstaged'] as const) {
       for (const item of this.tracked(baseline.worktree_root, head, layer)) {
         const content: FileFact['content'] = item.old_path && protectedPath(item.old_path)
@@ -296,8 +304,12 @@ export class ChangesSource {
           fact_source: 'git-tree-to-worktree', content });
       }
     }
-    return { ...current, files: files.slice(0, MAX_FILES), commits: [], gaps: [...current.gaps, ...identity.gaps,
-      ...(files.length > MAX_FILES ? [{ code: 'CONTENT_TRUNCATED', source: 'git' as const, impact: 'current file limit' }] : [])] };
+    return { ...current, files: files.slice(0, MAX_FILES), commits: [],
+      sources: { ...current.sources, filesystem: { ...current.sources.filesystem,
+        state: untrackedGaps.length ? 'incomplete' : current.sources.filesystem.state } },
+      gaps: [...current.gaps, ...identity.gaps, ...untrackedGaps,
+        ...(files.length > MAX_FILES || untracked.length > MAX_FILES
+          ? [{ code: 'CONTENT_TRUNCATED', source: 'git' as const, impact: 'current file limit' }] : [])] };
   }
 
   currentIdentity(baseline: ComparisonBaseline): CurrentGitIdentity {
