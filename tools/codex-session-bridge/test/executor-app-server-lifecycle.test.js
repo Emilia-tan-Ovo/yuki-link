@@ -14,11 +14,11 @@ const tokens = (input, output) => ({ inputTokens: input, outputTokens: output,
 
 // Only protocol streams are simulated; no model or OS process is launched.
 function harness({ onEvent = () => {}, terminate = async () => 'succeeded', resume = false,
-  hold = null, replay = null } = {}) {
+  hold = null, replay = null, spawnError = null } = {}) {
   const sent = [], events = [], completions = [], failures = [], stderr = [], order = [];
   const child = new EventEmitter();
   child.stdout = new PassThrough(); child.stderr = new PassThrough();
-  child.pid = 123456789; child.exitCode = null; child.signalCode = null;
+  child.pid = spawnError ? undefined : 123456789; child.exitCode = null; child.signalCode = null;
   const notify = (method, params) => child.stdout.write(JSON.stringify({ method, params }) + '\n');
   const reply = message => {
     const result = message.method.startsWith('thread/') ? { thread: { id: threadId } }
@@ -33,7 +33,7 @@ function harness({ onEvent = () => {}, terminate = async () => 'succeeded', resu
     next();
   } });
   const executor = new CodexExecutor('fixture', () => {
-    queueMicrotask(() => child.emit('spawn')); return child;
+    queueMicrotask(() => spawnError ? child.emit('error', spawnError) : child.emit('spawn')); return child;
   }, () => ({ executable: 'fixture' }), terminate);
   const session = { cwd: process.cwd(), codex_thread_id: resume ? threadId : null, permissions: {
     version: 1, kind: 'native', stored: true, sandbox_mode: 'danger-full-access',
@@ -59,7 +59,7 @@ function harness({ onEvent = () => {}, terminate = async () => 'succeeded', resu
   return { handle, child, sent, events, completions, failures, stderr, order, reply, close, complete, update };
 }
 
-test('SP-1: failed explicit stop retains ownership until close and reports the failure', async () => {
+test('SP-1: failed explicit stop retains ownership even after parent close', async () => {
   const h = harness({ terminate: async () => { throw new BridgeError('STOP_FAILED', 'fixture denied'); } });
   await tick();
   await assert.rejects(h.handle.stop(), { code: 'STOP_FAILED' });
@@ -67,8 +67,7 @@ test('SP-1: failed explicit stop retains ownership until close and reports the f
   assert.equal(h.completions.length, 0);
   assert.equal(h.failures[0].code, 'STOP_FAILED');
   await h.close();
-  assert.equal(h.completions.length, 1);
-  assert.equal(h.completions[0].error.code, 'STOP_FAILED');
+  assert.equal(h.completions.length, 0);
 });
 
 test('SP-1: completed turn with failed termination cannot publish success', async () => {
@@ -78,7 +77,65 @@ test('SP-1: completed turn with failed termination cannot publish success', asyn
   assert.equal(h.failures[0].code, 'STOP_FAILED');
   assert.ok(h.order.includes('stopping'));
   await h.close();
+  assert.equal(h.completions.length, 0);
+});
+
+test('SP-1: unconfirmed tree stop rejects and retains ownership after parent close and retry', async () => {
+  const h = harness({ terminate: async () => 'unconfirmed' });
+  await tick();
+  const rejected = assert.rejects(h.handle.stop(), { code: 'STOP_FAILED' });
+  await Promise.all([rejected, h.close()]);
+  assert.equal(h.failures[0].code, 'STOP_FAILED');
+  assert.equal(h.completions.length, 0);
+  await assert.rejects(h.handle.stop(), { code: 'STOP_FAILED' });
+  assert.equal(h.completions.length, 0);
+});
+
+test('SP-1: parent exit during interrupt cannot skip tree-stop confirmation', async () => {
+  const h = harness({ hold: 'turn/interrupt', terminate: async () => 'unconfirmed' });
+  await tick();
+  const rejected = assert.rejects(h.handle.stop(), { code: 'STOP_FAILED' });
+  await h.close(); await rejected;
+  assert.equal(h.failures[0].code, 'STOP_FAILED');
+  assert.equal(h.completions.length, 0);
+});
+
+test('SP-1: unexpected parent close keeps unconfirmed descendants owned', async () => {
+  const h = harness({ terminate: async () => 'unconfirmed' }); await tick();
+  await h.close();
+  assert.ok(h.order.includes('stopping'));
+  assert.equal(h.failures[0].code, 'STOP_FAILED');
+  assert.equal(h.completions.length, 0);
+});
+
+test('SP-1: a confirmed retry can finish once after close while preserving the stop failure', async () => {
+  let attempts = 0;
+  const h = harness({ terminate: async () => {
+    if (++attempts === 1) throw new BridgeError('STOP_FAILED', 'fixture denied');
+    return 'succeeded';
+  } }); await tick();
+  await assert.rejects(h.handle.stop(), { code: 'STOP_FAILED' });
+  const stopping = h.handle.stop(); await tick();
+  assert.equal(h.completions.length, 0);
+  await h.close(); await stopping;
+  assert.equal(attempts, 2);
+  assert.equal(h.completions.length, 1);
   assert.equal(h.completions[0].error.code, 'STOP_FAILED');
+  await h.handle.stop();
+  assert.equal(h.completions.length, 1);
+});
+
+test('SP-1: spawn failure with no owned process still finishes after output drain', async () => {
+  const h = harness({ spawnError: Object.assign(new Error('fixture missing'), { code: 'ENOENT' }),
+    terminate: async () => { assert.fail('no owned process tree exists'); },
+  }); await tick();
+  assert.equal(h.completions.length, 0);
+  h.child.stderr.write('spawn diagnostic');
+  await h.close();
+  assert.equal(h.completions.length, 1);
+  assert.equal(h.completions[0].error.code, 'SPAWN_FAILED');
+  assert.deepEqual(h.stderr, ['spawn diagnostic']);
+  assert.deepEqual(h.failures, []);
 });
 
 test('SP-1: onDone waits for tree-stop confirmation, close and trailing output exactly once', async () => {

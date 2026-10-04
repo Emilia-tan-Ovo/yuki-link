@@ -1,6 +1,6 @@
 # HERMES-YCA-001 — Hermes 内嵌工程协作与 YER 抽取设计
 
-状态：`hermes-yca-001-appserver-review-1/SP-1/SP-2/SP-3` 已完成候选修复与定向验证，均为 fixed-unverified；本次 app-server finding-fix handoff 交 main。精确修复 commit 见 checkpoint，等待独立 focused review；本轮未重新执行真实 Hermes 链路 Acceptance。
+状态：app-server 独立 focused review 已在 `efaad6e` 验证 SP-2/SP-3，SP-1 的残留停止确认问题已补修，当前为 fixed-unverified。本次交接见文末 SP-1 残留修复 handoff；精确 commit 见 checkpoint，交 main 等待独立复核，本轮未重新执行真实 Hermes 链路 Acceptance。
 
 2026-10-04 Owner 后续授权：实施 GitHub #178，普通操作用 Hermes 原生工具，仅抽取受管工程 runtime；Sylvia 使用 `gpt-6-astra/xhigh/fast`，不改全局默认。终点为最小定向测试、本地 commit 与 Implementation Handoff，不执行 Review、push 或部署。下方保留原设计约束及其历史时态，当前交付状态以文末 handoff 为准。
 
@@ -187,3 +187,13 @@ Issue 已将旧 AC1 的“普通机械操作走 YCA direct tools”替换为 Her
 - `review_policy=delegated`，接收方 `main`。contract：session 由受管工作项绑定决定，Owner native permissions；本轮未创建、改绑或替换 session。当前 repair 的 durable ID/revision/run usage 未在输入提供，由上层读真实回执补录；不借用历史 implementation/reviewer ID。
 - Commit 主题：`fix: 修复 app-server 停止归属线程派发与用量累计`；精确 SHA、tree 与受测内容摘要见 `.local/workflow-state/hermes-yca-001-appserver-finding-fix-1/handoff.md` / `content-manifest.json`，主 checkpoint 指向此交接。
 - 下一步：main 核对修复 delta 与日志，补录 durable run 终态/usage、repair awaiting_verification 和 generation suspension，再关联独立 focused reviewer 复核原三项 finding。本轮到本地 commit/handoff 停止，不 push、部署或自行启动 reviewer。
+
+## Implementation Handoff — app-server SP-1 残留修复（2026-10-04）
+
+- 来源：原 `hermes-yca-001-appserver-review-1/SP-1`、`.local/workflow-state/hermes-yca-001-appserver-focused-review-1/{report.md,spec.md}`、canonical Notes 第 3/8 节；继续原 repair 范围。原 fix_baseline 为 `5e35ebbb07d93b58360a1c20510faabe2800d59e`，本轮增量起点为 `efaad6e46b7d735390382d26bfb42f0afb9b7b81`，开始时工作区 clean；worktree/branch 不变。
+- executor 单独记录进程树停止成功确认；父进程 close/stdio drain 和停止调用结束均不能替代该确认。异常、`unconfirmed`、interrupt 期间退出及意外父 close 均保留 stopping/执行归属，报告停止失败；只有未创建进程的 spawn failure 可以无需杀树收尾。成功重试仍需 close/drain 后一次性 onDone，并保留先前错误。不改变 manager、stopProcessTree、线程 guard 或用量计算，也不新建恢复机制。
+- 验证：新增/修正 SP-1 断言修复前为 3 pass / 6 fail（exit 1）；修复后 lifecycle 16/16（含既有 SP-2/SP-3）、app-server/manager/legacy 8/8、原独立审查的真实父/后代反例 1/1，均 exit 0；typecheck 与空白检查通过。反例实测父 close 且后代存活时 onDone=0，测试后代清理已确认。仅使用 fixture/测试进程，没有真实模型调用、full suite 或新 Acceptance。
+- 原始命令、日志、受测文件身份和精确 commit/tree：`.local/workflow-state/hermes-yca-001-appserver-finding-fix-1/sp1-residual/{handoff.md,content-manifest.json}`。本次 commit 主题：`fix: 保留未确认停止的 app-server 进程树归属`。原 repair handoff 和两轮 Review 报告保留不改。
+- 原 Standards 0 / Spec 3 历史结论保留；SP-1 为 **fixed-unverified**。SP-2/SP-3 在 `efaad6e` 的独立 verified 证据保留，其逻辑本轮未改且回归通过，当前内容的最终证据适用性由独立复核判定。本实现上下文不产生 Review passed 结论。
+- `review_policy=delegated`，destination=`main`；session 由受管工作项绑定，Owner native permissions。本轮不创建/改绑 session，不启动 reviewer；当前 repair 的 durable ID/revision/run/usage 未随输入提供，由 main 从权威 runtime 补录，不能借用历史 implementation/reviewer ID。checkpoint 仅记录观察及下一阶段。
+- 限制：父进程已退出但后代停止未确认时，故意保留归属供上层协调，不能仅凭父进程死亡或一次 stop 返回释放锁。下一步由 main 核对本次增量/日志，补录 durable 终态/usage 与 repair awaiting_verification 回执，再按明确复核预算安排原 SP-1 独立 focused review。本轮到本地 commit/handoff 停止。

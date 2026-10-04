@@ -176,6 +176,7 @@ export class CodexExecutor {
     let terminalResult = null;
     let closed = false;
     let terminating = false;
+    let treeStopConfirmed = false;
     let shutdownPromise = null;
     let resolveClosed;
     const whenClosed = new Promise(resolve => { resolveClosed = resolve; });
@@ -207,9 +208,9 @@ export class CodexExecutor {
       pending.clear();
     };
     const finish = () => {
-      // ChildProcess close follows exit AND stdio drain. A tree-stop command
-      // may still be pending when close arrives, so both facts are required.
-      if (finalized || !closed || terminating) return;
+      // Parent close confirms exit/stdio drain, not descendant termination.
+      // Failed or unconfirmed tree stops must retain ownership for reconciliation.
+      if (finalized || !closed || terminating || !treeStopConfirmed) return;
       finalized = true;
       onDone(terminalResult);
     };
@@ -233,7 +234,15 @@ export class CodexExecutor {
           if (interrupt && turnId && emittedThread && !closed) {
             try { await request('turn/interrupt', { threadId: emittedThread, turnId }, true); } catch {}
           }
-          if (!closed && child.exitCode === null && child.signalCode === null) await this.stopTree(child);
+          if (!treeStopConfirmed) {
+            // No PID means spawning failed and no owned tree was created.
+            // Otherwise only the tree stopper can confirm termination; parent
+            // exit (including while interrupt was pending) is not a substitute.
+            if (child.pid && await this.stopTree(child) !== 'succeeded') {
+              throw new BridgeError('STOP_FAILED', 'Owned process-tree termination remains unconfirmed.');
+            }
+            treeStopConfirmed = true;
+          }
         } catch (error) {
           const failure = error instanceof BridgeError ? error : new BridgeError('STOP_FAILED', redact(error.message));
           rememberError(failure);
@@ -369,13 +378,14 @@ export class CodexExecutor {
     });
     child.once('close', (code, signal) => {
       closed = true;
-      terminalResult ??= {
-        code: code ?? 1, signal,
-        error: new BridgeError('APP_SERVER_EXITED', 'Codex app-server exited before turn completion.'),
-      };
       settlePending(new BridgeError('APP_SERVER_CLOSED', 'Codex app-server closed.'));
       resolveClosed();
-      finish();
+      if (!terminalResult) {
+        complete({
+          code: code ?? 1, signal,
+          error: new BridgeError('APP_SERVER_EXITED', 'Codex app-server exited before turn completion.'),
+        }).catch(() => {});
+      } else finish();
     });
     child.once('spawn', () => {
       (async () => {
