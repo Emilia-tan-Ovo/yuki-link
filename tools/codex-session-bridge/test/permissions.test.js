@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_PERMISSION_RESOLUTION_TIMEOUT_MS, PermissionResolver, permissionSnapshotFromConfig, sessionPermissionSnapshot } from '../src/permissions.js';
 import { spawnDirect, isProcessAlive } from '../src/process.js';
-import { execArguments } from '../src/executor.js';
+import { appServerThreadParams, appServerTurnParams, execArguments } from '../src/executor.js';
 
 test('default permission resolution timeout leaves bounded startup headroom', () => {
   assert.equal(DEFAULT_PERMISSION_RESOLUTION_TIMEOUT_MS, 30_000);
@@ -70,34 +70,36 @@ test('workspace snapshots reject unknown config dimensions and damaged persisted
   }), { code: 'SESSION_PERMISSION_INVALID' });
 });
 
-test('native executor pins a built-in permission profile as well as the legacy sandbox axis', () => {
+test('native sessions use app-server parameters that preserve the frozen approval policy', () => {
   const base = {
     version: 1, kind: 'native', stored: true,
-    approval_policy: 'on-request', approvals_reviewer: 'user',
+    sandbox_mode: 'danger-full-access', approval_policy: 'on-request', approvals_reviewer: 'user',
     workspace_write: null, source: 'fixture', resolved_at: new Date().toISOString(),
   };
-  for (const [sandbox_mode, profile] of [
-    ['read-only', ':read-only'],
-    ['danger-full-access', ':danger-full-access'],
-  ]) {
-    const args = execArguments(
-      { model: 'gpt-5.6-sol', reasoning: 'medium' },
-      { cwd: process.cwd(), codex_thread_id: null, permissions: { ...base, sandbox_mode } },
-    );
-    assert.ok(args.includes(sandbox_mode));
-    assert.ok(args.includes(`default_permissions="${profile}"`));
-    assert.ok(!args.includes('--ignore-user-config'));
-  }
+  const run = { model: 'gpt-6-astra', reasoning: 'xhigh', service_tier: 'fast' };
+  const session = { cwd: process.cwd(), codex_thread_id: null, permissions: base };
+  assert.deepEqual(appServerThreadParams(run, session), {
+    cwd: process.cwd(), model: 'gpt-6-astra', approvalPolicy: 'on-request',
+    approvalsReviewer: 'user', sandbox: 'danger-full-access', serviceTier: 'fast',
+  });
+  assert.deepEqual(appServerTurnParams(run, session, 'hello', 'thread-id'), {
+    threadId: 'thread-id', input: [{ type: 'text', text: 'hello' }], cwd: process.cwd(),
+    model: 'gpt-6-astra', effort: 'xhigh', approvalPolicy: 'on-request',
+    approvalsReviewer: 'user', serviceTierForTurn: 'fast',
+  });
+  assert.throws(() => execArguments(run, session), { code: 'NATIVE_EXEC_REQUIRES_APP_SERVER' });
 
   const workspace = {
     ...base,
     sandbox_mode: 'workspace-write',
     workspace_write: { writable_roots: ['C:/extra'], network_access: true, exclude_slash_tmp: true, exclude_tmpdir_env_var: false },
   };
-  const args = execArguments({ model: 'gpt-5.6-sol', reasoning: 'medium' }, { cwd: process.cwd(), codex_thread_id: 'thread-id', permissions: workspace });
-  assert.ok(args.includes('default_permissions=":workspace"'));
-  assert.ok(args.includes('sandbox_workspace_write.writable_roots=["C:/extra"]'));
-  assert.deepEqual(args.slice(-3), ['resume', 'thread-id', '-']);
+  assert.deepEqual(appServerThreadParams(run, { ...session, permissions: workspace }).config, {
+    sandbox_workspace_write: {
+      writable_roots: ['C:/extra'], network_access: true,
+      exclude_slash_tmp: true, exclude_tmpdir_env_var: false,
+    },
+  });
 });
 
 test('permission profiles and non-replayable approval policies fail explicitly', () => {

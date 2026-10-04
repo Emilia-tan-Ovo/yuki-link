@@ -1,0 +1,7 @@
+name: yer-engineering
+version: 0.1.0
+description: "Hermes 内的 YER 受管工程面板；普通文件、shell、Git 使用 Hermes 原生工具。"
+author: yuki-link
+provides_tools:
+  - yer_list_tools
+  - yer_call_tool

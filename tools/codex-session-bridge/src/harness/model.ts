@@ -96,6 +96,19 @@ export const recordSchema = z.object({
     executionOperationBoundRecordSchema,
     workItemTransitionRecordSchema,
     rawExecutionRecordSchema,
+    // YER control records share this writer and replay with all legacy history.
+    z.object({ kind: z.literal('engineering_plan'), ticket_id: id, plan_id: id,
+      request_id: text, digest: z.string(), input: z.unknown(), created_at: text }).strict(),
+    z.object({ kind: z.literal('engineering_preview'), ticket_id: id, preview_id: id,
+      plan_id: id, digest: z.string(), snapshot: z.unknown(), expires_at: text }).strict(),
+    z.object({ kind: z.literal('engineering_confirmation'), ticket_id: id, preview_id: id,
+      digest: z.string(), adapter_id: text, confirmed_at: text }).strict(),
+    z.object({ kind: z.literal('engineering_task_intent'), ticket_id: id, request_id: text,
+      preview_id: id, work_item_id: id, revision: z.number().int().positive(),
+      content_identity: z.unknown(), service_epoch: id }).strict(),
+    z.object({ kind: z.literal('engineering_task_receipt'), ticket_id: id, request_id: text,
+      task_id: text, service_epoch: id }).strict(),
+    z.object({ kind: z.literal('engineering_changes'), ticket_id: id, digest: z.string(), observed_at: text }).strict(),
     z.object({ kind: z.literal('control_action'), control: z.object({
       control_id: id, ticket_id: id, action: z.enum(['refresh', 'run.stop', 'task.stop', 'worktree.open']),
       stage: z.enum(['requested', 'result']), outcome: text, target: z.unknown(), source_status: z.unknown(),
@@ -108,6 +121,7 @@ export type Operation = RecordEntry['data'];
 export interface SourceEvent { seq: number; at: string; session_id: string; run_id: string; type: string; data: unknown }
 export interface SourceRun {
   id: string; session_id: string; created_at: string; model: string; reasoning: string;
+  service_tier?: string; backend_kind?: string;
   status: string; config_source: string; timeout_ms: number | null; exit_code: number | null;
   started_at?: string | null; finished_at?: string | null; error?: unknown;
 }

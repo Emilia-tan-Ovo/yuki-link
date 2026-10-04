@@ -220,7 +220,7 @@ export class SessionManager {
     run.status = 'running'; run.started_at = now();
     this.store.append(run, 'run.started', { model: run.model, reasoning: run.reasoning, service_tier: run.service_tier });
     this.store.save();
-    const live = { handle: null, timer: null, stopReason: null };
+    const live = { handle: null, timer: null, stopReason: null, reportedStopError: null };
     this.running.set(run.id, live);
     try {
       live.handle = this.executor.start(run, session, prompt, {
@@ -247,6 +247,14 @@ export class SessionManager {
           if (live.stopReason) return;
           if (this.store.eventBytes(run) + Buffer.byteLength(line) > this.maxOutputBytes) return this.requestStop(run, 'failed', new BridgeError('OUTPUT_LIMIT', 'Run output limit exceeded.'));
           this.store.append(run, 'stderr', { text: line });
+        },
+        onStopping: () => {
+          run.status = 'stopping'; this.store.save();
+        },
+        onStopFailed: error => {
+          live.reportedStopError = error;
+          run.error = publicError(error);
+          this.store.append(run, 'stop.failed', run.error); this.store.save();
         },
         onDone: result => {
           if (live.timer !== null) this.timers.clearTimeout(live.timer);
@@ -281,6 +289,9 @@ export class SessionManager {
     if (error) run.error = publicError(error);
     run.status = 'stopping'; this.store.save();
     live.handle.stop().catch(stopError => {
+      // Native executors report internal and explicit shutdown failures through
+      // onStopFailed; legacy executors still report only via this rejection.
+      if (!this.running.has(run.id) || live.reportedStopError === stopError) return;
       run.error = publicError(stopError);
       this.store.append(run, 'stop.failed', run.error); this.store.save();
       // Keep the session locked; do not pretend a still-running process stopped.
